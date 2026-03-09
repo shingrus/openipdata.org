@@ -1,0 +1,17 @@
+[Unit]
+Description=openipdata.org Fastify server
+After=network.target
+
+[Service]
+Type=simple
+User=openipdata
+Group=openipdata
+WorkingDirectory=/srv/openipdata.org
+EnvironmentFile=/etc/openipdata/openipdata.env
+ExecStart=/usr/bin/env node dist/server.js
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

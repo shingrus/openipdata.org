@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= serviceName %></title>
+  <meta name="description" content="OpenIPdata.org" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1><%= serviceName %></h1>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Runtime</h2>
+        <dl class="stats">
+          <div>
+            <dt>Uptime</dt>
+            <dd><%= uptimeSeconds %>s</dd>
+          </div>
+          <div>
+            <dt>Started</dt>
+            <dd><%= startedAt %></dd>
+          </div>
+          <div>
+            <dt>Render time</dt>
+            <dd><%= renderTime %></dd>
+          </div>
+        </dl>
+      </article>
+
+      <article class="panel">
+        <h2>Endpoints</h2>
+        <ul class="links">
+          <li><a href="/">/</a></li>
+          <li><a href="/api/health">/api/health</a></li>
+        </ul>
+      </article>
+
+    </section>
+  </main>
+</body>
+
+</html>
