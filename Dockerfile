@@ -1,3 +1,4 @@
+#docker build -t openipdata-org .
 # syntax=docker/dockerfile:1
 
 FROM node:20-alpine AS build
