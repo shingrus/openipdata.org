@@ -23,14 +23,13 @@ jobs:
 
       - name: Validate deploy configuration
         env:
-          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
-          for name in DOCKERHUB_REPOSITORY DOCKERHUB_TOKEN DOCKERHUB_USERNAME SSH_HOST SSH_PRIVATE_KEY SSH_USER; do
+          for name in DOCKERHUB_TOKEN DOCKERHUB_USERNAME SSH_HOST SSH_PRIVATE_KEY SSH_USER; do
             if [ -z "${!name}" ]; then
               echo "Missing required GitHub secret or variable: $name" >&2
               exit 1
@@ -47,17 +46,18 @@ jobs:
       - name: Prepare image tags
         id: image
         env:
-          DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           image_tag="sha-${GITHUB_SHA}"
+          dockerhub_repository="${DOCKERHUB_USERNAME}/openipdata.org"
 
           {
-            echo "repository=${DOCKERHUB_REPOSITORY}"
+            echo "repository=${dockerhub_repository}"
             echo "tag=${image_tag}"
             echo "tags<<EOF"
-            echo "${DOCKERHUB_REPOSITORY}:${image_tag}"
+            echo "${dockerhub_repository}:${image_tag}"
             if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-              echo "${DOCKERHUB_REPOSITORY}:latest"
+              echo "${dockerhub_repository}:latest"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"

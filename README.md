@@ -57,12 +57,13 @@ The workflow at `.github/workflows/main.yml` replaces Fly.io deploys with this f
 
 Configure these repository settings before the first deploy:
 
-- Repository variable: `DOCKERHUB_REPOSITORY` (example: `your-dockerhub-user/openipdata.org`)
 - Repository secret: `DOCKERHUB_USERNAME`
 - Repository secret: `DOCKERHUB_TOKEN`
 - Repository secret: `SSH_HOST`
 - Repository secret: `SSH_USER`
 - Repository secret: `SSH_PRIVATE_KEY`
+
+The workflow publishes to `DOCKERHUB_USERNAME/openipdata.org`, so no separate Docker Hub repository variable is needed.
 
 Host-side requirements:
 
