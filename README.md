@@ -11,7 +11,8 @@ Minimal `Fastify` + `TypeScript` SSR app for `openipdata.org`.
 - `npm run dev` runs with `NODE_ENV=development`
 - `npm start` runs with `NODE_ENV=production`
 - Multi-stage `Dockerfile` for production builds
-- GitHub Actions deploy flow that pushes to Docker Hub and updates a host-side Docker Compose app over SSH
+- Fly.io GitHub Actions deploy on pushes to `main`
+- Optional manual GitHub Actions deploy that pushes to Docker Hub and updates a host-side Docker Compose app over SSH
 - nginx reverse-proxy config for `:80/:443 -> 127.0.0.1:9090`
 - Docker Compose deployment example
 
@@ -46,16 +47,22 @@ NODE_ENV=production HOST=127.0.0.1 PORT=9090 npm start
 - host path reference: `deploy/systemd/openipdata.service`
 - environment example: `.env.example`
 
-## GitHub Actions deploy
+## GitHub Actions deploys
 
-The workflow at `.github/workflows/main.yml` replaces Fly.io deploys with this flow:
+Default deploy:
 
-1. Build the Docker image for the pushed branch or manually selected ref
-2. Push a `sha-<commit>` tag to Docker Hub and refresh `latest` on `main`
-3. Copy `deploy/compose/compose.yaml` plus the current image tag metadata to `/opt/openipdata`
-4. Run `docker compose pull && docker compose up -d` over SSH
+- `.github/workflows/main.yml`
+- Trigger: push to `main`
+- Deploy target: Fly.io
+- Required secret: `FLY_API_TOKEN`
 
-Configure these repository settings before the first deploy:
+Optional manual host deploy:
+
+- `.github/workflows/docker-host-deploy.yml`
+- Trigger: `workflow_dispatch`
+- Deploy target: Docker Compose host over SSH
+
+Configure these repository settings for the optional manual host deploy:
 
 - Repository secret: `DOCKERHUB_USERNAME`
 - Repository secret: `DOCKERHUB_TOKEN`
@@ -63,7 +70,7 @@ Configure these repository settings before the first deploy:
 - Repository secret: `SSH_USER`
 - Repository secret: `SSH_PRIVATE_KEY`
 
-The workflow publishes to `DOCKERHUB_USERNAME/openipdata.org`, so no separate Docker Hub repository variable is needed.
+The manual host deploy publishes to `DOCKERHUB_USERNAME/openipdata.org`, so no separate Docker Hub repository variable is needed.
 
 Host-side requirements:
 

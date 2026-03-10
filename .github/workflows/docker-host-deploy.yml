@@ -1,0 +1,132 @@
+name: Manual Docker Host Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: production-host-deploy
+      cancel-in-progress: false
+    env:
+      APP_DIR: /opt/openipdata
+      REMOTE_ENV_FILE: /etc/openipdata/openipdata.env
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate deploy configuration
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          for name in DOCKERHUB_TOKEN DOCKERHUB_USERNAME SSH_HOST SSH_PRIVATE_KEY SSH_USER; do
+            if [ -z "${!name}" ]; then
+              echo "Missing required GitHub secret or variable: $name" >&2
+              exit 1
+            fi
+          done
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Prepare image tags
+        id: image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          image_tag="sha-${GITHUB_SHA}"
+          dockerhub_repository="${DOCKERHUB_USERNAME}/openipdata.org"
+
+          {
+            echo "repository=${dockerhub_repository}"
+            echo "tag=${image_tag}"
+            echo "tags<<EOF"
+            echo "${dockerhub_repository}:${image_tag}"
+            if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              echo "${dockerhub_repository}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Configure SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Render deploy env
+        env:
+          IMAGE_REPOSITORY: ${{ steps.image.outputs.repository }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        run: |
+          cat > /tmp/openipdata.deploy.env <<EOF
+          IMAGE_REPOSITORY=${IMAGE_REPOSITORY}
+          IMAGE_TAG=${IMAGE_TAG}
+          EOF
+
+      - name: Upload Compose files
+        env:
+          APP_DIR: ${{ env.APP_DIR }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh "${SSH_USER}@${SSH_HOST}" "mkdir -p '${APP_DIR}'"
+          scp deploy/compose/compose.yaml /tmp/openipdata.deploy.env "${SSH_USER}@${SSH_HOST}:${APP_DIR}/"
+
+      - name: Log in to Docker Hub on host
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          printf '%s' "$DOCKERHUB_TOKEN" | ssh "${SSH_USER}@${SSH_HOST}" "docker login --username '${DOCKERHUB_USERNAME}' --password-stdin"
+
+      - name: Deploy on host
+        env:
+          APP_DIR: ${{ env.APP_DIR }}
+          REMOTE_ENV_FILE: ${{ env.REMOTE_ENV_FILE }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh "${SSH_USER}@${SSH_HOST}" "
+            set -eu
+            test -f '${REMOTE_ENV_FILE}'
+            PATH=/usr/local/bin:/usr/bin:/bin
+            /usr/bin/docker compose \
+              --project-name openipdata \
+              --project-directory '${APP_DIR}' \
+              --env-file '${APP_DIR}/openipdata.deploy.env' \
+              -f '${APP_DIR}/compose.yaml' \
+              pull
+            /usr/bin/docker compose \
+              --project-name openipdata \
+              --project-directory '${APP_DIR}' \
+              --env-file '${APP_DIR}/openipdata.deploy.env' \
+              -f '${APP_DIR}/compose.yaml' \
+              up -d --remove-orphans
+            /usr/bin/docker image prune -f
+          "
