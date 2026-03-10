@@ -43,7 +43,7 @@ type GeofeedCacheEntry = {
   geofeeds: GeofeedRecord[];
 };
 
-const defaultGeofeedCacheTtlMs = 60_000;
+const defaultGeofeedCacheTtlMs = 14_400_000;
 const defaultGeofeedLimit = 15_000;
 
 function toGeofeedApiRow(geofeed: GeofeedRecord): GeofeedApiRow {
