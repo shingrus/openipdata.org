@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= title %></title>
+  <meta name="description" content="<%= description %>" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <main class="shell shell-wide">
+    <section class="hero hero-compact">
+      <h1><a class="hero-home" href="/"><%= serviceName %></a></h1>
+      <span class="hero-connector" aria-hidden="true"></span>
+      <nav class="top-menu" aria-label="Primary">
+        <a href="/">Home</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/api/health">API</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/geofeeds" aria-current="page">Geofeeds</a>
+      </nav>
+    </section>
+
+    <section class="grid grid-single">
+      <article class="panel panel-wide">
+        <div class="panel-header">
+          <div class="panel-copy">
+            <h2>All Discovered Geofeeds</h2>
+            <p class="panel-intro">The most complete list of all discovered geofeeds.</p>
+          </div>
+          <dl class="stats stats-inline">
+            <div>
+              <dt>Rows</dt>
+              <dd><%= geofeeds.length.toLocaleString("en-US") %></dd>
+            </div>
+          </dl>
+        </div>
+
+        <% if (!dbConfigured) { %>
+        <p class="empty-state">No data</p>
+        <% } else if (loadError) { %>
+        <p class="empty-state">Geofeed data is temporarily unavailable.</p>
+        <% } else if (geofeeds.length === 0) { %>
+        <p class="empty-state">No geofeeds were returned.</p>
+        <% } else { %>
+        <div class="table-wrap">
+          <table class="geofeed-table">
+            <thead>
+              <tr>
+                <th scope="col">URL</th>
+                <th scope="col">Last checked</th>
+                <th scope="col">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% geofeeds.forEach((geofeed) => { %>
+              <tr>
+                <td class="geofeed-url"><a href="<%= geofeed.url %>" rel="nofollow noopener noreferrer"><%= geofeed.url %></a></td>
+                <td><%= geofeed.lastCheckedAt || "Never" %></td>
+                <td><%= geofeed.result || "Unknown" %></td>
+              </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+        <% } %>
+      </article>
+    </section>
+    <%- include("partials/footer.ejs") %>
+  </main>
+</body>
+
+</html>

@@ -4,8 +4,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title><%= serviceName %></title>
-  <meta name="description" content="OpenIPdata.org" />
+  <title><%= title %></title>
+  <meta name="description" content="<%= description %>" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
@@ -18,7 +18,7 @@
       <nav class="top-menu" aria-label="Primary">
         <a href="/api/health">API</a>
         <span class="top-menu-separator" aria-hidden="true">|</span>
-        <a href="#data">Geofeeds</a>
+        <a href="/geofeeds">Geofeeds</a>
         <span class="top-menu-separator" aria-hidden="true">|</span>
         <a href="#data">ASN</a>
       </nav>
@@ -36,10 +36,6 @@
             <dt>Started</dt>
             <dd><%= startedAt %></dd>
           </div>
-          <div>
-            <dt>Render time</dt>
-            <dd><%= renderTime %></dd>
-          </div>
         </dl>
       </article>
 
@@ -48,10 +44,12 @@
         <ul class="links">
           <li><a href="/">/</a></li>
           <li><a href="/api/health">/api/health</a></li>
+          <li><a href="/geofeeds">/geofeeds</a></li>
         </ul>
       </article>
 
     </section>
+    <%- include("partials/footer.ejs") %>
   </main>
 </body>
 

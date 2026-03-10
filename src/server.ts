@@ -3,6 +3,13 @@ import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyView from "@fastify/view";
 import ejs from "ejs";
+import { formatElapsedMilliseconds } from "./lib/format";
+import {
+  closePostgresPool,
+  createOptionalPostgresPool,
+  defaultPostgresTimeoutMs
+} from "./lib/postgres";
+import { registerGeofeedPage } from "./routes/geofeeds";
 
 type RuntimeStatus = {
   service: string;
@@ -20,6 +27,9 @@ const parsedPort = Number.parseInt(process.env.PORT || String(defaultPort), 10);
 const port = Number.isNaN(parsedPort) ? defaultPort : parsedPort;
 let isShuttingDown = false;
 const templatesDir = path.join(__dirname, "..", "templates");
+const postgresPool = createOptionalPostgresPool({
+  timeoutMs: defaultPostgresTimeoutMs
+});
 
 const app = fastify({
   logger: true,
@@ -45,25 +55,28 @@ function getRuntimeStatus(): RuntimeStatus {
   };
 }
 
-function formatElapsedMilliseconds(startedAt: bigint): string {
-  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
-  return `${elapsedMs.toFixed(2)}ms`;
-}
-
 app.get("/", async (_request, reply) => {
   const requestStartedAt = process.hrtime.bigint();
   const status = getRuntimeStatus();
   reply.type("text/html; charset=utf-8");
   return reply.view("home.ejs", {
+    description: "OpenIPdata.org homepage and service overview.",
     renderTime: formatElapsedMilliseconds(requestStartedAt),
     serviceName: status.service,
     startedAt: status.startedAt,
+    title: status.service,
     uptimeSeconds: status.uptimeSeconds
   });
 });
 
 app.get("/api/health", async () => {
   return getRuntimeStatus();
+});
+
+registerGeofeedPage(app, {
+  pool: postgresPool,
+  queryTimeoutMs: defaultPostgresTimeoutMs,
+  serviceName
 });
 
 
@@ -87,6 +100,7 @@ async function shutdown(signal: string): Promise<void> {
   isShuttingDown = true;
   app.log.info({ signal }, "shutting down");
   await app.close();
+  await closePostgresPool(postgresPool);
   process.exit(0);
 }
 

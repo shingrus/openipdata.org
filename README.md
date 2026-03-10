@@ -5,6 +5,7 @@ Minimal `Fastify` + `TypeScript` SSR app for `openipdata.org`.
 ## What is included
 
 - Server-rendered homepage at `/`
+- Server-rendered geofeed list page at `/geofeeds`
 - JSON endpoint at `/api/health`
 - Static assets served by the same Fastify app
 - HTML templates stored in `templates/`
@@ -31,6 +32,12 @@ Minimal `Fastify` + `TypeScript` SSR app for `openipdata.org`.
    ```
 
 3. Open `http://127.0.0.1:9090`
+
+Optional geofeed data:
+
+- Set `PGSQL` to a PostgreSQL connection string.
+- The `/geofeeds` page queries `geofeed_urls`.
+- If `PGSQL` is unset, `/geofeeds` renders an empty state instead of failing.
 
 ## Production build
 
