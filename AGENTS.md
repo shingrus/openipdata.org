@@ -28,16 +28,22 @@
 ## API
 
 - Keep the existing JSON surface minimal.
-- Current endpoint: `/api/health`
+- Current endpoints: `/api/health`, `/api/geofeeds`
 - Do not introduce `/api/status` unless explicitly requested.
 
 ## Geofeeds
 
 - Canonical page route: `/geofeeds`
+- Current API route: `/api/geofeeds`
 - Keep geofeed and Postgres-specific logic out of `src/server.ts`; prefer route modules under `src/routes/` and shared helpers under `src/lib/`.
+- The `/geofeeds` page should load its data from `/api/geofeeds`; keep geofeed fetch/caching logic centralized on the server API path.
 - Client-facing copy should refer to `Geofeeds` or `All Discovered Geofeeds`, not internal table names.
 - Never expose internal limits, SQL details, or table names on the client side unless explicitly requested.
 - Do not surface `geofeed_urls` in page text, headings, meta copy, or other client-visible HTML.
+- The current `/api/geofeeds` JSON shape is an array of objects with `url` and `last_success_at`.
+- Sort geofeeds only at the database level with `order by last_success_at desc nulls last`; do not add backend or client fallback sorting unless explicitly requested.
+- The in-memory geofeeds cache currently defaults to 4 hours (`14_400_000` ms).
+- The `JSON dump` link on `/geofeeds` should stay hidden until the API request succeeds.
 
 ## Environment
 
