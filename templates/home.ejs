@@ -13,10 +13,16 @@
 <body>
   <main class="shell">
     <section class="hero">
-      <h1><%= serviceName %></h1>
+      <h1><a class="hero-home" href="/"><%= serviceName %></a></h1>
+      <span class="hero-connector" aria-hidden="true"></span>
+      <nav class="top-menu" aria-label="Primary">
+        <a href="/api/health">API</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="#data">Data</a>
+      </nav>
     </section>
 
-    <section class="grid">
+    <section class="grid" id="data">
       <article class="panel">
         <h2>Runtime</h2>
         <dl class="stats">
