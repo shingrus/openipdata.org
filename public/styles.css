@@ -144,6 +144,17 @@ a {
   color: var(--muted);
 }
 
+.panel-meta-link {
+  margin: 0.5rem 0 0;
+  font-size: 0.92rem;
+}
+
+.panel-meta-link a {
+  color: var(--accent);
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
+}
+
 .eyebrow {
   margin: 0 0 0.45rem;
   font-size: 0.78rem;
@@ -224,6 +235,10 @@ a {
   background: rgba(255, 255, 255, 0.48);
 }
 
+.is-hidden {
+  display: none;
+}
+
 .table-wrap {
   overflow-x: auto;
 }
@@ -264,6 +279,18 @@ a {
   color: var(--accent);
   text-decoration-thickness: 0.08em;
   text-underline-offset: 0.14em;
+}
+
+.geofeed-last-success {
+  min-width: 14rem;
+}
+
+.last-success {
+  color: var(--ink);
+}
+
+.last-success-date {
+  display: inline-block;
 }
 
 @media (max-width: 720px) {

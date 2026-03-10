@@ -9,7 +9,9 @@ import {
   createOptionalPostgresPool,
   defaultPostgresTimeoutMs
 } from "./lib/postgres";
-import { registerGeofeedPage } from "./routes/geofeeds";
+import { registerGeofeedRoutes } from "./routes/geofeeds";
+import { registerRobotsRoute } from "./routes/robots";
+import { registerSitemapRoute } from "./routes/sitemap";
 
 type RuntimeStatus = {
   service: string;
@@ -73,7 +75,14 @@ app.get("/api/health", async () => {
   return getRuntimeStatus();
 });
 
-registerGeofeedPage(app, {
+registerSitemapRoute(app, {
+  serviceName
+});
+registerRobotsRoute(app, {
+  serviceName
+});
+
+registerGeofeedRoutes(app, {
   pool: postgresPool,
   queryTimeoutMs: defaultPostgresTimeoutMs,
   serviceName
