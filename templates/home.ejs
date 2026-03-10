@@ -16,18 +16,16 @@
       <h1><a class="hero-home" href="/"><%= serviceName %></a></h1>
       <span class="hero-connector" aria-hidden="true"></span>
       <nav class="top-menu" aria-label="Primary">
-        <a href="/api/health">API</a>
-        <span class="top-menu-separator" aria-hidden="true">|</span>
         <a href="/geofeeds">Geofeeds</a>
         <span class="top-menu-separator" aria-hidden="true">|</span>
-        <a href="#data">ASN</a>
+        <a href="/docs">Docs</a>
       </nav>
     </section>
 
     <section class="grid" id="data">
-      <article class="panel">
-        <h2>Runtime</h2>
-        <dl class="stats">
+        <article class="panel">
+            <h2>Runtime</h2>
+            <dl class="stats">
           <div>
             <dt>Uptime</dt>
             <dd><%= uptimeSeconds %>s</dd>
@@ -37,15 +35,23 @@
             <dd><%= startedAt %></dd>
           </div>
         </dl>
-      </article>
+        </article>
+        <article class="panel">
+            <h2>Docs</h2>
+            <ul class="links doc-links">
+                <li><a href="/docs">/docs</a></li>
+                <li><a href="/what-is-geofeed">/what-is-geofeed</a></li>
+                <li><a href="/what-is-asn">/what-is-asn</a></li>
+            </ul>
+        </article>
+        <article class="panel">
+            <h2>API Endpoints</h2>
+            <ul class="links">
+                <li><a href="/api/health">/api/health</a></li>
+                <li><a href="/api/geofeeds">/api/geofeeds</a></li>
+            </ul>
+        </article>
 
-      <article class="panel">
-        <h2>Endpoints</h2>
-        <ul class="links">
-          <li><a href="/api/health">/api/health</a></li>
-          <li><a href="/api/geofeeds">/api/geofeeds</a></li>
-        </ul>
-      </article>
 
     </section>
     <%- include("partials/footer.ejs") %>

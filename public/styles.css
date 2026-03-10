@@ -139,6 +139,40 @@ a {
   max-width: 52rem;
 }
 
+.panel-copy-block p {
+  max-width: 60rem;
+  margin: 0.75rem 0 0;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+.panel-copy-block p:first-of-type {
+  margin-top: 0;
+}
+
+.panel-copy-block a,
+.doc-links a {
+  color: var(--accent);
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
+}
+
+.panel-copy-block code {
+  font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+  font-size: 0.95em;
+}
+
+.sample-block {
+  max-width: 60rem;
+  margin: 0.9rem 0 0;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--ink);
+}
+
 .panel-intro {
   margin: 0;
   color: var(--muted);

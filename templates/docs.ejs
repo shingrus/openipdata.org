@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= title %></title>
+  <meta name="description" content="<%= description %>" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <main class="shell">
+    <section class="hero hero-compact">
+      <h1><a class="hero-home" href="/"><%= serviceName %></a></h1>
+      <span class="hero-connector" aria-hidden="true"></span>
+      <nav class="top-menu" aria-label="Primary">
+        <a href="/">Home</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/geofeeds">Geofeeds</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/docs" aria-current="page">Docs</a>
+      </nav>
+    </section>
+
+    <section class="grid grid-single">
+      <article class="panel panel-wide panel-copy-block">
+        <p class="eyebrow">Documentation</p>
+        <h2>Docs</h2>
+        <ul class="links doc-links">
+          <li>
+            <a href="/what-is-geofeed">What is a geofeed?</a>
+            Learn what geofeeds are, why network operators publish them, and how they connect to the geofeed
+            directory on this site.
+          </li>
+          <li>
+            <a href="/what-is-asn">What is an ASN?</a>
+            Learn what Autonomous System Numbers are and how they identify networks in Internet routing.
+          </li>
+        </ul>
+      </article>
+    </section>
+    <%- include("partials/footer.ejs") %>
+  </main>
+</body>
+
+</html>

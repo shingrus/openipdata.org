@@ -19,9 +19,9 @@
       <nav class="top-menu" aria-label="Primary">
         <a href="/">Home</a>
         <span class="top-menu-separator" aria-hidden="true">|</span>
-        <a href="/api/health">API</a>
-        <span class="top-menu-separator" aria-hidden="true">|</span>
         <a href="/geofeeds" aria-current="page">Geofeeds</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/docs">Docs</a>
       </nav>
     </section>
 
@@ -30,12 +30,12 @@
         <div class="panel-header">
           <div class="panel-copy">
             <h2>All Discovered Geofeeds</h2>
-            <p class="panel-intro">The most complete list of all discovered geofeeds.</p>
+            <p class="panel-intro">The most complete public list of all discovered geofeed URLs, updated every 4 hours.</p>
             <p class="panel-meta-link is-hidden" data-geofeeds-dump-link><a href="<%= apiUrl %>">JSON dump</a></p>
           </div>
           <dl class="stats stats-inline">
             <div>
-              <dt>Rows</dt>
+              <dt>Known feeds</dt>
               <dd data-geofeeds-count><%= dbConfigured ? "..." : "0" %></dd>
             </div>
           </dl>
@@ -50,7 +50,7 @@
             <thead>
               <tr>
                 <th scope="col">URL</th>
-                <th scope="col">Last success</th>
+                <th scope="col">Last success fetch</th>
               </tr>
             </thead>
             <tbody data-geofeeds-body></tbody>
@@ -58,6 +58,26 @@
         </div>
         <% } %>
       </article>
+
+      <article class="panel panel-wide panel-copy-block">
+        <h2>Geofeed Directory</h2>
+        <p>
+          This page is a public geofeed list and geofeed directory for people trying to find geofeeds in one place.
+          If you need all discovered geofeeds, public geofeed URLs, or a complete geofeed list to review, this page
+          brings those sources together in a single view.
+        </p>
+        <p>
+          Geofeeds are published files that map IP address ranges to location data. You can use this list to browse
+          geofeed URLs, review the latest successful fetch time for each entry, and spot recently validated geofeed
+          sources for IP geolocation research, network operations, and data quality checks.
+        </p>
+        <p>
+          For anyone looking for a downloadable geofeed list, the JSON dump provides a simple way to work with the
+          latest geofeeds in scripts, automation, or offline analysis. If you are new to the format, read
+          <a href="/what-is-geofeed">what a geofeed is</a>.
+        </p>
+      </article>
+
     </section>
     <%- include("partials/footer.ejs") %>
   </main>

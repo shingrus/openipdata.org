@@ -164,10 +164,10 @@ export function registerGeofeedRoutes(app: FastifyInstance, options: RegisterGeo
     return reply.view("geofeeds.ejs", {
       apiUrl: "/api/geofeeds",
       dbConfigured: Boolean(options.pool),
-      description: "The most complete list of all discovered geofeeds, ordered by the most recent check time and fetch result.",
+      description: "Public geofeed list and geofeed directory with all discovered geofeeds, public geofeed URLs, latest fetch times, and a JSON download.",
       renderTime: formatElapsedMilliseconds(requestStartedAt),
       serviceName: options.serviceName,
-      title: `All Discovered Geofeeds | Most Complete Geofeed List | ${options.serviceName}`
+      title: `All Discovered Geofeeds | Most Complete Geofeed List & Directory | ${options.serviceName}`
     });
   });
 

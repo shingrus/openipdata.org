@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= title %></title>
+  <meta name="description" content="<%= description %>" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <main class="shell">
+    <section class="hero hero-compact">
+      <h1><a class="hero-home" href="/"><%= serviceName %></a></h1>
+      <span class="hero-connector" aria-hidden="true"></span>
+      <nav class="top-menu" aria-label="Primary">
+        <a href="/">Home</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/geofeeds">Geofeeds</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/docs">Docs</a>
+      </nav>
+    </section>
+
+    <section class="grid grid-single">
+      <article class="panel panel-wide panel-copy-block">
+        <p class="eyebrow">Docs</p>
+        <h2>What Is an ASN?</h2>
+        <p>
+          ASN stands for Autonomous System Number. It is the identifier used to represent a network or routing domain
+          in interdomain routing on the Internet.
+        </p>
+        <p>
+          In practice, ASNs are used with BGP, the Border Gateway Protocol. An organization that operates an ASN can
+          announce IP prefixes, exchange routing information with other networks, and define how traffic should move
+          between peers, providers, and customers.
+        </p>
+        <p>
+          You can think of an autonomous system as a network under a single routing policy. The ASN is the number that
+          other networks use to identify that system when routes are advertised and propagated across the Internet.
+        </p>
+        <p>
+          ASNs matter because they help explain who is originating a route, how a prefix is connected to the rest of
+          the Internet, and how network relationships influence path selection. They are a basic building block for
+          routing analysis, peering, and operational troubleshooting.
+        </p>
+      </article>
+    </section>
+    <%- include("partials/footer.ejs") %>
+  </main>
+</body>
+
+</html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= title %></title>
+  <meta name="description" content="<%= description %>" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <main class="shell">
+    <section class="hero hero-compact">
+      <h1><a class="hero-home" href="/"><%= serviceName %></a></h1>
+      <span class="hero-connector" aria-hidden="true"></span>
+      <nav class="top-menu" aria-label="Primary">
+        <a href="/">Home</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/geofeeds">Geofeeds</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/docs">Docs</a>
+      </nav>
+    </section>
+
+    <section class="grid grid-single">
+      <article class="panel panel-wide panel-copy-block">
+        <p class="eyebrow">Docs</p>
+        <h2>What Is a Geofeed?</h2>
+        <p>
+          A geofeed is a published file that maps IP address ranges to location information. Network operators use
+          geofeeds to associate prefixes with geographic data so that downstream systems can interpret IP space more
+          accurately.
+        </p>
+        <p>
+          In practice, geofeeds help provide a direct source of location data from the network operator rather than
+          relying only on third-party inference. That makes them useful for IP geolocation research, operational
+          reviews, and validation workflows.
+        </p>
+        <p>
+          The format is described in <a href="https://www.rfc-editor.org/rfc/rfc8805">RFC 8805</a>. A geofeed is a
+          simple CSV file where each line associates an IP prefix with coarse location fields such as country, region,
+          and city.
+        </p>
+        <pre class="sample-block"><code>203.0.113.0/24,GB,GB-LND,London,</code></pre>
+        <p>
+          In this example, the prefix <code>203.0.113.0/24</code> is associated with London in the United Kingdom. The
+          trailing empty field means no postal code is included.
+        </p>
+        <p>
+          On <%= serviceName %>, the <a href="/geofeeds">geofeed directory</a> collects discovered public geofeed URLs
+          and shows the latest successful fetch time for each known feed. If you want the list of available sources,
+          start there.
+        </p>
+      </article>
+    </section>
+    <%- include("partials/footer.ejs") %>
+  </main>
+</body>
+
+</html>

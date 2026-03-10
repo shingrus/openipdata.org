@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 
-const sitemapPaths = ["/", "/geofeeds"];
+const sitemapPaths = ["/", "/docs", "/what-is-geofeed", "/what-is-asn", "/geofeeds"];
 
 type RegisterSitemapRouteOptions = {
   serviceName: string;

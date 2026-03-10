@@ -9,6 +9,7 @@ import {
   createOptionalPostgresPool,
   defaultPostgresTimeoutMs
 } from "./lib/postgres";
+import { registerDocsRoutes } from "./routes/docs";
 import { registerGeofeedRoutes } from "./routes/geofeeds";
 import { registerRobotsRoute } from "./routes/robots";
 import { registerSitemapRoute } from "./routes/sitemap";
@@ -79,6 +80,9 @@ registerSitemapRoute(app, {
   serviceName
 });
 registerRobotsRoute(app, {
+  serviceName
+});
+registerDocsRoutes(app, {
   serviceName
 });
 
