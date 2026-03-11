@@ -216,7 +216,7 @@ a {
   min-height: 2.9rem;
   padding: 0.8rem 1.1rem;
   border: 1px solid var(--accent);
-  border-radius: 999px;
+  border-radius: 14px;
   background: rgba(13, 111, 102, 0.08);
   color: var(--accent);
   font-size: 0.92rem;
