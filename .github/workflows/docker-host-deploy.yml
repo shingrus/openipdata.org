@@ -1,6 +1,9 @@
-name: Manual Docker Host Deploy
+name: Docker Host Deploy
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:

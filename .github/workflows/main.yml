@@ -1,9 +1,7 @@
-name: Fly Deploy
+name: Manual Fly Deploy
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
   deploy:

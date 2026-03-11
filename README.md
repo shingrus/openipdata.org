@@ -12,8 +12,8 @@ Minimal `Fastify` + `TypeScript` SSR app for `openipdata.org`.
 - `npm run dev` runs with `NODE_ENV=development`
 - `npm start` runs with `NODE_ENV=production`
 - Multi-stage `Dockerfile` for production builds
-- Fly.io GitHub Actions deploy on pushes to `main`
-- Optional manual GitHub Actions deploy that pushes to Docker Hub and updates a host-side Docker Compose app over SSH
+- GitHub Actions deploy that pushes to Docker Hub and updates a host-side Docker Compose app over SSH on pushes to `main`
+- Optional manual Fly.io GitHub Actions deploy
 - nginx reverse-proxy config for `:80/:443 -> 127.0.0.1:9090`
 - Docker Compose deployment example
 
@@ -58,18 +58,19 @@ NODE_ENV=production HOST=127.0.0.1 PORT=9090 npm start
 
 Default deploy:
 
-- `.github/workflows/main.yml`
+- `.github/workflows/docker-host-deploy.yml`
 - Trigger: push to `main`
+- Deploy target: Docker Compose host over SSH
+- Required secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`
+
+Optional manual Fly deploy:
+
+- `.github/workflows/main.yml`
+- Trigger: `workflow_dispatch`
 - Deploy target: Fly.io
 - Required secret: `FLY_API_TOKEN`
 
-Optional manual host deploy:
-
-- `.github/workflows/docker-host-deploy.yml`
-- Trigger: `workflow_dispatch`
-- Deploy target: Docker Compose host over SSH
-
-Configure these repository settings for the optional manual host deploy:
+Configure these repository settings for the default host deploy:
 
 - Repository secret: `DOCKERHUB_USERNAME`
 - Repository secret: `DOCKERHUB_TOKEN`
@@ -77,7 +78,7 @@ Configure these repository settings for the optional manual host deploy:
 - Repository secret: `SSH_USER`
 - Repository secret: `SSH_PRIVATE_KEY`
 
-The manual host deploy publishes to `DOCKERHUB_USERNAME/openipdata.org`, so no separate Docker Hub repository variable is needed.
+The host deploy publishes to `DOCKERHUB_USERNAME/openipdata.org`, so no separate Docker Hub repository variable is needed.
 
 Host-side requirements:
 
