@@ -3,6 +3,18 @@ export function formatElapsedMilliseconds(startedAt: bigint): string {
   return `${elapsedMs.toFixed(2)}ms`;
 }
 
+const timestampLabelFormatter = new Intl.DateTimeFormat("en-US", {
+  day: "numeric",
+  hour: "2-digit",
+  hour12: false,
+  minute: "2-digit",
+  month: "short",
+  second: "2-digit",
+  timeZone: "UTC",
+  timeZoneName: "short",
+  year: "numeric"
+});
+
 export function formatTimestamp(value: Date | string | null): string | null {
   if (!value) {
     return null;
@@ -15,4 +27,18 @@ export function formatTimestamp(value: Date | string | null): string | null {
   }
 
   return date.toISOString();
+}
+
+export function formatTimestampLabel(value: Date | string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return timestampLabelFormatter.format(date);
 }

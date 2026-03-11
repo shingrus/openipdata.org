@@ -21,7 +21,7 @@ type RuntimeStatus = {
   startedAt: string;
 };
 
-const serviceName = process.env.SERVICE_NAME || "openipdata.org" ;
+const serviceName = process.env.SERVICE_NAME || "openipdata.org";
 const defaultHost = "127.0.0.1";
 const defaultPort = 9090;
 const startedAt = new Date();
@@ -39,10 +39,10 @@ const app = fastify({
   trustProxy: true
 });
 
-void app.register(fastifyStatic, {
+app.register(fastifyStatic, {
   root: path.join(__dirname, "..", "public")
 });
-void app.register(fastifyView, {
+app.register(fastifyView, {
   root: templatesDir,
   engine: {
     ejs
@@ -101,6 +101,7 @@ async function start(): Promise<void> {
     });
   } catch (error) {
     app.log.error(error);
+    await closePostgresPool(postgresPool);
     process.exit(1);
   }
 }
@@ -117,11 +118,11 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0);
 }
 
-process.on("SIGINT", () => {
+process.once("SIGINT", () => {
   void shutdown("SIGINT");
 });
 
-process.on("SIGTERM", () => {
+process.once("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
