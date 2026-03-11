@@ -25,22 +25,40 @@
     </section>
 
     <section class="grid grid-single">
-      <article class="panel panel-wide">
-        <h2>All Discovered Geofeeds</h2>
-        <dl class="stats stats-grid">
-          <div>
-            <dt>Known feeds</dt>
-            <dd><%= geofeedCount.toLocaleString("en-US") %></dd>
-          </div>
-          <div>
-            <dt>Last success check</dt>
-            <dd><%= latestSuccessAtLabel %></dd>
-          </div>
-        </dl>
+      <article class="panel panel-wide panel-copy-block">
+        <h2>All Discovered Geofeeds - <%= geofeedCount.toLocaleString("en-US") %></h2>
+        <p>
+          The most complete public list of all discovered geofeed URLs, updated every 4 hours.
+        </p>
         <div class="action-row">
           <a class="action-link" href="<%= csvUrl %>" download>Download geofeeds.csv</a>
           <a class="action-link" href="<%= jsonUrl %>" download>Download geofeeds.json</a>
         </div>
+          <dl class="stats stats-grid">
+              <div>
+                  <dt>Last update - <%= latestSuccessAtLabel %></dt>
+              </div>
+          </dl>
+
+      </article>
+
+      <article class="panel panel-wide panel-copy-block">
+        <h2>Geofeed Directory</h2>
+        <p>
+          This page is a public geofeed list and geofeed directory for people trying to find geofeeds in one place.
+          If you need all discovered geofeeds, public geofeed URLs, or a complete geofeed list to review, this page
+          brings those sources together in a single view.
+        </p>
+        <p>
+          Geofeeds are published files that map IP address ranges to location data. You can use this list to browse
+          geofeed URLs, review the latest successful fetch time for each entry, and spot recently validated geofeed
+          sources for IP geolocation research, network operations, and data quality checks.
+        </p>
+        <p>
+          For anyone looking for a downloadable geofeed list, the JSON dump provides a simple way to work with the
+          latest geofeeds in scripts, automation, or offline analysis. If you are new to the format, read
+          <a href="/what-is-geofeed">what a geofeed is</a>.
+        </p>
       </article>
     </section>
     <%- include("partials/footer.ejs") %>

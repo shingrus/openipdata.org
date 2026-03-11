@@ -268,13 +268,13 @@ export function registerGeofeedRoutes(app: FastifyInstance, options: RegisterGeo
     reply.type("text/html; charset=utf-8");
     return reply.view("geofeeds.ejs", {
       csvUrl: "/api/geofeeds?t=csv",
-      description: "All discovered geofeeds with the current total, the latest success check, and downloadable JSON or CSV exports.",
+      description: "Public geofeed list and geofeed directory with all discovered geofeeds, public geofeed URLs, latest fetch times, and a JSON download.",
       geofeedCount: summary.count,
       jsonUrl: "/api/geofeeds?t=json",
       latestSuccessAtLabel: summary.latestSuccessAt ? formatTimestampLabel(summary.latestSuccessAt) : "No data",
       renderTime: formatElapsedMilliseconds(requestStartedAt),
       serviceName: options.serviceName,
-      title: `All Discovered Geofeeds | ${options.serviceName}`
+      title: `All Discovered Geofeeds | Most Complete Geofeed List & Directory | ${options.serviceName}`
     });
   });
 
