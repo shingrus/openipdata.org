@@ -93,14 +93,18 @@ function getDatabaseUpdates(): DatabaseUpdateView[] {
   });
 }
 
-app.get("/", async (request, reply) => {
-  const requestStartedAt = process.hrtime.bigint();
-  const clientIpReport = lookupClientIpReport(testIp || request.ip, {
+function getClientIpReport(ip: string) {
+  return lookupClientIpReport(testIp || ip, {
     asnReader: ip2asnReader,
     geoReader: ip2geoReader,
     isDev: process.env.NODE_ENV !== "production",
     logger: app.log
   });
+}
+
+app.get("/", async (request, reply) => {
+  const requestStartedAt = process.hrtime.bigint();
+  const clientIpReport = getClientIpReport(request.ip);
   const databaseUpdates = getDatabaseUpdates();
   const status = getRuntimeStatus();
   reply.type("text/html; charset=utf-8");
@@ -117,6 +121,10 @@ app.get("/", async (request, reply) => {
 
 app.get("/api/health", async () => {
   return getRuntimeStatus();
+});
+
+app.get("/api/ip", async (request) => {
+  return getClientIpReport(request.ip);
 });
 
 registerSitemapRoute(app, {
