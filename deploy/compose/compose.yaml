@@ -37,3 +37,7 @@ services:
       options:
         max-file: "3"
         max-size: 10m
+
+networks:
+  default:
+    enable_ipv6: true
