@@ -11,6 +11,14 @@ import {
   createOptionalPostgresPool,
   defaultPostgresTimeoutMs
 } from "./lib/postgres";
+import {
+  createResponseCounterBuffer,
+  createOptionalRedisResponseCounterStore,
+  defaultResponseCounterFlushIntervalMs,
+  ResponseCounterName,
+  type ResponseCounterBuffer,
+  type ResponseCounterStore
+} from "./lib/response-counters";
 import { registerDocsRoutes } from "./routes/docs";
 import { registerGeofeedRoutes } from "./routes/geofeeds";
 import { registerRobotsRoute } from "./routes/robots";
@@ -43,6 +51,8 @@ const postgresPool = createOptionalPostgresPool({
 });
 let ip2asnReader: IpLookupReader | null = null;
 let ip2geoReader: IpLookupReader | null = null;
+let responseCounterBuffer: ResponseCounterBuffer | null = null;
+let responseCounterStore: ResponseCounterStore | null = null;
 
 const app = fastify({
   logger: true,
@@ -56,6 +66,34 @@ app.register(fastifyView, {
   root: templatesDir,
   engine: {
     ejs
+  }
+});
+app.addHook("onResponse", (request, reply) => {
+  if (request.is404 || reply.statusCode >= 500) {
+    return;
+  }
+
+  const routeUrl = request.routeOptions.url;
+  const counterNames: ResponseCounterName[] = [];
+
+  if (routeUrl === "/") {
+    counterNames.push(ResponseCounterName.Root);
+  }
+
+  if (routeUrl?.startsWith("/api/")) {
+    counterNames.push(ResponseCounterName.Api);
+  }
+
+  if (routeUrl === "/api/geofeeds") {
+    const query = request.query as { t?: string };
+
+    if (query.t === "csv" || query.t === "json") {
+      counterNames.push(ResponseCounterName.Download);
+    }
+  }
+
+  if (counterNames.length > 0) {
+    responseCounterBuffer?.incrementCounterFields(counterNames);
   }
 });
 
@@ -136,16 +174,24 @@ registerRobotsRoute(app, {
 registerDocsRoutes(app, {
   serviceName
 });
-
 registerGeofeedRoutes(app, {
   pool: postgresPool,
   queryTimeoutMs: defaultPostgresTimeoutMs,
   serviceName
 });
 
-
 async function start(): Promise<void> {
   try {
+    responseCounterStore = createOptionalRedisResponseCounterStore({
+      logger: app.log,
+      url: process.env.REDIS_URL
+    });
+    responseCounterBuffer = createResponseCounterBuffer({
+      flushIntervalMs: defaultResponseCounterFlushIntervalMs,
+      logger: app.log,
+      store: responseCounterStore
+    });
+
     [ip2geoReader, ip2asnReader] = await Promise.all([
       loadIpLookupReader(process.env.IP2GEO_PATH || path.join(appRootDir, "ip2geo-latest.mmdb"), {
         logger: app.log
@@ -161,6 +207,8 @@ async function start(): Promise<void> {
     });
   } catch (error) {
     app.log.error(error);
+    await responseCounterBuffer?.stop();
+    await responseCounterStore?.close();
     await closePostgresPool(postgresPool);
     process.exit(1);
   }
@@ -174,6 +222,8 @@ async function shutdown(signal: string): Promise<void> {
   isShuttingDown = true;
   app.log.info({ signal }, "shutting down");
   await app.close();
+  await responseCounterBuffer?.stop();
+  await responseCounterStore?.close();
   await closePostgresPool(postgresPool);
   process.exit(0);
 }
