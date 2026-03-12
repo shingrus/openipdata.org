@@ -34,7 +34,7 @@
                     <% for (const database of databaseUpdates) { %>
                         <div>
                             <dt><%= database.label %></dt>
-                            <dd><time datetime="<%= database.updatedAtIso %>"><%= database.updatedAtLabel %></time></dd>
+                            <dd><time datetime="<%= database.iso %>"><%= database.displayLabel %></time></dd>
                         </div>
                     <% } %>
                 </dl>
@@ -48,10 +48,6 @@
                 <li><a href="/api/geofeeds">/api/geofeeds</a></li>
             </ul>
         </article>
-
-
-
-
     </section>
     <%- include("partials/footer.ejs") %>
   </main>

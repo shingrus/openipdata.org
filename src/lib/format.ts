@@ -15,6 +15,22 @@ const timestampLabelFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric"
 });
 
+export type FormattedTimestamp = {
+  iso: string;
+  label: string;
+};
+
+export function formatTimestampPair(value: Date | string | null): FormattedTimestamp | null {
+  const iso = formatTimestamp(value);
+  const label = formatTimestampLabel(value);
+
+  if (!iso || !label) {
+    return null;
+  }
+
+  return { iso, label };
+}
+
 export function formatTimestamp(value: Date | string | null): string | null {
   if (!value) {
     return null;

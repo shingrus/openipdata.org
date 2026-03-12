@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= title %></title>
+  <meta name="description" content="<%= description %>" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1><a class="hero-home" href="/"><%= serviceName %></a></h1>
+      <span class="hero-connector" aria-hidden="true"></span>
+      <nav class="top-menu" aria-label="Primary">
+        <a href="/">Home</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/geofeeds">Geofeeds</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/docs">Docs</a>
+        <span class="top-menu-separator" aria-hidden="true">|</span>
+        <a href="/ss" aria-current="page">SS</a>
+      </nav>
+    </section>
+
+    <section class="flow">
+      <% if (countersAvailable) { %>
+        <% for (const counter of counterRows) { %>
+          <article class="panel panel-compact">
+            <h2><%= counter.label %></h2>
+            <p class="counter-value"><%= counter.value.toLocaleString("en-US") %></p>
+          </article>
+        <% } %>
+      <% } else { %>
+        <article class="panel panel-compact">
+          <h2>Counter Data</h2>
+          <p>Counter data is currently unavailable.</p>
+        </article>
+      <% } %>
+      <% if (geoTs) { %>
+        <article class="panel panel-compact">
+          <h2>IP to Geo</h2>
+          <p class="counter-value"><time datetime="<%= geoTs.iso %>"><%= geoTs.label %></time></p>
+        </article>
+      <% } %>
+      <% if (asnTs) { %>
+        <article class="panel panel-compact">
+          <h2>IP to ASN</h2>
+          <p class="counter-value"><time datetime="<%= asnTs.iso %>"><%= asnTs.label %></time></p>
+        </article>
+      <% } %>
+    </section>
+
+    <%- include("partials/footer.ejs") %>
+  </main>
+</body>
+
+</html>

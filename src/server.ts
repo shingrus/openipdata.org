@@ -3,7 +3,7 @@ import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyView from "@fastify/view";
 import ejs from "ejs";
-import { formatElapsedMilliseconds, formatTimestamp, formatTimestampLabel } from "./lib/format";
+import { formatElapsedMilliseconds, formatTimestampPair } from "./lib/format";
 import { lookupClientIpReport } from "./lib/ip-lookup";
 import { loadIpLookupReader, type IpLookupReader } from "./lib/ip-lookup-reader";
 import {
@@ -23,6 +23,7 @@ import { registerDocsRoutes } from "./routes/docs";
 import { registerGeofeedRoutes } from "./routes/geofeeds";
 import { registerRobotsRoute } from "./routes/robots";
 import { registerSitemapRoute } from "./routes/sitemap";
+import { registerSsRoute } from "./routes/ss";
 
 type RuntimeStatus = {
   service: string;
@@ -32,8 +33,8 @@ type RuntimeStatus = {
 
 type DatabaseUpdateView = {
   label: string;
-  updatedAtIso: string;
-  updatedAtLabel: string;
+  iso: string;
+  displayLabel: string;
 };
 
 const serviceName = process.env.SERVICE_NAME || "openipdata.org";
@@ -106,28 +107,14 @@ function getRuntimeStatus(): RuntimeStatus {
 }
 
 function getDatabaseUpdates(): DatabaseUpdateView[] {
-  return [
-    {
-      label: "IP to Geo",
-      updatedAt: ip2geoReader?.getLastUpdate() ?? null
-    },
-    {
-      label: "IP to ASN",
-      updatedAt: ip2asnReader?.getLastUpdate() ?? null
-    }
-  ].flatMap((database) => {
-    const updatedAtIso = formatTimestamp(database.updatedAt);
-    const updatedAtLabel = formatTimestampLabel(database.updatedAt);
+  const entries: Array<{ label: string; date: Date | null }> = [
+    { label: "IP to Geo", date: ip2geoReader?.getLastUpdate() ?? null },
+    { label: "IP to ASN", date: ip2asnReader?.getLastUpdate() ?? null }
+  ];
 
-    if (!updatedAtIso || !updatedAtLabel) {
-      return [];
-    }
-
-    return [{
-      label: database.label,
-      updatedAtIso,
-      updatedAtLabel
-    }];
+  return entries.flatMap(({ label, date }) => {
+    const ts = formatTimestampPair(date);
+    return ts ? [{ label, iso: ts.iso, displayLabel: ts.label }] : [];
   });
 }
 
@@ -144,16 +131,15 @@ app.get("/", async (request, reply) => {
   const requestStartedAt = process.hrtime.bigint();
   const clientIpReport = getClientIpReport(request.ip);
   const databaseUpdates = getDatabaseUpdates();
-  const status = getRuntimeStatus();
   reply.type("text/html; charset=utf-8");
   return reply.view("home.ejs", {
     clientIpReportJson: JSON.stringify(clientIpReport, null, 2),
     databaseUpdates,
     description: "OpenIPdata.org homepage and service overview.",
     renderTime: formatElapsedMilliseconds(requestStartedAt),
-    serviceName: status.service,
-    title: status.service,
-    uptimeSeconds: status.uptimeSeconds
+    serviceName,
+    title: serviceName,
+    uptimeSeconds: Math.round(process.uptime())
   });
 });
 
@@ -177,6 +163,12 @@ registerDocsRoutes(app, {
 registerGeofeedRoutes(app, {
   pool: postgresPool,
   queryTimeoutMs: defaultPostgresTimeoutMs,
+  serviceName
+});
+registerSsRoute(app, {
+  getIp2asnReader: () => ip2asnReader,
+  getIp2geoReader: () => ip2geoReader,
+  loadResponseCounterValues: async () => await responseCounterStore?.loadCounterValues() ?? null,
   serviceName
 });
 

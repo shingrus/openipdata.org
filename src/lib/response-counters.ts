@@ -13,12 +13,15 @@ export enum ResponseCounterName {
 export type ResponseCounterStore = {
   close: () => Promise<void>;
   flushCounterDeltas: (counterDeltas: ReadonlyMap<ResponseCounterName, number>) => Promise<void>;
+  loadCounterValues: () => Promise<ResponseCounterValues | null>;
 };
 
 export type ResponseCounterBuffer = {
   incrementCounterFields: (fields: readonly ResponseCounterName[]) => void;
   stop: () => Promise<void>;
 };
+
+export type ResponseCounterValues = Record<ResponseCounterName, number>;
 
 type CreateOptionalResponseCounterStoreOptions = {
   logger: FastifyBaseLogger;
@@ -80,6 +83,19 @@ export function createOptionalRedisResponseCounterStore(
       }
 
       await pipeline.execAsPipeline();
+    },
+    loadCounterValues: async (): Promise<ResponseCounterValues | null> => {
+      if (!client.isReady) {
+        return null;
+      }
+
+      const values = await client.hGetAll(responseCountersHashKey);
+
+      return {
+        [ResponseCounterName.Api]: toResponseCounterValue(values[ResponseCounterName.Api]),
+        [ResponseCounterName.Download]: toResponseCounterValue(values[ResponseCounterName.Download]),
+        [ResponseCounterName.Root]: toResponseCounterValue(values[ResponseCounterName.Root])
+      };
     }
   };
 }
@@ -151,11 +167,11 @@ export function createResponseCounterBuffer(
 }
 
 function dedupeCounterFields(fields: readonly ResponseCounterName[]): ResponseCounterName[] {
-  const uniqueFields = new Set<ResponseCounterName>();
+  return [...new Set(fields)];
+}
 
-  for (const field of fields) {
-    uniqueFields.add(field);
-  }
+function toResponseCounterValue(value: string | undefined): number {
+  const parsedValue = Number.parseInt(value ?? "", 10);
 
-  return [...uniqueFields];
+  return Number.isFinite(parsedValue) ? parsedValue : 0;
 }
