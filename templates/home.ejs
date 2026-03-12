@@ -23,27 +23,23 @@
     </section>
 
     <section class="grid" id="data">
-        <article class="panel">
-            <h2>Runtime</h2>
-            <dl class="stats">
-          <div>
-            <dt>Uptime</dt>
-            <dd><%= uptimeSeconds %>s</dd>
-          </div>
-          <div>
-            <dt>Started</dt>
-            <dd><%= startedAt %></dd>
-          </div>
-        </dl>
+        <article class="panel panel-wide">
+            <h2>IP Report</h2>
+            <pre class="sample-block"><%= clientIpReportJson %></pre>
         </article>
-        <article class="panel">
-            <h2>Docs</h2>
-            <ul class="links doc-links">
-                <li><a href="/docs">/docs</a></li>
-                <li><a href="/what-is-geofeed">/what-is-geofeed</a></li>
-                <li><a href="/what-is-asn">/what-is-asn</a></li>
-            </ul>
-        </article>
+        <% if (databaseUpdates.length > 0) { %>
+            <article class="panel">
+                <h2>Database Updates</h2>
+                <dl class="stats">
+                    <% for (const database of databaseUpdates) { %>
+                        <div>
+                            <dt><%= database.label %></dt>
+                            <dd><time datetime="<%= database.updatedAtIso %>"><%= database.updatedAtLabel %></time></dd>
+                        </div>
+                    <% } %>
+                </dl>
+            </article>
+        <% } %>
         <article class="panel">
             <h2>API Endpoints</h2>
             <ul class="links">
@@ -51,6 +47,8 @@
                 <li><a href="/api/geofeeds">/api/geofeeds</a></li>
             </ul>
         </article>
+
+
 
 
     </section>
