@@ -9,6 +9,8 @@ services:
       HOST: 0.0.0.0
       NODE_ENV: production
       PORT: "9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:9090:9090"
     healthcheck:
