@@ -39,6 +39,14 @@ Optional geofeed data:
 - The `/geofeeds` page queries `geofeed_urls`.
 - If `PGSQL` is unset, `/geofeeds` renders an empty state instead of failing.
 
+Optional IP lookup data:
+
+- Set `GEOIP_PATH` to a city/country MMDB file.
+- Set `ASNIP_PATH` to an ASN MMDB file.
+- If unset, the app falls back to `./ip2geo-latest.mmdb` and `./ip2asn-latest.mmdb` from the app working directory.
+- Set `TEST_IP` to override the detected client IP on the homepage.
+- The homepage renders a JSON report for the current client IP when the databases are available.
+
 ## Production build
 
 ```bash
