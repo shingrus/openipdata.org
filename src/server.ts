@@ -85,12 +85,8 @@ app.addHook("onResponse", (request, reply) => {
     counterNames.push(ResponseCounterName.Api);
   }
 
-  if (routeUrl === "/api/geofeeds") {
-    const query = request.query as { t?: string };
-
-    if (query.t === "csv" || query.t === "json") {
-      counterNames.push(ResponseCounterName.Download);
-    }
+  if (routeUrl?.startsWith("/download/")) {
+    counterNames.push(ResponseCounterName.Download);
   }
 
   if (counterNames.length > 0) {

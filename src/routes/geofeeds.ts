@@ -17,18 +17,9 @@ type GeofeedApiRow = {
   url: string;
 };
 
-type GeofeedSummaryRow = {
-  geofeed_count: number | string;
-  last_success_at: Date | string | null;
-};
-
 type GeofeedSummary = {
   count: number;
   latestSuccessAt: string | null;
-};
-
-type GeofeedsQuerystring = {
-  t?: string;
 };
 
 type PgQueryError = Error & {
@@ -51,9 +42,10 @@ type RegisterGeofeedRoutesOptions = {
   serviceName: string;
 };
 
-type GeofeedSummaryCacheEntry = {
+type GeofeedCacheEntry = {
   cachedAt: number;
   expiresAt: number;
+  geofeeds: GeofeedRecord[];
   summary: GeofeedSummary;
 };
 
@@ -65,6 +57,20 @@ function getEmptyGeofeedSummary(): GeofeedSummary {
   return {
     count: 0,
     latestSuccessAt: null
+  };
+}
+
+function deriveSummary(geofeeds: GeofeedRecord[]): GeofeedSummary {
+  if (geofeeds.length === 0) {
+    return getEmptyGeofeedSummary();
+  }
+
+  // List is ordered by last_success_at desc nulls last, so first non-null is the latest
+  const latestSuccessAt = geofeeds[0]?.lastSuccessAt ?? null;
+
+  return {
+    count: geofeeds.length,
+    latestSuccessAt
   };
 }
 
@@ -89,19 +95,6 @@ function toGeofeedCsv(geofeeds: GeofeedRecord[]): string {
   ));
 
   return rows.length > 0 ? `${emptyGeofeedCsv}${rows.join("\n")}` : emptyGeofeedCsv;
-}
-
-function toGeofeedSummary(row: GeofeedSummaryRow | undefined): GeofeedSummary {
-  if (!row) {
-    return getEmptyGeofeedSummary();
-  }
-
-  const count = Number(row.geofeed_count);
-
-  return {
-    count: Number.isFinite(count) ? count : 0,
-    latestSuccessAt: formatTimestamp(row.last_success_at)
-  };
 }
 
 async function loadGeofeeds(
@@ -159,99 +152,53 @@ async function loadGeofeeds(
   }));
 }
 
-async function loadGeofeedSummary(
-  app: FastifyInstance,
-  pool: Pool,
-  queryTimeoutMs: number
-): Promise<GeofeedSummary> {
-  const queryStartedAt = process.hrtime.bigint();
-  const query = {
-    text: `
-      select
-        count(*) as geofeed_count,
-        max(last_success_at) as last_success_at
-      from geofeed_urls
-    `
-  };
-  let result;
-
-  try {
-    result = await pool.query<GeofeedSummaryRow>(query);
-  } catch (error) {
-    const pgError = error as PgQueryError;
-
-    app.log.error({
-      err: error,
-      query: {
-        name: "select_geofeed_summary",
-        timeoutMs: queryTimeoutMs
-      },
-      elapsedMs: formatElapsedMilliseconds(queryStartedAt),
-      pg: {
-        code: pgError.code,
-        constraint: pgError.constraint,
-        detail: pgError.detail,
-        hint: pgError.hint,
-        position: pgError.position,
-        routine: pgError.routine,
-        schema: pgError.schema,
-        severity: pgError.severity,
-        table: pgError.table
-      }
-    }, "geofeed sql query failed");
-
-    throw error;
-  }
-
-  return toGeofeedSummary(result.rows[0]);
-}
-
 export function registerGeofeedRoutes(app: FastifyInstance, options: RegisterGeofeedRoutesOptions): void {
   const cacheTtlMs = options.cacheTtlMs ?? defaultGeofeedCacheTtlMs;
   const queryLimit = options.queryLimit ?? defaultGeofeedLimit;
-  let summaryCache: GeofeedSummaryCacheEntry | null = null;
-  let inFlightSummaryLoad: Promise<GeofeedSummary> | null = null;
+  let geofeedCache: GeofeedCacheEntry | null = null;
+  let inFlightLoad: Promise<GeofeedRecord[]> | null = null;
 
-  async function getGeofeedSummary(): Promise<GeofeedSummary> {
+  async function getGeofeedCache(): Promise<GeofeedCacheEntry> {
     const now = Date.now();
 
-    if (summaryCache && summaryCache.expiresAt > now) {
-      return summaryCache.summary;
+    if (geofeedCache && geofeedCache.expiresAt > now) {
+      return geofeedCache;
     }
 
     if (!options.pool) {
-      summaryCache = null;
-      return getEmptyGeofeedSummary();
+      geofeedCache = null;
+      return { cachedAt: now, expiresAt: now, geofeeds: [], summary: getEmptyGeofeedSummary() };
     }
 
-    if (!inFlightSummaryLoad) {
-      inFlightSummaryLoad = loadGeofeedSummary(app, options.pool, options.queryTimeoutMs);
+    if (!inFlightLoad) {
+      inFlightLoad = loadGeofeeds(app, options.pool, queryLimit, options.queryTimeoutMs);
     }
 
     try {
-      const summary = await inFlightSummaryLoad;
+      const geofeeds = await inFlightLoad;
       const cachedAt = Date.now();
 
-      summaryCache = {
+      geofeedCache = {
         cachedAt,
         expiresAt: cachedAt + cacheTtlMs,
-        summary
+        geofeeds,
+        summary: deriveSummary(geofeeds)
       };
 
-      return summary;
+      return geofeedCache;
     } catch (error) {
-      if (summaryCache) {
+      if (geofeedCache) {
         app.log.warn({
           err: error,
-          cacheAgeMs: Math.max(0, Date.now() - summaryCache.cachedAt)
-        }, "serving cached geofeed summary after refresh failure");
+          cacheAgeMs: Math.max(0, Date.now() - geofeedCache.cachedAt)
+        }, "serving cached geofeed data after refresh failure");
 
-        return summaryCache.summary;
+        return geofeedCache;
       }
 
       throw error;
     } finally {
-      inFlightSummaryLoad = null;
+      inFlightLoad = null;
     }
   }
 
@@ -260,17 +207,18 @@ export function registerGeofeedRoutes(app: FastifyInstance, options: RegisterGeo
     let summary = getEmptyGeofeedSummary();
 
     try {
-      summary = await getGeofeedSummary();
+      const cache = await getGeofeedCache();
+      summary = cache.summary;
     } catch {
       summary = getEmptyGeofeedSummary();
     }
 
     reply.type("text/html; charset=utf-8");
     return reply.view("geofeeds.ejs", {
-      csvUrl: "/api/geofeeds?t=csv",
+      csvUrl: "/download/geofeeds.csv",
       description: "Public geofeed list and geofeed directory with all discovered geofeeds, public geofeed URLs, latest fetch times, and a JSON download.",
       geofeedCount: summary.count,
-      jsonUrl: "/api/geofeeds?t=json",
+      jsonUrl: "/download/geofeeds.json",
       latestSuccessAtLabel: summary.latestSuccessAt ? formatTimestampLabel(summary.latestSuccessAt) : "No data",
       renderTime: formatElapsedMilliseconds(requestStartedAt),
       serviceName: options.serviceName,
@@ -278,42 +226,48 @@ export function registerGeofeedRoutes(app: FastifyInstance, options: RegisterGeo
     });
   });
 
-  app.get<{ Querystring: GeofeedsQuerystring }>("/api/geofeeds", async (request, reply) => {
-    const format = request.query.t === "csv" ? "csv" : "json";
-
+  app.get("/api/geofeeds", async (_request, reply) => {
     try {
       if (!options.pool) {
-        if (format === "csv") {
-          reply.header("Content-Disposition", "attachment; filename=\"geofeeds.csv\"");
-          return reply.type("text/csv; charset=utf-8").send(emptyGeofeedCsv);
-        }
-
-        if (request.query.t === "json") {
-          reply.header("Content-Disposition", "attachment; filename=\"geofeeds.json\"");
-        }
-
         return [];
       }
 
-      const geofeeds = await loadGeofeeds(app, options.pool, queryLimit, options.queryTimeoutMs);
-
-      if (format === "csv") {
-        reply.header("Content-Disposition", "attachment; filename=\"geofeeds.csv\"");
-        return reply.type("text/csv; charset=utf-8").send(toGeofeedCsv(geofeeds));
-      }
-
-      if (request.query.t === "json") {
-        reply.header("Content-Disposition", "attachment; filename=\"geofeeds.json\"");
-      }
-
-      return geofeeds.map(toGeofeedApiRow);
+      const cache = await getGeofeedCache();
+      return cache.geofeeds.map(toGeofeedApiRow);
     } catch {
       reply.code(503);
+      return [];
+    }
+  });
 
-      if (format === "csv") {
+  app.get("/download/geofeeds.csv", async (_request, reply) => {
+    try {
+      if (!options.pool) {
+        reply.header("Content-Disposition", "attachment; filename=\"geofeeds.csv\"");
         return reply.type("text/csv; charset=utf-8").send(emptyGeofeedCsv);
       }
 
+      const cache = await getGeofeedCache();
+      reply.header("Content-Disposition", "attachment; filename=\"geofeeds.csv\"");
+      return reply.type("text/csv; charset=utf-8").send(toGeofeedCsv(cache.geofeeds));
+    } catch {
+      reply.code(503);
+      return reply.type("text/csv; charset=utf-8").send(emptyGeofeedCsv);
+    }
+  });
+
+  app.get("/download/geofeeds.json", async (_request, reply) => {
+    try {
+      if (!options.pool) {
+        reply.header("Content-Disposition", "attachment; filename=\"geofeeds.json\"");
+        return [];
+      }
+
+      const cache = await getGeofeedCache();
+      reply.header("Content-Disposition", "attachment; filename=\"geofeeds.json\"");
+      return cache.geofeeds.map(toGeofeedApiRow);
+    } catch {
+      reply.code(503);
       return [];
     }
   });
