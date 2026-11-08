@@ -1,6 +1,7 @@
-// Command mmdbbuilder builds openipdata MMDB files.
+// Command mmdbbuilder builds and checks openipdata MMDB files.
 //
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
+//	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 package main
 
 import (
@@ -16,6 +17,8 @@ func main() {
 	switch os.Args[1] {
 	case "asn":
 		runASN(os.Args[2:])
+	case "lookup":
+		runLookup(os.Args[2:])
 	default:
 		usage()
 	}
@@ -23,7 +26,24 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	os.Exit(2)
+}
+
+func runLookup(args []string) {
+	flags := flag.NewFlagSet("lookup", flag.ExitOnError)
+	db := flags.String("db", "", "MMDB file to query")
+	ip := flags.String("ip", "", "single IP to look up (overrides -ips and the builtin IPs)")
+	ips := flags.String("ips", "", "file with one IP per line, looked up together with the builtin IPs")
+	flags.Parse(args)
+
+	if *db == "" {
+		usage()
+	}
+	if err := printLookups(*db, *ip, *ips); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runASN(args []string) {

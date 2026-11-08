@@ -41,6 +41,9 @@ openipdata-worker                      # serve: connect to Hatchet using HATCHET
 openipdata-worker run-asn              # run build-asn-data once locally, without Hatchet
 openipdata-worker run-asn -skip-domains
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
+mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
+mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
+mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 ```
 
 ## Build
