@@ -93,6 +93,53 @@ func TestCompute(t *testing.T) {
 	}
 }
 
+func TestBestPlace(t *testing.T) {
+	repeat := func(p place, n int) []place {
+		out := make([]place, n)
+		for i := range out {
+			out[i] = p
+		}
+		return out
+	}
+	cases := []struct {
+		name          string
+		points        []place
+		country, city string
+		dominance     float64
+	}{
+		{
+			// London is 1 of 10 located points, not 100% of the points that have a city.
+			name:    "share counts every located point",
+			points:  append([]place{{"GB", "London"}}, repeat(place{"GB", ""}, 9)...),
+			country: "GB", dominance: 0.1,
+		},
+		{
+			// Frankfurt has the most points overall, but the country is US: no "Frankfurt, US".
+			name: "city comes from the winning country",
+			points: []place{{"US", "Ashburn"}, {"US", "Dallas"}, {"US", "New York"},
+				{"DE", "Frankfurt"}, {"DE", "Frankfurt"}},
+			country: "US", dominance: 0.2,
+		},
+		{
+			name:    "city above the threshold",
+			points:  []place{{"US", "Ashburn"}, {"US", "Ashburn"}, {"US", "Dallas"}, {"DE", "Frankfurt"}},
+			country: "US", city: "Ashburn", dominance: 0.5,
+		},
+		{
+			name:    "points without a location fall back to HQ",
+			points:  []place{{"", ""}, {"", "Somewhere"}},
+			country: "NL",
+		},
+	}
+	for _, tc := range cases {
+		country, city, dominance := bestPlace(tc.points, "NL")
+		if country != tc.country || city != tc.city || math.Abs(dominance-tc.dominance) > 1e-9 {
+			t.Errorf("%s: got (%q, %q, %v), want (%q, %q, %v)",
+				tc.name, country, city, dominance, tc.country, tc.city, tc.dominance)
+		}
+	}
+}
+
 func TestDomainFromWebsite(t *testing.T) {
 	cases := map[string]string{
 		"":                               "",
@@ -101,6 +148,8 @@ func TestDomainFromWebsite(t *testing.T) {
 		"HTTPS://WWW.Example.COM:8443/x": "www.example.com",
 		"http://bücher.example/":         "xn--bcher-kva.example",
 		"https://example.org.":           "example.org",
+		"http://bad host.example":        "",
+		"https://under_score.example":    "",
 	}
 	for in, want := range cases {
 		if got := domainFromWebsite(in); got != want {

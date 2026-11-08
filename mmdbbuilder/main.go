@@ -70,4 +70,7 @@ func runASN(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("wrote %s (%d ASN entries, %d prefixes)\n", *out, stats.entries, stats.prefixes)
+	if stats.duplicates > 0 {
+		fmt.Printf("%d prefixes announced by several ASNs; the lowest ASN kept each\n", stats.duplicates)
+	}
 }

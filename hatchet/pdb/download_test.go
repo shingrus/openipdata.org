@@ -37,7 +37,7 @@ func TestDownloadDatasetPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rows != total || len(requests) != 3 {
+	if rows != total || len(requests) != 3 || c.requests != 3 {
 		t.Fatalf("rows=%d requests=%d (%v), want %d rows in 3 requests", rows, len(requests), requests, total)
 	}
 	if !strings.Contains(requests[0], "fields=id%2Casn") || !strings.Contains(requests[2], "skip=1000") {

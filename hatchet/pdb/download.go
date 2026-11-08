@@ -42,6 +42,9 @@ type client struct {
 	apiKey string
 	http   *http.Client
 	log    func(string, ...any)
+
+	requests    int // HTTP requests sent
+	rateLimited int // HTTP 429 answers
 }
 
 type page struct {
@@ -64,6 +67,7 @@ func (c *client) get(ctx context.Context, obj string, params url.Values) (page, 
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", userAgent)
 
+		c.requests++
 		resp, err := c.http.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -78,6 +82,7 @@ func (c *client) get(ctx context.Context, obj string, params url.Values) (page, 
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
 			resp.Body.Close()
+			c.rateLimited++
 			c.log("download: %s: rate limited; retrying in %s", obj, rateLimitDelay)
 			if err := sleep(ctx, rateLimitDelay); err != nil {
 				return page{}, err

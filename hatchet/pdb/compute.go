@@ -53,8 +53,9 @@ type place struct{ country, city string }
 
 // Compute derives one row per ASN from the downloaded datasets in dir:
 //   - every facility (netfac) and exchange (netixlan) link is one presence point;
-//   - country is the most common point country, else the org's HQ country;
-//   - city is the most common (country, city) point, if its share reaches cityThreshold;
+//   - country is the most common country among located points, else the org's HQ country;
+//   - city is the most common city within that country, if it holds at least
+//     cityThreshold of all located points (its share is the dominance);
 //   - domain is the host of the network's website, else the org's website.
 //
 // Ties go to the value seen first, in file order.
@@ -125,32 +126,34 @@ func Compute(dir string) ([]GeoRow, error) {
 	return rows, nil
 }
 
-// bestPlace returns the country, city, and city share for a set of presence points.
+// bestPlace returns the country, the city within it, and the city's share of
+// all located points (points with a known country).
 func bestPlace(points []place, hqCountry string) (string, string, float64) {
 	var countries []string
-	var pairs []place
 	for _, p := range points {
-		if p.country == "" {
-			continue
-		}
-		countries = append(countries, p.country)
-		if p.city != "" {
-			pairs = append(pairs, p)
+		if p.country != "" {
+			countries = append(countries, p.country)
 		}
 	}
-	country := hqCountry
-	if len(countries) > 0 {
-		country, _ = mostCommon(countries)
+	if len(countries) == 0 {
+		return hqCountry, "", 0
 	}
-	if len(pairs) == 0 {
+	country, _ := mostCommon(countries)
+	var cities []string
+	for _, p := range points {
+		if p.country == country && p.city != "" {
+			cities = append(cities, p.city)
+		}
+	}
+	if len(cities) == 0 {
 		return country, "", 0
 	}
-	top, count := mostCommon(pairs)
-	share := float64(count) / float64(len(pairs))
+	city, count := mostCommon(cities)
+	share := float64(count) / float64(len(countries))
 	if share < cityThreshold {
 		return country, "", share
 	}
-	return country, top.city, share
+	return country, city, share
 }
 
 // mostCommon returns the most frequent value; ties go to the value seen first.
@@ -173,7 +176,8 @@ func normCity(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
-// domainFromWebsite returns the lowercased, IDNA-encoded host of a website URL.
+// domainFromWebsite returns the lowercased, IDNA-encoded host of a website URL,
+// or "" when the host is not a valid domain name.
 func domainFromWebsite(website string) string {
 	raw := strings.TrimSpace(website)
 	if raw == "" {
@@ -190,10 +194,11 @@ func domainFromWebsite(website string) string {
 	if host == "" {
 		return ""
 	}
-	if encoded, err := idna.ToASCII(host); err == nil {
-		return encoded
+	encoded, err := idna.Lookup.ToASCII(host)
+	if err != nil {
+		return ""
 	}
-	return host
+	return encoded
 }
 
 func optional(s string) *string {

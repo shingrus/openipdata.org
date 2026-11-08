@@ -8,19 +8,25 @@ import (
 	"sort"
 
 	_ "modernc.org/sqlite"
+
+	"openipdata.org/hatchet/domains"
 )
 
-// exportSchema is the layout of asn.sqlite3.
-var exportSchema = []string{
+// exportTables is the layout of asn.sqlite3. asn is the INTEGER PRIMARY KEY,
+// so lookups by asn need no extra index.
+var exportTables = []string{
 	`CREATE TABLE asn (asn INTEGER PRIMARY KEY, handle TEXT, organization TEXT, organization_slug TEXT, country TEXT, ip_amount int8, ipv4_amount int8, ipv6_amount REAL, json TEXT NOT NULL)`,
-	`CREATE INDEX idx_asn_asn ON asn(asn)`,
+	`CREATE TABLE asn_domain (asn INTEGER PRIMARY KEY, domain TEXT NOT NULL, source TEXT)`,
+	`CREATE TABLE asn_geo_pdb (asn INTEGER PRIMARY KEY, country TEXT, city TEXT, dominance REAL, domain TEXT)`,
+}
+
+// exportIndexes are built after the rows are inserted, which is faster.
+var exportIndexes = []string{
 	`CREATE INDEX idx_asn_ipv4_amount ON asn(ipv4_amount)`,
 	`CREATE INDEX idx_asn_ipv6_amount ON asn(ipv6_amount)`,
 	`CREATE INDEX idx_asn_org_trim ON asn(TRIM(organization))`,
 	`CREATE INDEX idx_asn_org_slug ON asn(organization_slug)`,
 	`CREATE INDEX idx_asn_country_trim ON asn(TRIM(country))`,
-	`CREATE TABLE asn_domain (asn INTEGER PRIMARY KEY, domain TEXT)`,
-	`CREATE TABLE asn_geo_pdb (asn INTEGER PRIMARY KEY, country TEXT, city TEXT, dominance REAL, domain TEXT)`,
 }
 
 // ExportStats counts exported rows.
@@ -31,8 +37,9 @@ type ExportStats struct {
 }
 
 // ExportSQLite writes a fresh asn.sqlite3 at path from Postgres-backed data:
-// the parsed records plus stale rows, every asn_domain row, and asn_geo_pdb.
-func ExportSQLite(ctx context.Context, path string, records []Record, domains []DomainRow, geo []GeoPDBRow) (ExportStats, error) {
+// the parsed records plus stale rows, the usable asn_domain rows (see
+// domains.Usable), and asn_geo_pdb.
+func ExportSQLite(ctx context.Context, path string, records []Record, domainRows []DomainRow, geo []GeoPDBRow) (ExportStats, error) {
 	stats := ExportStats{}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return stats, err
@@ -54,7 +61,7 @@ func ExportSQLite(ctx context.Context, path string, records []Record, domains []
 		return stats, err
 	}
 	defer tx.Rollback()
-	for _, stmt := range exportSchema {
+	for _, stmt := range exportTables {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return stats, fmt.Errorf("create schema: %w", err)
 		}
@@ -77,12 +84,16 @@ func ExportSQLite(ctx context.Context, path string, records []Record, domains []
 		stats.ASNs++
 	}
 
-	domainStmt, err := tx.PrepareContext(ctx, `INSERT INTO asn_domain (asn, domain) VALUES (?, ?)`)
+	domainStmt, err := tx.PrepareContext(ctx, `INSERT INTO asn_domain (asn, domain, source) VALUES (?, ?, ?)`)
 	if err != nil {
 		return stats, err
 	}
-	for _, d := range domains {
-		if _, err := domainStmt.ExecContext(ctx, d.ASN, d.Domain); err != nil {
+	for _, d := range domainRows {
+		domain := domains.Usable(deref(d.Domain), deref(d.Source))
+		if domain == "" {
+			continue
+		}
+		if _, err := domainStmt.ExecContext(ctx, d.ASN, domain, d.Source); err != nil {
 			return stats, fmt.Errorf("insert domain AS%d: %w", d.ASN, err)
 		}
 		stats.Domains++
@@ -97,6 +108,11 @@ func ExportSQLite(ctx context.Context, path string, records []Record, domains []
 			return stats, fmt.Errorf("insert geo AS%d: %w", g.ASN, err)
 		}
 		stats.GeoPDB++
+	}
+	for _, stmt := range exportIndexes {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return stats, fmt.Errorf("create index: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return stats, err

@@ -1,5 +1,5 @@
 // Package asn is the build-asn-data workflow: it parses ipverse/asn-ip, stores
-// rows in Postgres, fills domains, and builds the ip2asn MMDB and asn.sqlite3.
+// rows in public.asn, and builds the ip2asn MMDB and asn.sqlite3.
 package asn
 
 import (

@@ -10,9 +10,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"openipdata.org/hatchet/schema"
 )
 
-// Store is the Postgres source of truth: public.asn, public.asn_domain, public.asn_geo_pdb.
+// Store writes public.asn and reads public.asn_domain and public.asn_geo_pdb.
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -37,43 +39,9 @@ func OpenStore(ctx context.Context, dsn string) (*Store, error) {
 
 func (s *Store) Close() { s.pool.Close() }
 
-// EnsureSchema creates the tables if they do not exist.
+// EnsureSchema creates missing tables and columns.
 func (s *Store) EnsureSchema(ctx context.Context) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS public.asn (
-			asn BIGINT PRIMARY KEY,
-			handle TEXT,
-			organization TEXT,
-			organization_slug TEXT,
-			country TEXT,
-			ip_amount NUMERIC,
-			ipv4_amount NUMERIC,
-			ipv6_amount NUMERIC,
-			json TEXT NOT NULL DEFAULT ''
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_asn_ipv4_amount ON public.asn (ipv4_amount)`,
-		`CREATE INDEX IF NOT EXISTS idx_asn_ipv6_amount ON public.asn (ipv6_amount)`,
-		`CREATE INDEX IF NOT EXISTS idx_asn_org_trim ON public.asn (TRIM(organization))`,
-		`CREATE INDEX IF NOT EXISTS idx_asn_org_slug ON public.asn (organization_slug)`,
-		`CREATE INDEX IF NOT EXISTS idx_asn_country_trim ON public.asn (TRIM(country))`,
-		`CREATE TABLE IF NOT EXISTS public.asn_domain (
-			asn BIGINT PRIMARY KEY,
-			domain TEXT
-		)`,
-		`CREATE TABLE IF NOT EXISTS public.asn_geo_pdb (
-			asn BIGINT PRIMARY KEY,
-			country TEXT,
-			city TEXT,
-			dominance DOUBLE PRECISION,
-			domain TEXT
-		)`,
-	}
-	for _, stmt := range statements {
-		if _, err := s.pool.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("ensure schema: %w", err)
-		}
-	}
-	return nil
+	return schema.Ensure(ctx, s.pool)
 }
 
 // Row digests are computed identically in Go and in SQL so unchanged rows are
@@ -253,63 +221,24 @@ func deref(s *string) string {
 	return *s
 }
 
-// DomainRow is one asn_domain row; Domain " " marks "looked up, nothing found".
+// DomainRow is one asn_domain row as stored; update-asn-domains writes them.
 type DomainRow struct {
 	ASN    int64
 	Domain *string
+	Source *string
 }
 
 // Domains returns every asn_domain row.
 func (s *Store) Domains(ctx context.Context) ([]DomainRow, error) {
-	rows, err := s.pool.Query(ctx, `SELECT asn, domain FROM public.asn_domain ORDER BY asn`)
+	rows, err := s.pool.Query(ctx, `SELECT asn, domain, source FROM public.asn_domain ORDER BY asn`)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (DomainRow, error) {
 		var d DomainRow
-		err := row.Scan(&d.ASN, &d.Domain)
+		err := row.Scan(&d.ASN, &d.Domain, &d.Source)
 		return d, err
 	})
-}
-
-// PendingDomainASNs lists ASNs without a stored domain.
-func (s *Store) PendingDomainASNs(ctx context.Context) ([]int64, error) {
-	rows, err := s.pool.Query(ctx, `SELECT a.asn
-		FROM public.asn a
-		LEFT JOIN public.asn_domain d ON a.asn = d.asn
-		WHERE d.asn IS NULL OR d.domain IS NULL OR d.domain = ''
-		ORDER BY a.asn`)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowTo[int64])
-}
-
-// PDBDomains returns non-empty PeeringDB domains keyed by ASN.
-func (s *Store) PDBDomains(ctx context.Context) (map[int64]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT asn, domain FROM public.asn_geo_pdb
-		WHERE domain IS NOT NULL AND TRIM(domain) != ''`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	domains := map[int64]string{}
-	for rows.Next() {
-		var asn int64
-		var domain string
-		if err := rows.Scan(&asn, &domain); err != nil {
-			return nil, err
-		}
-		domains[asn] = domain
-	}
-	return domains, rows.Err()
-}
-
-// UpsertDomain stores one looked-up domain immediately, so long runs resume where they stopped.
-func (s *Store) UpsertDomain(ctx context.Context, asn int64, domain string) error {
-	_, err := s.pool.Exec(ctx, `INSERT INTO public.asn_domain (asn, domain) VALUES ($1, $2)
-		ON CONFLICT (asn) DO UPDATE SET domain = excluded.domain`, asn, domain)
-	return err
 }
 
 // GeoPDBRow is one asn_geo_pdb row; the PeeringDB workflow fills this table.

@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -157,25 +159,16 @@ func (p *Pipeline) Ingest(ctx context.Context, src Source) (IngestStats, error) 
 	return stats, nil
 }
 
-// Domains fills missing ASN domains in Postgres.
-func (p *Pipeline) Domains(ctx context.Context) (DomainStats, error) {
-	store, err := p.openStore(ctx)
-	if err != nil {
-		return DomainStats{}, err
-	}
-	defer store.Close()
-	stats, err := FillDomains(ctx, store, DefaultDomainOptions(), p.Progress)
-	if err == nil {
-		p.log("domains: done processed=%d pdb=%d rdap=%d not_found=%d failed=%d",
-			stats.Processed, stats.FromPDB, stats.FromRDAP, stats.NotFound, stats.Failed)
-	}
-	return stats, err
-}
-
 // BuildMMDBOutput describes the built ip2asn MMDB.
 type BuildMMDBOutput struct {
-	Path string `json:"path"`
+	Path      string `json:"path"`
+	Entries   int    `json:"entries"`
+	Prefixes  int    `json:"prefixes"`
+	SizeBytes int64  `json:"size_bytes"`
 }
+
+// mmdbSummary matches mmdbbuilder's "wrote <path> (N ASN entries, M prefixes)".
+var mmdbSummary = regexp.MustCompile(`\((\d+) ASN entries, (\d+) prefixes\)`)
 
 // BuildMMDB runs "mmdbbuilder asn" on the synced snapshot.
 func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, error) {
@@ -186,31 +179,41 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return BuildMMDBOutput{}, err
 	}
+	// mmdbbuilder writes through a temporary file and renames it into place.
 	final := filepath.Join(dir, fmt.Sprintf(mmdbFileFormat, src.DateTag))
-	tmp := final + ".tmp"
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, p.MMDBBuilder, "asn", "-in", p.asDir(), "-out", tmp)
+	cmd := exec.CommandContext(ctx, p.MMDBBuilder, "asn", "-in", p.asDir(), "-out", final)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		os.Remove(tmp)
 		return BuildMMDBOutput{}, fmt.Errorf("mmdbbuilder: %w: %s", err, lastLines(stderr.String(), 5))
-	}
-	if err := os.Rename(tmp, final); err != nil {
-		return BuildMMDBOutput{}, err
 	}
 	p.log("mmdb: %s", strings.TrimSpace(stdout.String()))
 	if summary := lastLines(stderr.String(), 1); summary != "" {
 		p.log("mmdb: %s", summary)
 	}
-	return BuildMMDBOutput{Path: final}, nil
+	out := BuildMMDBOutput{Path: final, SizeBytes: fileSize(final)}
+	if m := mmdbSummary.FindStringSubmatch(stdout.String()); m != nil {
+		out.Entries, _ = strconv.Atoi(m[1])
+		out.Prefixes, _ = strconv.Atoi(m[2])
+	}
+	return out, nil
 }
 
 // ExportOutput describes the exported SQLite file.
 type ExportOutput struct {
-	Path  string      `json:"path"`
-	Stats ExportStats `json:"stats"`
+	Path      string      `json:"path"`
+	SizeBytes int64       `json:"size_bytes"`
+	Stats     ExportStats `json:"stats"`
+}
+
+func fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 
 // ExportSQLite writes a fresh asn.sqlite3 from Postgres-backed data, then
@@ -229,7 +232,7 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 	if err != nil {
 		return ExportOutput{}, err
 	}
-	domains, err := store.Domains(ctx)
+	domainRows, err := store.Domains(ctx)
 	if err != nil {
 		return ExportOutput{}, err
 	}
@@ -244,7 +247,7 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 	}
 	final := filepath.Join(dir, sqliteFileName)
 	tmp := final + ".tmp"
-	stats, err := ExportSQLite(ctx, tmp, append(parsed.Records, stale...), domains, geo)
+	stats, err := ExportSQLite(ctx, tmp, append(parsed.Records, stale...), domainRows, geo)
 	if err != nil {
 		os.Remove(tmp)
 		return ExportOutput{}, err
@@ -254,7 +257,7 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 	}
 	p.log("export: wrote %s (asns=%d domains=%d geo_pdb=%d)", final, stats.ASNs, stats.Domains, stats.GeoPDB)
 	p.pruneOutputs()
-	return ExportOutput{Path: final, Stats: stats}, nil
+	return ExportOutput{Path: final, SizeBytes: fileSize(final), Stats: stats}, nil
 }
 
 // pruneOutputs keeps the newest few dated output directories.

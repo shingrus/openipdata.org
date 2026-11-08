@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"openipdata.org/hatchet/schema"
 )
 
 // maxShrink is the largest drop in row count a replace accepts (10%).
@@ -12,8 +14,10 @@ const maxShrink = 0.10
 
 // StoreStats compares the replaced table with the new rows.
 type StoreStats struct {
-	Previous int `json:"previous"`
-	Rows     int `json:"rows"`
+	Previous   int `json:"previous"`
+	Rows       int `json:"rows"`
+	WithCity   int `json:"with_city"`
+	WithDomain int `json:"with_domain"`
 }
 
 // checkShrink refuses an empty result or one much smaller than the current table,
@@ -39,14 +43,8 @@ func Replace(ctx context.Context, dsn string, rows []GeoRow) (StoreStats, error)
 	}
 	defer conn.Close(ctx)
 
-	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS public.asn_geo_pdb (
-		asn BIGINT PRIMARY KEY,
-		country TEXT,
-		city TEXT,
-		dominance DOUBLE PRECISION,
-		domain TEXT
-	)`); err != nil {
-		return stats, fmt.Errorf("ensure schema: %w", err)
+	if err := schema.Ensure(ctx, conn); err != nil {
+		return stats, err
 	}
 
 	tx, err := conn.Begin(ctx)

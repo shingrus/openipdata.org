@@ -26,13 +26,17 @@ func (p *Pipeline) log(format string, args ...any) {
 	}
 }
 
-// DownloadOutput counts the downloaded rows per dataset.
+// DownloadOutput counts the downloaded rows per dataset and the API requests.
 type DownloadOutput struct {
-	Rows map[string]int `json:"rows"`
+	Rows            map[string]int `json:"rows"`
+	Requests        int            `json:"requests"`
+	RateLimited     int            `json:"rate_limited"` // HTTP 429 answers
+	DurationSeconds float64        `json:"duration_seconds"`
 }
 
 // Download fetches every dataset fresh into <data>/pdb/<name>.jsonl.
 func (p *Pipeline) Download(ctx context.Context) (DownloadOutput, error) {
+	started := time.Now()
 	out := DownloadOutput{Rows: map[string]int{}}
 	if p.APIKey == "" {
 		return out, fmt.Errorf("PDB_KEY is not set")
@@ -50,6 +54,9 @@ func (p *Pipeline) Download(ctx context.Context) (DownloadOutput, error) {
 		p.log("download: %s: %d rows", ds.name, rows)
 		out.Rows[ds.name] = rows
 	}
+	out.Requests, out.RateLimited = c.requests, c.rateLimited
+	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
+	p.log("download: done in %s, %d requests, %d rate limited", time.Since(started).Round(time.Second), out.Requests, out.RateLimited)
 	return out, nil
 }
 
@@ -73,6 +80,7 @@ func (p *Pipeline) ComputeAndStore(ctx context.Context) (StoreStats, error) {
 	}
 	p.log("compute: %d ASNs (%d with city, %d with domain)", len(rows), withCity, withDomain)
 	stats, err := Replace(ctx, p.PGSQL, rows)
+	stats.WithCity, stats.WithDomain = withCity, withDomain
 	if err != nil {
 		return stats, err
 	}
