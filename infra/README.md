@@ -47,6 +47,9 @@ clean build next time. Override both to change Go:
 
 ## Secrets
 
-All secrets live in `/etc/openipdata/worker.env` on the VM. Hatchet Cloud never sees
-them. Hatchet does store task inputs, outputs, and log lines, so keep secrets and
-visitor IPs out of all three.
+All secrets (`HATCHET_CLIENT_TOKEN`, `PGSQL`, `PDB_KEY`) live in `/etc/openipdata/worker.env`
+on the VM, and Hatchet Cloud never sees them. Hatchet does store task inputs, outputs, and
+log lines, so keep secrets and visitor IPs out of all three.
+
+The script never overwrites an existing env file, so when the template gains a variable,
+add it to `/etc/openipdata/worker.env` by hand.

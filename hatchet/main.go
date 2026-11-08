@@ -3,8 +3,10 @@
 //
 //	openipdata-worker                       # serve: connect to Hatchet (HATCHET_CLIENT_TOKEN)
 //	openipdata-worker run-asn [-skip-domains]
+//	openipdata-worker run-pdb
 //
-// Environment: PGSQL (Postgres DSN), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
+// Environment: PGSQL (Postgres DSN), PDB_KEY (PeeringDB API key),
+// OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // mmdbbuilder is expected next to this binary.
 package main
 
@@ -23,6 +25,7 @@ import (
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 
 	"openipdata.org/hatchet/asn"
+	"openipdata.org/hatchet/pdb"
 )
 
 // BuildASNInput is the workflow input; cron runs use the zero value.
@@ -46,8 +49,10 @@ func main() {
 		err = serve(ctx)
 	case "run-asn":
 		err = runASN(ctx, os.Args[2:])
+	case "run-pdb":
+		err = runPDB(ctx)
 	default:
-		err = fmt.Errorf("unknown command %q (want serve or run-asn)", command)
+		err = fmt.Errorf("unknown command %q (want serve, run-asn, or run-pdb)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -61,16 +66,37 @@ func newPipeline(progress func(string)) (*asn.Pipeline, error) {
 	if err != nil {
 		return nil, err
 	}
-	dataDir := strings.TrimSpace(os.Getenv("OPENIPDATA_DATA_DIR"))
-	if dataDir == "" {
-		dataDir = "/var/lib/openipdata"
-	}
 	return &asn.Pipeline{
-		DataDir:     dataDir,
+		DataDir:     dataDir(),
 		PGSQL:       strings.TrimSpace(os.Getenv("PGSQL")),
 		MMDBBuilder: filepath.Join(filepath.Dir(exe), "mmdbbuilder"),
 		Progress:    progress,
 	}, nil
+}
+
+// newPDBPipeline reads the environment; progress receives log lines.
+func newPDBPipeline(progress func(string)) *pdb.Pipeline {
+	return &pdb.Pipeline{
+		DataDir:  dataDir(),
+		PGSQL:    strings.TrimSpace(os.Getenv("PGSQL")),
+		APIKey:   strings.TrimSpace(os.Getenv("PDB_KEY")),
+		Progress: progress,
+	}
+}
+
+func dataDir() string {
+	if dir := strings.TrimSpace(os.Getenv("OPENIPDATA_DATA_DIR")); dir != "" {
+		return dir
+	}
+	return "/var/lib/openipdata"
+}
+
+// taskLog sends a log line to the worker log and to the Hatchet run.
+func taskLog(ctx hatchet.Context) func(string) {
+	return func(msg string) {
+		slog.Info(msg)
+		ctx.Log(msg)
+	}
 }
 
 func serve(ctx context.Context) error {
@@ -79,7 +105,7 @@ func serve(ctx context.Context) error {
 		return fmt.Errorf("create Hatchet client: %w", err)
 	}
 	worker, err := client.NewWorker("openipdata-worker",
-		hatchet.WithWorkflows(buildASNWorkflow(client)),
+		hatchet.WithWorkflows(buildASNWorkflow(client), syncPeeringDBWorkflow(client)),
 		hatchet.WithSlots(4),
 	)
 	if err != nil {
@@ -103,10 +129,12 @@ func asnDBLimit() hatchet.Concurrency {
 }
 
 func pipelineFor(ctx hatchet.Context) (*asn.Pipeline, error) {
-	return newPipeline(func(msg string) {
-		slog.Info(msg)
-		ctx.Log(msg)
-	})
+	return newPipeline(taskLog(ctx))
+}
+
+// taskRetry is the retry policy shared by the workflow tasks.
+func taskRetry(opts ...hatchet.TaskOption) []hatchet.TaskOption {
+	return append([]hatchet.TaskOption{hatchet.WithRetries(2), hatchet.WithRetryBackoff(2, 300)}, opts...)
 }
 
 func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
@@ -115,18 +143,13 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		hatchet.WithWorkflowCron("15 */12 * * *"),
 		hatchet.WithWorkflowConcurrency(asnDBLimit()),
 	)
-	retry := []hatchet.TaskOption{hatchet.WithRetries(2), hatchet.WithRetryBackoff(2, 300)}
-	withRetry := func(opts ...hatchet.TaskOption) []hatchet.TaskOption {
-		return append(append([]hatchet.TaskOption{}, retry...), opts...)
-	}
-
 	sync := wf.NewTask("sync-source", func(ctx hatchet.Context, _ BuildASNInput) (asn.Source, error) {
 		p, err := pipelineFor(ctx)
 		if err != nil {
 			return asn.Source{}, err
 		}
 		return p.SyncSource(ctx, time.Now())
-	}, withRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
+	}, taskRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	source := func(ctx hatchet.Context) (asn.Source, error) {
 		var src asn.Source
@@ -144,7 +167,7 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			return asn.IngestStats{}, err
 		}
 		return p.Ingest(ctx, src)
-	}, withRetry(hatchet.WithParents(sync), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	}, taskRetry(hatchet.WithParents(sync), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	// The first run is ~1 day of ARIN lookups; later runs take minutes. Each
 	// result is written to Postgres immediately, so a retry resumes where it stopped.
@@ -158,7 +181,7 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			return asn.DomainStats{}, nil
 		}
 		return p.Domains(ctx)
-	}, withRetry(hatchet.WithParents(ingest), hatchet.WithExecutionTimeout(24*time.Hour))...)
+	}, taskRetry(hatchet.WithParents(ingest), hatchet.WithExecutionTimeout(24*time.Hour))...)
 
 	wf.NewTask("build-mmdb", func(ctx hatchet.Context, _ BuildASNInput) (asn.BuildMMDBOutput, error) {
 		src, err := source(ctx)
@@ -170,7 +193,7 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			return asn.BuildMMDBOutput{}, err
 		}
 		return p.BuildMMDB(ctx, src)
-	}, hatchet.WithParents(sync, ingest), hatchet.WithExecutionTimeout(30*time.Minute))
+	}, taskRetry(hatchet.WithParents(sync, ingest), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	wf.NewTask("export-sqlite", func(ctx hatchet.Context, _ BuildASNInput) (asn.ExportOutput, error) {
 		src, err := source(ctx)
@@ -182,9 +205,40 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			return asn.ExportOutput{}, err
 		}
 		return p.ExportSQLite(ctx, src)
-	}, withRetry(hatchet.WithParents(sync, domains), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	}, taskRetry(hatchet.WithParents(sync, domains), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	return wf
+}
+
+// SyncPeeringDBInput is the workflow input; it has no options yet.
+type SyncPeeringDBInput struct{}
+
+func syncPeeringDBWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("sync-peeringdb",
+		hatchet.WithWorkflowDescription("PeeringDB -> per-ASN country, city, domain -> public.asn_geo_pdb"),
+		hatchet.WithWorkflowCron("0 22 * * *"),
+		hatchet.WithWorkflowConcurrency(asnDBLimit()),
+	)
+
+	download := wf.NewTask("download", func(ctx hatchet.Context, _ SyncPeeringDBInput) (pdb.DownloadOutput, error) {
+		return newPDBPipeline(taskLog(ctx)).Download(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+
+	wf.NewTask("compute-and-store", func(ctx hatchet.Context, _ SyncPeeringDBInput) (pdb.StoreStats, error) {
+		return newPDBPipeline(taskLog(ctx)).ComputeAndStore(ctx)
+	}, taskRetry(hatchet.WithParents(download), hatchet.WithExecutionTimeout(30*time.Minute))...)
+
+	return wf
+}
+
+// runPDB runs the PeeringDB tasks once, in order, without Hatchet.
+func runPDB(ctx context.Context) error {
+	p := newPDBPipeline(func(msg string) { slog.Info(msg) })
+	if _, err := p.Download(ctx); err != nil {
+		return err
+	}
+	_, err := p.ComputeAndStore(ctx)
+	return err
 }
 
 // runASN runs the same tasks once, in order, without Hatchet.

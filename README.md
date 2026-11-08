@@ -34,12 +34,30 @@ The repo root has no Go code.
 - Outputs land in `/var/lib/openipdata/out/asn/<date>/`; the newest 3 builds are kept.
 - ASNs that disappear from the source are kept in Postgres and in `asn.sqlite3`.
 
+### `sync-peeringdb` (`hatchet/pdb/`, cron `0 22 * * *` UTC)
+
+| Task | Runs after | Does |
+|---|---|---|
+| `download` | | fetches PeeringDB `org`, `net`, `fac`, `ix`, `netfac`, `netixlan` fresh into `/var/lib/openipdata/pdb/*.jsonl` |
+| `compute-and-store` | `download` | derives one row per ASN and replaces `public.asn_geo_pdb` in one transaction |
+
+Per ASN, every facility and exchange link is one presence point:
+
+- `country`: most common point country, else the org's HQ country
+- `city`: most common (country, city) point, if it has at least 30% of the points
+- `dominance`: that city's share of the points
+- `domain`: host of the network's website, else the org's website
+
+The replace is refused if it would shrink the table by more than 10%.
+Shares the `build-asn-data` concurrency limit, so the two never overlap. Needs `PDB_KEY`.
+
 ## Commands
 
 ```bash
 openipdata-worker                      # serve: connect to Hatchet using HATCHET_CLIENT_TOKEN
 openipdata-worker run-asn              # run build-asn-data once locally, without Hatchet
 openipdata-worker run-asn -skip-domains
+openipdata-worker run-pdb              # run sync-peeringdb once locally, without Hatchet
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
@@ -55,7 +73,8 @@ cd hatchet && CGO_ENABLED=0 go build -trimpath -o ../bin/openipdata-worker .
 cd mmdbbuilder && CGO_ENABLED=0 go build -trimpath -o ../bin/mmdbbuilder .
 ```
 
-`run-asn` needs `PGSQL`; set `OPENIPDATA_DATA_DIR` to a local folder when running off the VM.
+`run-asn` needs `PGSQL`; `run-pdb` needs `PGSQL` and `PDB_KEY`. Set `OPENIPDATA_DATA_DIR`
+to a local folder when running off the VM.
 
 ## VM setup
 
