@@ -32,13 +32,18 @@ A restart interrupts running tasks, which Hatchet retries, so deploy between run
 | `/opt/openipdata/bin/mmdbbuilder` | root `0755` | MMDB builder, built from `mmdbbuilder/`; the worker runs it |
 | `/etc/openipdata/worker.env` | root:openipdata `0640` | secrets and config (template: `openipdata-worker.env.example`) |
 | `/var/lib/openipdata/` | openipdata `0750` | worker state: source clones and the last few builds |
+| `/var/cache/openipdata-build/` | root `0700` | Go toolchain and module/build caches for the build |
 | `/etc/systemd/system/openipdata-worker.service` | root | runs the worker as `openipdata`; starts once `HATCHET_CLIENT_TOKEN` is set |
 
-Packages: `ca-certificates`, `curl`, `git`. The build downloads Go (`GO_VERSION`,
-checked against `GO_SHA256`) into a temp directory and deletes it afterwards, so no
-toolchain stays on the VM. Override both to change Go:
+Packages: `ca-certificates`, `curl`, `git`.
+
+The build uses its own Go (`GO_VERSION`, checked against `GO_SHA256`), kept with the
+module and build caches in `/var/cache/openipdata-build` (root, `0700`, not on `PATH`).
+Go is downloaded only when `GO_VERSION` changes, modules only when `go.sum` changes,
+and only changed code is recompiled. `sudo rm -rf /var/cache/openipdata-build` gives a
+clean build next time. Override both to change Go:
 `sudo GO_VERSION=1.27.4 GO_SHA256=<sha> bash init-hatchet-runner-vm.sh`
-(checksums at `https://go.dev/dl/?mode=json`).
+(checksums at `https://go.dev/dl/?mode=json`); the old toolchain is removed.
 
 ## Secrets
 

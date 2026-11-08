@@ -12,7 +12,9 @@ ETC_DIR=/etc/openipdata
 ENV_FILE=$ETC_DIR/worker.env
 SERVICE_NAME=openipdata-worker
 
-# Go toolchain used only for the build, in a temp dir that is removed afterwards.
+# Go toolchain used only for the build. It and the module/build caches are kept in
+# CACHE_DIR so redeploys only recompile what changed; delete CACHE_DIR to start clean.
+CACHE_DIR=/var/cache/openipdata-build
 GO_VERSION="${GO_VERSION:-1.27.3}"
 GO_SHA256="${GO_SHA256:-65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40}"
 
@@ -56,17 +58,34 @@ install -d -m 0750 -o root -g "$RUN_AS" "$ETC_DIR"
 install -d -m 0750 -o "$RUN_AS" -g "$RUN_AS" "$DATA_DIR"
 
 BUILD_TMP="$(mktemp -d)"
-log "downloading Go $GO_VERSION"
-curl -fsSL --retry 3 -o "$BUILD_TMP/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-echo "$GO_SHA256  $BUILD_TMP/go.tar.gz" | sha256sum --check --status || fail "Go download checksum mismatch"
-tar -C "$BUILD_TMP" -xzf "$BUILD_TMP/go.tar.gz"
+GO_ROOT="$CACHE_DIR/go$GO_VERSION"
+install -d -m 0700 -o root -g root "$CACHE_DIR"
+if [[ -x "$GO_ROOT/bin/go" ]]; then
+    log "using cached Go $GO_VERSION"
+else
+    log "downloading Go $GO_VERSION"
+    curl -fsSL --retry 3 -o "$BUILD_TMP/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+    echo "$GO_SHA256  $BUILD_TMP/go.tar.gz" | sha256sum --check --status || fail "Go download checksum mismatch"
+    # Extract next to GO_ROOT so the final rename is atomic: no half-installed toolchain.
+    rm -rf "$CACHE_DIR/go.partial"
+    mkdir "$CACHE_DIR/go.partial"
+    tar -C "$CACHE_DIR/go.partial" -xzf "$BUILD_TMP/go.tar.gz"
+    mv "$CACHE_DIR/go.partial/go" "$GO_ROOT"
+    rm -rf "$CACHE_DIR/go.partial"
+fi
+for old in "$CACHE_DIR"/go1.*; do
+    if [[ -d "$old" && "$old" != "$GO_ROOT" ]]; then
+        log "removing old toolchain $old"
+        rm -rf "$old"
+    fi
+done
 
 build() { # build <module dir> <binary name>
     log "building $2 from $REPO_DIR/$1"
     (
         cd "$REPO_DIR/$1"
-        GOTOOLCHAIN=local GOPATH="$BUILD_TMP/gopath" GOCACHE="$BUILD_TMP/cache" CGO_ENABLED=0 \
-            "$BUILD_TMP/go/bin/go" build -buildvcs=false -trimpath -ldflags "-s -w" -o "$BUILD_TMP/$2" .
+        GOTOOLCHAIN=local GOPATH="$CACHE_DIR/gopath" GOCACHE="$CACHE_DIR/cache" CGO_ENABLED=0 \
+            "$GO_ROOT/bin/go" build -buildvcs=false -trimpath -ldflags "-s -w" -o "$BUILD_TMP/$2" .
     )
     install -m 0755 -o root -g root "$BUILD_TMP/$2" "$BIN_DIR/$2"
     log "installed $BIN_DIR/$2"

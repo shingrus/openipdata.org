@@ -23,6 +23,7 @@
 - Binaries: `/opt/openipdata/bin/openipdata-worker` and `/opt/openipdata/bin/mmdbbuilder` (root, 0755).
 - Env file: `/etc/openipdata/worker.env` (root:openipdata, 0640); template in `infra/`.
 - State: `/var/lib/openipdata` (openipdata, 0750); the only writable path for the service.
+- Build cache: `/var/cache/openipdata-build` (root, 0700): pinned Go toolchain plus module/build caches; safe to delete.
 - `infra/init-hatchet-runner-vm.sh` is idempotent and never overwrites an existing env file.
 
 ## Rules
