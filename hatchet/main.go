@@ -1,18 +1,21 @@
 // Command openipdata-worker runs the openipdata workflows as a Hatchet worker,
 // or runs a workflow once locally without Hatchet.
 //
-//	openipdata-worker              # serve: connect to Hatchet (HATCHET_CLIENT_TOKEN)
-//	openipdata-worker run-asn      # build-asn-data
-//	openipdata-worker run-pdb      # sync-peeringdb
-//	openipdata-worker run-domains  # update-asn-domains
+//	openipdata-worker                            # serve: connect to Hatchet (HATCHET_CLIENT_TOKEN)
+//	openipdata-worker run-asn [-skip-publish]    # build-asn-data
+//	openipdata-worker run-pdb                    # sync-peeringdb
+//	openipdata-worker run-domains                # update-asn-domains
 //
 // Environment: PGSQL (Postgres DSN), PDB_KEY (PeeringDB API key),
-// OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
+// R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
+// GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN
+// (optional), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // mmdbbuilder is expected next to this binary.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -29,9 +32,14 @@ import (
 	"openipdata.org/hatchet/pdb"
 )
 
-// The workflows take no input options; cron runs and manual runs do the same.
+// BuildASNInput is the build-asn-data input; cron runs use the zero value.
+type BuildASNInput struct {
+	// SkipPublish builds everything but uploads nothing (for manual test runs).
+	SkipPublish bool `json:"skip_publish"`
+}
+
+// The other workflows take no input options.
 type (
-	BuildASNInput         struct{}
 	SyncPeeringDBInput    struct{}
 	UpdateASNDomainsInput struct{}
 )
@@ -50,7 +58,7 @@ func main() {
 	case "serve":
 		err = serve(ctx)
 	case "run-asn":
-		err = runASN(ctx)
+		err = runASN(ctx, os.Args[2:])
 	case "run-pdb":
 		err = runPDB(ctx)
 	case "run-domains":
@@ -70,20 +78,30 @@ func newPipeline(progress func(string)) (*asn.Pipeline, error) {
 	if err != nil {
 		return nil, err
 	}
+	repo := env("GITHUB_REPO")
+	if repo == "" {
+		repo = "shingrus/openipdata.org"
+	}
 	return &asn.Pipeline{
 		DataDir:     dataDir(),
 		PGSQL:       pgsql(),
 		MMDBBuilder: filepath.Join(filepath.Dir(exe), "mmdbbuilder"),
 		Progress:    progress,
+		R2:          env("R2"),
+		GitHubToken: env("GITHUB_TOKEN"),
+		GitHubRepo:  repo,
+		HCPing:      env("HC_PING_ASN"),
 	}, nil
 }
+
+func env(key string) string { return strings.TrimSpace(os.Getenv(key)) }
 
 // newPDBPipeline reads the environment; progress receives log lines.
 func newPDBPipeline(progress func(string)) *pdb.Pipeline {
 	return &pdb.Pipeline{
 		DataDir:  dataDir(),
 		PGSQL:    pgsql(),
-		APIKey:   strings.TrimSpace(os.Getenv("PDB_KEY")),
+		APIKey:   env("PDB_KEY"),
 		Progress: progress,
 	}
 }
@@ -93,10 +111,10 @@ func newDomainsPipeline(progress func(string)) *domains.Pipeline {
 	return &domains.Pipeline{PGSQL: pgsql(), Progress: progress}
 }
 
-func pgsql() string { return strings.TrimSpace(os.Getenv("PGSQL")) }
+func pgsql() string { return env("PGSQL") }
 
 func dataDir() string {
-	if dir := strings.TrimSpace(os.Getenv("OPENIPDATA_DATA_DIR")); dir != "" {
+	if dir := env("OPENIPDATA_DATA_DIR"); dir != "" {
 		return dir
 	}
 	return "/var/lib/openipdata"
@@ -156,10 +174,16 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		hatchet.WithWorkflowCron("0 6,18 * * *"),
 		hatchet.WithWorkflowConcurrency(asnDBLimit()),
 	)
-	sync := wf.NewTask("sync-source", func(ctx hatchet.Context, _ BuildASNInput) (asn.Source, error) {
+	sync := wf.NewTask("sync-source", func(ctx hatchet.Context, input BuildASNInput) (asn.Source, error) {
 		p, err := newPipeline(taskLog(ctx))
 		if err != nil {
 			return asn.Source{}, err
+		}
+		if !input.SkipPublish {
+			// Fail before the build, and without retries: only an env change fixes it.
+			if err := p.CheckPublish(); err != nil {
+				return asn.Source{}, hatchet.NewNonRetryableError(err)
+			}
 		}
 		return p.SyncSource(ctx, time.Now())
 	}, taskRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
@@ -182,7 +206,7 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		return p.Ingest(ctx, src)
 	}, taskRetry(hatchet.WithParents(sync), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
-	wf.NewTask("build-mmdb", func(ctx hatchet.Context, _ BuildASNInput) (asn.BuildMMDBOutput, error) {
+	mmdb := wf.NewTask("build-mmdb", func(ctx hatchet.Context, _ BuildASNInput) (asn.BuildMMDBOutput, error) {
 		p, src, err := withSource(ctx)
 		if err != nil {
 			return asn.BuildMMDBOutput{}, err
@@ -190,13 +214,33 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		return p.BuildMMDB(ctx, src)
 	}, taskRetry(hatchet.WithParents(sync, ingest), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
-	wf.NewTask("export-sqlite", func(ctx hatchet.Context, _ BuildASNInput) (asn.ExportOutput, error) {
+	export := wf.NewTask("export-sqlite", func(ctx hatchet.Context, _ BuildASNInput) (asn.ExportOutput, error) {
 		p, src, err := withSource(ctx)
 		if err != nil {
 			return asn.ExportOutput{}, err
 		}
 		return p.ExportSQLite(ctx, src)
 	}, taskRetry(hatchet.WithParents(sync, ingest), hatchet.WithExecutionTimeout(30*time.Minute))...)
+
+	wf.NewTask("publish", func(ctx hatchet.Context, input BuildASNInput) (asn.PublishOutput, error) {
+		if input.SkipPublish {
+			taskLog(ctx)("publish: skipped (skip_publish=true)")
+			return asn.PublishOutput{Skipped: true}, nil
+		}
+		p, src, err := withSource(ctx)
+		if err != nil {
+			return asn.PublishOutput{}, err
+		}
+		var built asn.BuildMMDBOutput
+		if err := ctx.ParentOutput(mmdb, &built); err != nil {
+			return asn.PublishOutput{}, err
+		}
+		var exported asn.ExportOutput
+		if err := ctx.ParentOutput(export, &exported); err != nil {
+			return asn.PublishOutput{}, err
+		}
+		return p.Publish(ctx, src, built.Path, exported.Path)
+	}, taskRetry(hatchet.WithParents(sync, mmdb, export), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	return wf
 }
@@ -239,10 +283,22 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 }
 
 // runASN runs the build-asn-data tasks once, in order, without Hatchet.
-func runASN(ctx context.Context) error {
+func runASN(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-asn", flag.ExitOnError)
+	skipPublish := flags.Bool("skip-publish", false, "build everything but upload nothing")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-asn: unexpected argument %q", flags.Arg(0))
+	}
+
 	p, err := newPipeline(cliLog)
 	if err != nil {
 		return err
+	}
+	if !*skipPublish {
+		if err := p.CheckPublish(); err != nil {
+			return err
+		}
 	}
 	src, err := p.SyncSource(ctx, time.Now())
 	if err != nil {
@@ -251,10 +307,19 @@ func runASN(ctx context.Context) error {
 	if _, err := p.Ingest(ctx, src); err != nil {
 		return err
 	}
-	if _, err := p.BuildMMDB(ctx, src); err != nil {
+	built, err := p.BuildMMDB(ctx, src)
+	if err != nil {
 		return err
 	}
-	_, err = p.ExportSQLite(ctx, src)
+	exported, err := p.ExportSQLite(ctx, src)
+	if err != nil {
+		return err
+	}
+	if *skipPublish {
+		cliLog("publish: skipped (-skip-publish)")
+		return nil
+	}
+	_, err = p.Publish(ctx, src, built.Path, exported.Path)
 	return err
 }
 

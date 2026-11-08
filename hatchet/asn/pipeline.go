@@ -12,14 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"openipdata.org/hatchet/publish"
 )
 
 const (
-	sourceRepoURL  = "https://github.com/ipverse/asn-ip"
-	mmdbFileFormat = "ip2asn-openipdata-%s.mmdb"
-	sqliteFileName = "asn.sqlite3"
-	keepOutputDirs = 3
-	dateTagLayout  = "20060102"
+	sourceRepoURL   = "https://github.com/ipverse/asn-ip"
+	mmdbFileFormat  = "ip2asn-openipdata-%s.mmdb"
+	sqliteFileName  = "asn.sqlite3"
+	releaseAsset    = "ip2asn-openipdata.mmdb"
+	keepOutputDirs  = 3
+	dateTagLayout   = "20060102"
+	dateFolderShape = "2006-01-02"
 )
 
 // Pipeline runs the ASN database build. Each method is one task; the Hatchet
@@ -29,6 +33,12 @@ type Pipeline struct {
 	PGSQL       string
 	MMDBBuilder string // path to the mmdbbuilder binary
 	Progress    func(string)
+
+	// Publishing (see Publish).
+	R2          string // https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>
+	GitHubToken string
+	GitHubRepo  string // owner/name of the repo whose "latest" release gets the MMDB
+	HCPing      string // optional healthchecks.io ping URL
 }
 
 // Source identifies the asn-ip snapshot a run works on.
@@ -258,6 +268,76 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 	p.log("export: wrote %s (asns=%d domains=%d geo_pdb=%d)", final, stats.ASNs, stats.Domains, stats.GeoPDB)
 	p.pruneOutputs()
 	return ExportOutput{Path: final, SizeBytes: fileSize(final), Stats: stats}, nil
+}
+
+// PublishOutput lists where the artifacts went.
+type PublishOutput struct {
+	Skipped         bool     `json:"skipped,omitempty"`
+	R2              []string `json:"r2,omitempty"`
+	ReleaseURL      string   `json:"release_url,omitempty"`
+	Bytes           int64    `json:"bytes"` // total size of the published files
+	DurationSeconds float64  `json:"duration_seconds"`
+}
+
+// publishers builds the R2 and GitHub clients from the publishing settings.
+func (p *Pipeline) publishers() (*publish.R2, *publish.Release, error) {
+	r2, err := publish.NewR2(p.R2)
+	if err != nil {
+		return nil, nil, err
+	}
+	release, err := publish.NewRelease(p.GitHubToken, p.GitHubRepo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return r2, release, nil
+}
+
+// CheckPublish fails when a publishing setting is missing or invalid, so a run
+// can stop before the build instead of after it.
+func (p *Pipeline) CheckPublish() error {
+	_, _, err := p.publishers()
+	return err
+}
+
+// Publish uploads the MMDB and asn.sqlite3 to R2 under <YYYY-MM-DD>/, replaces
+// the MMDB on the rolling GitHub release, then pings HCPing if set. Missing
+// settings fail the task, so a misconfiguration cannot go unnoticed.
+func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath string) (PublishOutput, error) {
+	started := time.Now()
+	out := PublishOutput{}
+	r2, release, err := p.publishers()
+	if err != nil {
+		return out, err
+	}
+	date, err := time.Parse(dateTagLayout, src.DateTag)
+	if err != nil {
+		return out, err
+	}
+
+	folder := date.Format(dateFolderShape)
+	for _, path := range []string{mmdbPath, sqlitePath} {
+		location, err := r2.Upload(ctx, folder+"/"+filepath.Base(path), path)
+		if err != nil {
+			return out, err
+		}
+		p.log("publish: %s", location)
+		out.R2 = append(out.R2, location)
+		out.Bytes += fileSize(path)
+	}
+
+	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB.\n\nBuilt: %s\nSource: %s@%s",
+		date.Format(dateFolderShape), strings.TrimPrefix(sourceRepoURL, "https://github.com/"), src.Commit)
+	out.ReleaseURL, err = release.Replace(ctx, mmdbPath, releaseAsset, body)
+	if err != nil {
+		return out, err
+	}
+	p.log("publish: %s", out.ReleaseURL)
+
+	if err := publish.Ping(ctx, p.HCPing); err != nil {
+		p.log("publish: %v", err) // the uploads succeeded; a missed ping only delays the alert
+	}
+	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
+	return out, nil
 }
 
 // pruneOutputs keeps the newest few dated output directories.

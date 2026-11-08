@@ -8,7 +8,7 @@
 ## Layout
 
 - `infra/`: VM provisioning (`init-hatchet-runner-vm.sh`), systemd unit, env template. No Go code.
-- `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`). `hatchet/schema/` creates and upgrades the shared Postgres tables.
+- `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`). `hatchet/schema/` creates and upgrades the shared Postgres tables; `hatchet/publish/` uploads artifacts to R2 and GitHub releases.
 - `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn` now).
 - No `go.mod` or Go code at the repo root. Each module builds on its own.
 - `hatchet` must not import `mmdbbuilder`; it runs the `mmdbbuilder` binary found next to its own executable.
@@ -42,3 +42,4 @@
 - Workflows that write the ASN tables share the `asn-db` concurrency limit.
 - Secrets live only in the env file. Never put secrets or visitor IPs in Hatchet task inputs, outputs, log lines, or returned errors.
 - Pass every error from `pgx.Connect` / `ParseConfig` through `schema.HideDSN`: pgx parse errors can echo the whole `PGSQL` value.
+- The `R2` setting holds the secret key: errors about it use the fixed `publish.ErrInvalidR2`, never the value.
