@@ -1,110 +1,31 @@
 # openipdata.org
 
-Minimal `Fastify` + `TypeScript` SSR app for `openipdata.org`.
+Workers, jobs, and builders for the openipdata.org IP databases.
 
-## What is included
+They run as a single Go [Hatchet](https://hatchet.run) worker on a VM.
+Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the jobs.
 
-- Server-rendered homepage at `/`
-- Server-rendered geofeed list page at `/geofeeds`
-- JSON endpoint at `/api/health`
-- Static assets served by the same Fastify app
-- HTML templates stored in `templates/`
-- `npm run dev` runs with `NODE_ENV=development`
-- `npm start` runs with `NODE_ENV=production`
-- Multi-stage `Dockerfile` for production builds
-- GitHub Actions deploy that pushes to Docker Hub and updates a host-side Docker Compose app over SSH on pushes to `main`
-- Optional manual Fly.io GitHub Actions deploy
-- nginx reverse-proxy config for `:80/:443 -> 127.0.0.1:9090`
-- Docker Compose deployment example
+## Layout
 
-## Local development
+| Path | Purpose |
+|---|---|
+| `cmd/openipdata-worker/` | worker entry point |
+| `internal/asn/` | `build-asn-data` workflow: asn-ip source → Postgres → ip2asn MMDB + `asn.sqlite3` |
+| `internal/mmdb/` | MMDB writers |
+| `init/` | VM provisioning script, systemd unit, env template |
 
-1. Install dependencies:
+## Workflows
 
-   ```bash
-   npm install
-   ```
+### `build-asn-data`
 
-2. Start the dev server:
+1. Sync `ipverse/asn-ip` into `/var/lib/openipdata/repos/asn-ip`.
+2. Upsert changed rows into `public.asn` in Postgres.
+3. Fill missing `public.asn_domain` rows (PeeringDB first, then ARIN RDAP).
+4. Build `ip2asn-openipdata-<date>.mmdb`.
+5. Export `asn.sqlite3`.
 
-   ```bash
-   npm run dev
-   ```
+Outputs land in `/var/lib/openipdata/out/asn/<date>/`; the newest 3 builds are kept.
 
-3. Open `http://127.0.0.1:9090`
+## VM setup
 
-Optional geofeed data:
-
-- Set `PGSQL` to a PostgreSQL connection string.
-- The `/geofeeds` page queries `geofeed_urls`.
-- If `PGSQL` is unset, `/geofeeds` renders an empty state instead of failing.
-
-Optional Redis response counters:
-
-- Set `REDIS_URL` to enable Redis-backed response counters.
-- Responses increment fields in the `openipdata:response-counters` hash.
-- `/` increments `rootcounter`, `/api/*` increments `apicounter`, and attachment downloads increment `downloadcounter`.
-
-Optional IP lookup data:
-
-- Set `IP2GEO_PATH` to a city/country MMDB file.
-- Set `IP2ASN_PATH` to an ASN MMDB file.
-- If unset, the app falls back to `./ip2geo-latest.mmdb` and `./ip2asn-latest.mmdb` from the app working directory.
-- Set `TEST_IP` to override the detected client IP on the homepage.
-- The homepage renders a JSON report for the current client IP when the databases are available.
-
-## Production build
-
-```bash
-npm install
-npm run build
-NODE_ENV=production HOST=127.0.0.1 PORT=9090 npm start
-```
-
-## Deployment files
-
-- Docker Compose app: `deploy/compose/compose.yaml`
-- nginx config: `deploy/nginx/openipdata.org.conf`
-- host path reference: `deploy/systemd/openipdata.service`
-- environment example: `.env.example`
-
-## GitHub Actions deploys
-
-Default deploy:
-
-- `.github/workflows/docker-host-deploy.yml`
-- Trigger: push to `main`
-- Deploy target: Docker Compose host over SSH
-- Required secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY`
-
-Optional manual Fly deploy:
-
-- `.github/workflows/main.yml`
-- Trigger: `workflow_dispatch`
-- Deploy target: Fly.io
-- Required secret: `FLY_API_TOKEN`
-
-Configure these repository settings for the default host deploy:
-
-- Repository secret: `DOCKERHUB_USERNAME`
-- Repository secret: `DOCKERHUB_TOKEN`
-- Repository secret: `SSH_HOST`
-- Repository secret: `SSH_USER`
-- Repository secret: `SSH_PRIVATE_KEY`
-
-The host deploy publishes to `DOCKERHUB_USERNAME/openipdata.org`, so no separate Docker Hub repository variable is needed.
-
-Host-side requirements:
-
-- Docker Engine and the Docker Compose plugin installed
-- `/opt/openipdata` present and writable by the SSH user
-- `/etc/openipdata/openipdata.env` present on the host
-- The SSH user allowed to run `docker compose`
-- nginx still proxies to `127.0.0.1:9090` on the host
-
-The Compose file reads `/etc/openipdata/openipdata.env` for app-specific variables such as `SERVICE_NAME`. It deliberately overrides `HOST=0.0.0.0`, `PORT=9090`, and `NODE_ENV=production` inside the container so the app remains reachable through Docker's port mapping.
-
-## Notes
-
-- The host paths in the Docker Compose deploy match `deploy/systemd/openipdata.service`: `/opt/openipdata` for the app files and `/etc/openipdata/openipdata.env` for runtime configuration.
-- The nginx config assumes Let's Encrypt certificates at `/etc/letsencrypt/live/openipdata.org/`.
+See `init/README.md`.
