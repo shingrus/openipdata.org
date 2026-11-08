@@ -39,7 +39,7 @@ func Replace(ctx context.Context, dsn string, rows []GeoRow) (StoreStats, error)
 	stats := StoreStats{Rows: len(rows)}
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return stats, fmt.Errorf("connect to Postgres: %w", err)
+		return stats, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
 	}
 	defer conn.Close(ctx)
 

@@ -29,7 +29,7 @@ func connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	}
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("connect to Postgres: %w", err)
+		return nil, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
 	}
 	if err := schema.Ensure(ctx, conn); err != nil {
 		conn.Close(ctx)

@@ -23,7 +23,7 @@ type Store struct {
 func OpenStore(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse PGSQL: %w", err)
+		return nil, schema.HideDSN(err)
 	}
 	cfg.MaxConns = 4
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -32,7 +32,7 @@ func OpenStore(ctx context.Context, dsn string) (*Store, error) {
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("connect to Postgres: %w", err)
+		return nil, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
 	}
 	return &Store{pool: pool}, nil
 }

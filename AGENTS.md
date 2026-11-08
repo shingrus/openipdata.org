@@ -40,4 +40,5 @@
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
 - Workflows that write the ASN tables share the `asn-db` concurrency limit.
-- Secrets live only in the env file. Never put secrets or visitor IPs in Hatchet task inputs, outputs, or log lines.
+- Secrets live only in the env file. Never put secrets or visitor IPs in Hatchet task inputs, outputs, log lines, or returned errors.
+- Pass every error from `pgx.Connect` / `ParseConfig` through `schema.HideDSN`: pgx parse errors can echo the whole `PGSQL` value.
