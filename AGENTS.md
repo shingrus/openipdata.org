@@ -2,28 +2,34 @@
 
 ## Overview
 
-- This repo holds the openipdata.org data workers, jobs, and builders. There is no website or web interface here.
-- One Go module at the repo root; one Hatchet worker binary: `cmd/openipdata-worker`.
-- Jobs are being moved here from another repo step by step. This repo must stay self-contained: no imports, submodules, URLs, or file references to other repos. Reproduce anything needed here.
+- This repo holds the openipdata.org data workers, workflows, and builders. There is no website or web interface here.
+- Workflows are being moved here from another repo step by step. This repo must stay self-contained: no imports, submodules, URLs, or file references to other repos. Reproduce anything needed here.
 
 ## Layout
 
-- Worker entry point: `cmd/openipdata-worker/main.go`
-- Workflows: one package per job under `internal/` (e.g. `internal/asn`)
-- MMDB writers: `internal/mmdb`
-- VM provisioning: `init/`
+- `infra/`: VM provisioning (`init-hatchet-runner-vm.sh`), systemd unit, env template. No Go code.
+- `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (e.g. `hatchet/asn/` for `build-asn-data`).
+- `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn` now).
+- No `go.mod` or Go code at the repo root. Each module builds on its own.
+- `hatchet` must not import `mmdbbuilder`; it runs the `mmdbbuilder` binary found next to its own executable.
+
+## Hatchet terms
+
+- Use Hatchet's current terms: workflow, task, worker, run. Do not use "job" or "step".
 
 ## VM
 
 - System user/group `openipdata`, no login shell.
-- Binary: `/opt/openipdata/bin/openipdata-worker` (root, 0755).
-- Env file: `/etc/openipdata/worker.env` (root:openipdata, 0640); template in `init/`.
+- Binaries: `/opt/openipdata/bin/openipdata-worker` and `/opt/openipdata/bin/mmdbbuilder` (root, 0755).
+- Env file: `/etc/openipdata/worker.env` (root:openipdata, 0640); template in `infra/`.
 - State: `/var/lib/openipdata` (openipdata, 0750); the only writable path for the service.
-- `init/init-hatchet-runner-vm.sh` is idempotent and never overwrites an existing env file.
+- `infra/init-hatchet-runner-vm.sh` is idempotent and never overwrites an existing env file.
 
 ## Rules
 
 - Keep it simple: read env vars directly in `main.go`; no config packages or frameworks.
+- Use the standard library where possible (e.g. `encoding/json`).
 - Postgres is the source of truth; the VM only keeps caches and the last few builds.
+- Output files (MMDB, SQLite) are rebuilt from scratch each run and written via a `.tmp` file plus rename.
+- Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
 - Secrets live only in the env file. Never put secrets or visitor IPs in Hatchet task inputs, outputs, or log lines.
-- Use the standard library where possible (`encoding/json`, `database/sql`).

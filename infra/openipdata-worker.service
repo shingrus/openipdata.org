@@ -1,0 +1,26 @@
+[Unit]
+Description=openipdata Hatchet worker (IP database workflows)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openipdata
+Group=openipdata
+EnvironmentFile=/etc/openipdata/worker.env
+WorkingDirectory=/var/lib/openipdata
+ExecStart=/opt/openipdata/bin/openipdata-worker
+Restart=always
+RestartSec=10
+# Let in-flight tasks stop cleanly on deploys; Hatchet retries interrupted tasks.
+KillMode=mixed
+TimeoutStopSec=60
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/openipdata
+
+[Install]
+WantedBy=multi-user.target

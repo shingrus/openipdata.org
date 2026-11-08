@@ -1,0 +1,296 @@
+package asn
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+const (
+	sourceRepoURL  = "https://github.com/ipverse/asn-ip"
+	mmdbFileFormat = "ip2asn-openipdata-%s.mmdb"
+	sqliteFileName = "asn.sqlite3"
+	keepOutputDirs = 3
+	dateTagLayout  = "20060102"
+)
+
+// Pipeline runs the ASN database build. Each method is one task; the Hatchet
+// workflow and the local run-asn command call them in the same order.
+type Pipeline struct {
+	DataDir     string
+	PGSQL       string
+	MMDBBuilder string // path to the mmdbbuilder binary
+	Progress    func(string)
+}
+
+// Source identifies the asn-ip snapshot a run works on.
+type Source struct {
+	Commit  string `json:"commit"`
+	DateTag string `json:"date_tag"`
+}
+
+func (p *Pipeline) repoDir() string { return filepath.Join(p.DataDir, "repos", "asn-ip") }
+func (p *Pipeline) asDir() string   { return filepath.Join(p.repoDir(), "as") }
+
+func (p *Pipeline) outDir(dateTag string) string {
+	return filepath.Join(p.DataDir, "out", "asn", dateTag)
+}
+
+func (p *Pipeline) log(format string, args ...any) {
+	if p.Progress != nil {
+		p.Progress(fmt.Sprintf(format, args...))
+	}
+}
+
+// SyncSource clones ipverse/asn-ip once and afterwards updates it in place.
+func (p *Pipeline) SyncSource(ctx context.Context, now time.Time) (Source, error) {
+	repo := p.repoDir()
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err == nil {
+		p.log("sync: updating %s", repo)
+		if err := runGit(ctx, "-C", repo, "fetch", "-q", "--depth", "1", "origin", "HEAD"); err != nil {
+			return Source{}, err
+		}
+		if err := runGit(ctx, "-C", repo, "reset", "-q", "--hard", "FETCH_HEAD"); err != nil {
+			return Source{}, err
+		}
+		if err := runGit(ctx, "-C", repo, "clean", "-fdq"); err != nil {
+			return Source{}, err
+		}
+	} else {
+		p.log("sync: cloning %s into %s", sourceRepoURL, repo)
+		if err := os.RemoveAll(repo); err != nil {
+			return Source{}, err
+		}
+		if err := os.MkdirAll(filepath.Dir(repo), 0o750); err != nil {
+			return Source{}, err
+		}
+		if err := runGit(ctx, "clone", "-q", "--depth", "1", "--single-branch", sourceRepoURL, repo); err != nil {
+			return Source{}, err
+		}
+	}
+	commit, err := p.headCommit(ctx)
+	if err != nil {
+		return Source{}, err
+	}
+	src := Source{Commit: commit, DateTag: now.UTC().Format(dateTagLayout)}
+	p.log("sync: asn-ip at %s", commit)
+	return src, nil
+}
+
+// checkSource fails when the checkout moved since SyncSource, so every task of
+// a run reads the same snapshot.
+func (p *Pipeline) checkSource(ctx context.Context, src Source) error {
+	commit, err := p.headCommit(ctx)
+	if err != nil {
+		return err
+	}
+	if commit != src.Commit {
+		return fmt.Errorf("asn-ip checkout moved from %s to %s during the run", src.Commit, commit)
+	}
+	return nil
+}
+
+func (p *Pipeline) headCommit(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", p.repoDir(), "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (p *Pipeline) parse(ctx context.Context, src Source) (ParseResult, error) {
+	if err := p.checkSource(ctx, src); err != nil {
+		return ParseResult{}, err
+	}
+	warnings := 0
+	result, err := ParseDir(p.asDir(), func(msg string) {
+		warnings++
+		if warnings <= 20 {
+			p.log("%s", msg)
+		}
+	})
+	if warnings > 20 {
+		p.log("parse: %d more warnings not shown", warnings-20)
+	}
+	return result, err
+}
+
+func (p *Pipeline) openStore(ctx context.Context) (*Store, error) {
+	if p.PGSQL == "" {
+		return nil, fmt.Errorf("PGSQL is not set")
+	}
+	store, err := OpenStore(ctx, p.PGSQL)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.EnsureSchema(ctx); err != nil {
+		store.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// Ingest writes changed ASN rows to Postgres.
+func (p *Pipeline) Ingest(ctx context.Context, src Source) (IngestStats, error) {
+	parsed, err := p.parse(ctx, src)
+	if err != nil {
+		return IngestStats{}, err
+	}
+	p.log("ingest: parsed %d ASNs (%d skipped)", len(parsed.Records), parsed.Skipped)
+	store, err := p.openStore(ctx)
+	if err != nil {
+		return IngestStats{}, err
+	}
+	defer store.Close()
+	stats, err := store.Ingest(ctx, parsed.Records)
+	if err != nil {
+		return stats, err
+	}
+	p.log("ingest: inserted=%d updated=%d unchanged=%d stale=%d",
+		stats.Inserted, stats.Updated, stats.Unchanged, stats.Stale)
+	return stats, nil
+}
+
+// Domains fills missing ASN domains in Postgres.
+func (p *Pipeline) Domains(ctx context.Context) (DomainStats, error) {
+	store, err := p.openStore(ctx)
+	if err != nil {
+		return DomainStats{}, err
+	}
+	defer store.Close()
+	stats, err := FillDomains(ctx, store, DefaultDomainOptions(), p.Progress)
+	if err == nil {
+		p.log("domains: done processed=%d pdb=%d rdap=%d not_found=%d failed=%d",
+			stats.Processed, stats.FromPDB, stats.FromRDAP, stats.NotFound, stats.Failed)
+	}
+	return stats, err
+}
+
+// BuildMMDBOutput describes the built ip2asn MMDB.
+type BuildMMDBOutput struct {
+	Path string `json:"path"`
+}
+
+// BuildMMDB runs "mmdbbuilder asn" on the synced snapshot.
+func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, error) {
+	if err := p.checkSource(ctx, src); err != nil {
+		return BuildMMDBOutput{}, err
+	}
+	dir := p.outDir(src.DateTag)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return BuildMMDBOutput{}, err
+	}
+	final := filepath.Join(dir, fmt.Sprintf(mmdbFileFormat, src.DateTag))
+	tmp := final + ".tmp"
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, p.MMDBBuilder, "asn", "-in", p.asDir(), "-out", tmp)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmp)
+		return BuildMMDBOutput{}, fmt.Errorf("mmdbbuilder: %w: %s", err, lastLines(stderr.String(), 5))
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		return BuildMMDBOutput{}, err
+	}
+	p.log("mmdb: %s", strings.TrimSpace(stdout.String()))
+	if summary := lastLines(stderr.String(), 1); summary != "" {
+		p.log("mmdb: %s", summary)
+	}
+	return BuildMMDBOutput{Path: final}, nil
+}
+
+// ExportOutput describes the exported SQLite file.
+type ExportOutput struct {
+	Path  string      `json:"path"`
+	Stats ExportStats `json:"stats"`
+}
+
+// ExportSQLite writes a fresh asn.sqlite3 from Postgres-backed data, then
+// prunes old output directories.
+func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, error) {
+	parsed, err := p.parse(ctx, src)
+	if err != nil {
+		return ExportOutput{}, err
+	}
+	store, err := p.openStore(ctx)
+	if err != nil {
+		return ExportOutput{}, err
+	}
+	defer store.Close()
+	stale, err := store.StaleRecords(ctx, parsed.Records)
+	if err != nil {
+		return ExportOutput{}, err
+	}
+	domains, err := store.Domains(ctx)
+	if err != nil {
+		return ExportOutput{}, err
+	}
+	geo, err := store.GeoPDB(ctx)
+	if err != nil {
+		return ExportOutput{}, err
+	}
+
+	dir := p.outDir(src.DateTag)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return ExportOutput{}, err
+	}
+	final := filepath.Join(dir, sqliteFileName)
+	tmp := final + ".tmp"
+	stats, err := ExportSQLite(ctx, tmp, append(parsed.Records, stale...), domains, geo)
+	if err != nil {
+		os.Remove(tmp)
+		return ExportOutput{}, err
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		return ExportOutput{}, err
+	}
+	p.log("export: wrote %s (asns=%d domains=%d geo_pdb=%d)", final, stats.ASNs, stats.Domains, stats.GeoPDB)
+	p.pruneOutputs()
+	return ExportOutput{Path: final, Stats: stats}, nil
+}
+
+// pruneOutputs keeps the newest few dated output directories.
+func (p *Pipeline) pruneOutputs() {
+	root := filepath.Join(p.DataDir, "out", "asn")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	sort.Strings(dirs)
+	for len(dirs) > keepOutputDirs {
+		os.RemoveAll(filepath.Join(root, dirs[0]))
+		dirs = dirs[1:]
+	}
+}
+
+func lastLines(text string, n int) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func runGit(ctx context.Context, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
