@@ -88,6 +88,76 @@ The replace is refused if it would shrink the table by more than 10%. Needs `PDB
   older rows, then RDAP results past their re-check (found: 180 days, not found: 30 days).
 - `checked_at` records the last check; "not found" is stored as `domain = NULL`.
 
+### `sync-geofeeds` (`hatchet/geofeeds/`, no schedule yet: trigger it by hand)
+
+Finds every geofeed (RFC 8805) URL it can, checks each feed, and hands the checked rows to the
+geo database build through the private R2 bucket. Nothing is published.
+
+| Task | Runs after | Does |
+|---|---|---|
+| `discover` | | reads the whois and IRR dumps, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them |
+| `check-feeds` | `discover` | fetches every due feed, keeps a checked copy of each working one, and writes the lists |
+| `export-rows` | `check-feeds` | writes the rows of all working feeds that pass the ownership check, and uploads them to R2 |
+
+- Whois dumps: RIPE and APNIC (`inetnum`, `inet6num`), AFRINIC, LACNIC. IRR dumps: RIPE, APNIC
+  (`route`, `route6`), ARIN, LACNIC. A feed URL counts if it is in a `geofeed:` attribute or in any
+  value that mentions "geofeed" (such as `remarks: Geofeed <url>`); fetching will weed out the rest.
+- `hatchet/geofeeds/feeds.txt` lists operator feeds that no whois record points to (source `list`).
+- CAIDA's lists (union of the last 7 days) add ARIN and NIR feeds, which have no public dumps.
+  Their use is governed by the CAIDA AUA for public datasets: publications must cite
+  "The CAIDA UCSD Geofeed WHOIS dataset", https://catalog.caida.org/dataset/geofeed_whois.
+- Dumps are cached in `/var/lib/openipdata/geofeeds/dumps/` and downloaded again only when the
+  server's `Last-Modified` changes. A failed download falls back to the cached copy. If a whois
+  dump can be read neither way, `discover` fails and the previous outputs stay: without a
+  registry's blocks, its space would pass the ownership check unchecked. A missing IRR dump is
+  only reported.
+- Outputs, replaced each run: `/var/lib/openipdata/geofeeds/urls.csv` (`url,sources,blocks`) and
+  `blocks.csv` (`source,prefix,url`). IRR rows have source `irr`: route objects show who announces
+  a prefix, not who holds it.
+- Feeds are fetched 16 at a time, at most 2 per host, with a 3-minute limit and 256 MB cap each.
+  Requests use IPv4 only (on the VM, IPv6 egress stalls for many hosts) and never reach a
+  non-public address, since anyone can put a URL in a whois record. After 5 fetches in a row
+  that cannot reach a host, its other feeds wait for the next run with status `host_down`,
+  which counts as a failure for backoff and for dropping the stored copy.
+- A feed works if it has at least one valid row: a prefix (or single address) no broader than
+  /8 or /16 and not private or reserved (including shared `100.64.0.0/10` and documentation
+  ranges), and an ISO 3166-1 country. A malformed region is dropped
+  from the row, and a line over 64 KB is rejected. Web pages, empty files, and files with no
+  valid row do not count.
+- Each working feed's valid rows are kept in `/var/lib/openipdata/geofeeds/feeds/`, with its
+  ETag and Last-Modified in the first line, so the next run asks for changes only. A feed that
+  cannot be fetched keeps its copy for 7 days; one that answers with something else loses it
+  at once.
+- A dump that cannot be read to its end adds nothing. A local file error (such as a full disk)
+  fails the task instead of counting against the feeds.
+- `feeds.json` holds each URL's state and is saved every 200 feeds: a retried task skips feeds
+  checked in the last hour. Failing feeds are retried every run for 3 days, then weekly, then
+  monthly after 60 days. URLs no source has listed for 30 days are dropped.
+- Lists in `/var/lib/openipdata/geofeeds/out/`, replaced each run:
+  - `geofeeds-openipdata.txt`: URLs that worked in the last 7 days, one per line
+  - `geofeeds-openipdata.csv`: every URL with `sources,blocks,status,http_status,rows,last_ok`
+- Ownership check: a row is dropped only if the most specific whois block covering it links
+  feeds on other sites only. Operators link their feed from a few whois records but describe all
+  their space in it, so rows outside every block stay. A site is the registered domain of the
+  feed's host (`api.cloudflare.com` and `www.cloudflare.com` are one owner), except on shared
+  hosts, listed in `export.go`: there it is the first path segment (a GitHub user, an S3 or GCS
+  bucket) or, on feed hosting services such as `geofeed.info`, the file itself.
+- A row broader than another owner's block (a /16 over their /24) is kept and counted as
+  `broad_rows`: in the MMDB, that owner's more specific rows win where they exist.
+- A stored feed copy that cannot be read is skipped (`unreadable_feeds`); the next check
+  rewrites it.
+- `export-rows` writes `/var/lib/openipdata/geofeeds/out/geofeed-rows.csv.gz`
+  (`prefix,country,region,city,feed_url`) and uploads it to the **private** R2 bucket at the
+  fixed key `internal/geofeeds/geofeed-rows.csv.gz`, replacing the last upload. `build-geo-data`
+  reads it from there. An upload with 10% fewer rows than the last one (or under 1,000,000 on the
+  first upload) is refused without retries, as is a damaged `upload.json`. After checking that a
+  drop is real, a manual run with `{"force_upload": true}` (or `run-geofeeds -force-upload`)
+  uploads anyway and resets the baseline. Manual runs can pass `{"skip_upload": true}` (or
+  `run-geofeeds -skip-upload`) to write the file without uploading it.
+- No Postgres tables. Dumps and feeds are streamed, never held whole in memory; local full runs
+  peaked at 240–360 MB, took about 5–10 minutes, kept about 240 MB of checked feeds on disk,
+  and exported about 6.4 million rows (36 MB gzipped).
+
 ## Commands
 
 ```bash
@@ -96,6 +166,9 @@ openipdata-worker run-asn              # run build-asn-data once locally, withou
 openipdata-worker run-asn -skip-publish  # same, without uploading
 openipdata-worker run-pdb              # run sync-peeringdb once locally, without Hatchet
 openipdata-worker run-domains          # run update-asn-domains once locally, without Hatchet
+openipdata-worker run-geofeeds         # run sync-geofeeds once locally, without Hatchet
+openipdata-worker run-geofeeds -skip-upload  # same, without uploading the rows
+openipdata-worker run-geofeeds -force-upload # same, uploading even after a drop of over 10%
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
@@ -111,7 +184,8 @@ cd hatchet && CGO_ENABLED=0 go build -trimpath -o ../bin/openipdata-worker .
 cd mmdbbuilder && CGO_ENABLED=0 go build -trimpath -o ../bin/mmdbbuilder .
 ```
 
-All `run-*` commands need `PGSQL`; `run-pdb` also needs `PDB_KEY`. Set `OPENIPDATA_DATA_DIR`
+The `run-*` commands need `PGSQL`, except `run-geofeeds`, which needs `R2` unless `-skip-upload`
+is given; `run-pdb` also needs `PDB_KEY`. Set `OPENIPDATA_DATA_DIR`
 to a local folder when running off the VM.
 
 ## VM setup

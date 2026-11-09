@@ -5,6 +5,7 @@
 //	openipdata-worker run-asn [-skip-publish]    # build-asn-data
 //	openipdata-worker run-pdb                    # sync-peeringdb
 //	openipdata-worker run-domains                # update-asn-domains
+//	openipdata-worker run-geofeeds [-skip-upload | -force-upload] # sync-geofeeds
 //
 // Environment: PGSQL (Postgres DSN), PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
@@ -15,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -29,6 +31,7 @@ import (
 
 	"openipdata.org/hatchet/asn"
 	"openipdata.org/hatchet/domains"
+	"openipdata.org/hatchet/geofeeds"
 	"openipdata.org/hatchet/pdb"
 )
 
@@ -43,6 +46,15 @@ type (
 	SyncPeeringDBInput    struct{}
 	UpdateASNDomainsInput struct{}
 )
+
+// SyncGeofeedsInput is the sync-geofeeds input; cron runs use the zero value.
+type SyncGeofeedsInput struct {
+	// SkipUpload writes the rows file but does not upload it (for manual test runs).
+	SkipUpload bool `json:"skip_upload"`
+	// ForceUpload uploads even if the row count dropped more than 10% (for a
+	// manual run after checking that the drop is real).
+	ForceUpload bool `json:"force_upload"`
+}
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -63,8 +75,10 @@ func main() {
 		err = runPDB(ctx)
 	case "run-domains":
 		err = runDomains(ctx)
+	case "run-geofeeds":
+		err = runGeofeeds(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, or run-domains)", command)
+		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, or run-geofeeds)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -111,6 +125,11 @@ func newDomainsPipeline(progress func(string)) *domains.Pipeline {
 	return &domains.Pipeline{PGSQL: pgsql(), Progress: progress}
 }
 
+// newGeofeedsPipeline reads the environment; progress receives log lines.
+func newGeofeedsPipeline(progress func(string)) *geofeeds.Pipeline {
+	return &geofeeds.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2")}
+}
+
 func pgsql() string { return env("PGSQL") }
 
 func dataDir() string {
@@ -140,6 +159,7 @@ func serve(ctx context.Context) error {
 			buildASNWorkflow(client),
 			syncPeeringDBWorkflow(client),
 			updateASNDomainsWorkflow(client),
+			syncGeofeedsWorkflow(client),
 		),
 		hatchet.WithSlots(4),
 	)
@@ -151,13 +171,16 @@ func serve(ctx context.Context) error {
 }
 
 // asnDBLimit serializes every workflow that writes the ASN tables.
-func asnDBLimit() hatchet.Concurrency {
+func asnDBLimit() hatchet.Concurrency { return oneRunLimit("asn-db") }
+
+// oneRunLimit lets one run at a time hold the named limit.
+func oneRunLimit(name string) hatchet.Concurrency {
 	maxRuns := int32(1)
 	strategy := hatchet.GroupRoundRobin
 	return hatchet.Concurrency{
-		Name:           "asn-db",
+		Name:           name,
 		IsTenantScoped: true,
-		Expression:     "'asn-db'",
+		Expression:     "'" + name + "'",
 		MaxRuns:        &maxRuns,
 		LimitStrategy:  &strategy,
 	}
@@ -282,6 +305,48 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	return wf
 }
 
+// syncGeofeedsWorkflow has no schedule yet: it runs only when triggered. The
+// URL lists stay on the VM; the checked rows go to the private R2 bucket for
+// build-geo-data. Nothing is published.
+func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("sync-geofeeds",
+		hatchet.WithWorkflowDescription("whois + IRR dumps + feed lists -> checked geofeed rows in private R2"),
+		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
+	)
+
+	discover := wf.NewTask("discover", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
+		p := newGeofeedsPipeline(taskLog(ctx))
+		if !input.SkipUpload {
+			// Fail before the downloads, and without retries: only an env change fixes it.
+			if err := p.CheckUpload(); err != nil {
+				return geofeeds.DiscoverOutput{}, hatchet.NewNonRetryableError(err)
+			}
+		}
+		return p.Discover(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+
+	// Each feed's result is saved as it comes in, so a retry resumes where it stopped.
+	check := wf.NewTask("check-feeds", func(ctx hatchet.Context, _ SyncGeofeedsInput) (geofeeds.CheckOutput, error) {
+		return newGeofeedsPipeline(taskLog(ctx)).CheckFeeds(ctx)
+	}, taskRetry(hatchet.WithParents(discover), hatchet.WithExecutionTimeout(2*time.Hour))...)
+
+	wf.NewTask("export-rows", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.ExportOutput, error) {
+		p := newGeofeedsPipeline(taskLog(ctx))
+		if !input.SkipUpload {
+			if err := p.CheckUpload(); err != nil {
+				return geofeeds.ExportOutput{}, hatchet.NewNonRetryableError(err)
+			}
+		}
+		out, err := p.ExportRows(ctx, !input.SkipUpload, input.ForceUpload)
+		if errors.Is(err, geofeeds.ErrGate) {
+			err = hatchet.NewNonRetryableError(err)
+		}
+		return out, err
+	}, taskRetry(hatchet.WithParents(check), hatchet.WithExecutionTimeout(time.Hour))...)
+
+	return wf
+}
+
 // runASN runs the build-asn-data tasks once, in order, without Hatchet.
 func runASN(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-asn", flag.ExitOnError)
@@ -340,5 +405,31 @@ func runDomains(ctx context.Context) error {
 		return err
 	}
 	_, err := p.RDAPDomains(ctx)
+	return err
+}
+
+// runGeofeeds runs the sync-geofeeds tasks once, in order, without Hatchet.
+func runGeofeeds(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-geofeeds", flag.ExitOnError)
+	skipUpload := flags.Bool("skip-upload", false, "write the rows file but do not upload it")
+	forceUpload := flags.Bool("force-upload", false, "upload even if the row count dropped more than 10%")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-geofeeds: unexpected argument %q", flags.Arg(0))
+	}
+
+	p := newGeofeedsPipeline(cliLog)
+	if !*skipUpload {
+		if err := p.CheckUpload(); err != nil {
+			return err
+		}
+	}
+	if _, err := p.Discover(ctx); err != nil {
+		return err
+	}
+	if _, err := p.CheckFeeds(ctx); err != nil {
+		return err
+	}
+	_, err := p.ExportRows(ctx, !*skipUpload, *forceUpload)
 	return err
 }
