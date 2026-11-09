@@ -334,3 +334,32 @@ func TestLookupRDAPStopsWhenFailing(t *testing.T) {
 		t.Errorf("%d stats downloads", statsRequests.Load())
 	}
 }
+
+func TestLookupRDAPStopsWithLastError(t *testing.T) {
+	var stats strings.Builder
+	for i := 0; i <= rdapMaxFailed; i++ {
+		fmt.Fprintf(&stats, "arin|US|ipv4|45.%d.0.0|256|20100101|allocated|abc\n", 10+i)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/stats" {
+			w.Write([]byte(stats.String()))
+			return
+		}
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	var logs []string
+	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true, Progress: func(s string) { logs = append(logs, s) },
+		rdap: []rdapRegistry{{"arin", server.URL + "/stats", nil, server.URL, time.Millisecond, 100, time.Millisecond}}}
+	out, err := p.LookupRDAP(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := out.Registries["arin"]
+	if s.Status != "stopped" || s.Failed != rdapMaxFailed || !strings.Contains(s.Error, "last: HTTP 503") {
+		t.Errorf("stats = %+v", s)
+	}
+	if len(logs) == 0 || !strings.Contains(logs[0], "rdap: arin: 11 blocks, 11 due, looking up 11") {
+		t.Errorf("first log line = %q", logs)
+	}
+}

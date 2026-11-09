@@ -359,11 +359,15 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
 	)
 
+	// rdap-lookups has no child: it runs beside discover -> check-feeds -> export-rows
+	// (about 40 minutes), so the rows do not wait for the RDAP pass (up to 2 hours).
+	// discover reads whatever rdap.jsonl holds when it gets there; results found in
+	// this run reach the rows in the next one. The run ends when all tasks end.
 	// Each result is appended as it comes in, so a retry resumes where it stopped.
-	rdap := wf.NewTask("rdap-lookups", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.RDAPOutput, error) {
+	wf.NewTask("rdap-lookups", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.RDAPOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
 		if !input.SkipUpload {
-			// Fail before the lookups, and without retries: only an env change fixes it.
+			// It runs for up to 2 hours: a bad R2 setting must stop the run now, not after it.
 			if err := p.CheckUpload(); err != nil {
 				return geofeeds.RDAPOutput{}, hatchet.NewNonRetryableError(err)
 			}
@@ -371,9 +375,17 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		return p.LookupRDAP(ctx, input.RDAPBudget)
 	}, taskRetry(hatchet.WithExecutionTimeout(3*time.Hour))...)
 
-	discover := wf.NewTask("discover", func(ctx hatchet.Context, _ SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
-		return newGeofeedsPipeline(taskLog(ctx)).Discover(ctx)
-	}, taskRetry(hatchet.WithParents(rdap), hatchet.WithExecutionTimeout(time.Hour))...)
+	discover := wf.NewTask("discover", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
+		p := newGeofeedsPipeline(taskLog(ctx))
+		if !input.SkipUpload {
+			// Start of the chain that ends in the upload: fail early, and
+			// without retries, since only an env change fixes it.
+			if err := p.CheckUpload(); err != nil {
+				return geofeeds.DiscoverOutput{}, hatchet.NewNonRetryableError(err)
+			}
+		}
+		return p.Discover(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
 
 	// Each feed's result is saved as it comes in, so a retry resumes where it stopped.
 	check := wf.NewTask("check-feeds", func(ctx hatchet.Context, _ SyncGeofeedsInput) (geofeeds.CheckOutput, error) {
@@ -516,7 +528,8 @@ func runDomains(ctx context.Context) error {
 	return err
 }
 
-// runGeofeeds runs the sync-geofeeds tasks once, in order, without Hatchet.
+// runGeofeeds runs the sync-geofeeds tasks once, without Hatchet: rdap-lookups beside
+// the discover -> check-feeds -> export-rows chain.
 func runGeofeeds(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-geofeeds", flag.ExitOnError)
 	skipUpload := flags.Bool("skip-upload", false, "write the rows file but do not upload it")
@@ -533,17 +546,24 @@ func runGeofeeds(ctx context.Context, args []string) error {
 			return err
 		}
 	}
-	if _, err := p.LookupRDAP(ctx, *rdapBudget); err != nil {
-		return err
+	// Like the workflow: the RDAP lookups run beside discover -> check-feeds -> export-rows,
+	// which use the results saved so far. Wait for both and report both errors.
+	rdapDone := make(chan error, 1)
+	go func() {
+		_, err := p.LookupRDAP(ctx, *rdapBudget)
+		rdapDone <- err
+	}()
+	_, err := p.Discover(ctx)
+	if err == nil {
+		_, err = p.CheckFeeds(ctx)
 	}
-	if _, err := p.Discover(ctx); err != nil {
-		return err
+	if err == nil {
+		_, err = p.ExportRows(ctx, !*skipUpload, *forceUpload)
 	}
-	if _, err := p.CheckFeeds(ctx); err != nil {
-		return err
+	if err != nil {
+		cliLog(fmt.Sprintf("geofeeds: %v; waiting for the RDAP lookups to finish", err))
 	}
-	_, err := p.ExportRows(ctx, !*skipUpload, *forceUpload)
-	return err
+	return errors.Join(err, <-rdapDone)
 }
 
 // runGeo runs the build-geo-data tasks once, in order, without Hatchet.

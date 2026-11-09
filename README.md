@@ -101,10 +101,15 @@ geo database build through the private R2 bucket. Nothing is published.
 
 | Task | Runs after | Does |
 |---|---|---|
-| `rdap-lookups` | | looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run |
-| `discover` | `rdap-lookups` | reads the whois and IRR dumps, the RDAP results, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them |
+| `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
+| `discover` | | reads the whois and IRR dumps, the RDAP results saved so far, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them (also checks the R2 settings first, unless `skip_upload`) |
 | `check-feeds` | `discover` | fetches every due feed, keeps a checked copy of each working one, and writes the lists |
 | `export-rows` | `check-feeds` | writes the rows of all working feeds that pass the ownership check, and uploads them to R2 |
+
+`rdap-lookups` has no child task: it runs at the same time as `discover` → `check-feeds` →
+`export-rows` (about 40 minutes), so the rows reach R2 without waiting for the RDAP pass (up to
+2 hours). `discover` uses the results already in `rdap.jsonl`; what this run finds is picked up by
+the next one. The run ends when all tasks have ended. `run-geofeeds` does the same.
 
 - Whois dumps: RIPE and APNIC (`inetnum`, `inet6num`), AFRINIC, LACNIC. IRR dumps: RIPE, APNIC
   (`route`, `route6`), ARIN, LACNIC, and over FTP from RADB: RADB itself plus its copies of ALTDB,
@@ -122,7 +127,8 @@ geo database build through the private R2 bucket. Nothing is published.
   after its last good lookup; a result not looked up for 90 days is removed.
   A feed is a `Geofeed` remark or a `geo` link, like in whois.
 - RDAP results are appended to `/var/lib/openipdata/geofeeds/rdap.jsonl` as they come in (a
-  retried task resumes) and compacted after each run. It is this workflow's own state: losing it
+  retried task resumes) and compacted after each run (a new file renamed over the old one).
+  `discover` may read it at any time: it skips a line still being written. It is this workflow's own state: losing it
   costs a few days of lookups, while CAIDA's lists still cover ARIN. Manual runs can pass
   `{"rdap_budget": N}` (or `run-geofeeds -rdap-budget N`) to cap the lookups per registry.
 - `hatchet/geofeeds/feeds.txt` lists operator feeds that no whois record points to (source `list`).

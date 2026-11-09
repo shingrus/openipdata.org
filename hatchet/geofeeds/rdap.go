@@ -58,8 +58,9 @@ const (
 	rdapNoneRecheck   = 30 * 24 * time.Hour
 	rdapFailedRecheck = 24 * time.Hour
 	rdapMaxBackoff    = 5 * time.Minute
-	rdapMaxLimited    = 5  // 429s in a row before a registry stops for this run
-	rdapMaxFailed     = 10 // failed lookups in a row before a registry stops for this run
+	rdapMaxLimited    = 5               // 429s in a row before a registry stops for this run
+	rdapMaxFailed     = 10              // failed lookups in a row before a registry stops for this run
+	rdapProgressEvery = 5 * time.Minute // a progress line per registry while it runs
 
 	// rdapRunLimit ends the lookups well inside the task's execution timeout:
 	// what is left is still due next run.
@@ -296,10 +297,13 @@ func (p *Pipeline) lookupRegistry(ctx context.Context, run rdapRun, reg rdapRegi
 	if len(due) > limit {
 		due = due[:limit]
 	}
+	p.log("rdap: %s: %d blocks, %d due, looking up %d at one every %s", reg.Name, stats.Blocks, stats.Due, len(due), reg.Interval)
+	lastProgress := time.Now()
 
 	ticker := time.NewTicker(reg.Interval)
 	defer ticker.Stop()
 	limited, failed := 0, 0
+	var lastErr error // why the last lookup without an answer failed
 	for _, c := range due {
 		if time.Now().After(run.deadline) {
 			stats.Status, stats.Error = "stopped", "out of time: the rest is due next run"
@@ -314,7 +318,7 @@ func (p *Pipeline) lookupRegistry(ctx context.Context, run rdapRun, reg rdapRegi
 			}
 			var status int
 			var retryAfter time.Duration
-			r, status, retryAfter = lookupBlock(ctx, client, reg, c.prefix)
+			r, status, retryAfter, lastErr = lookupBlock(ctx, client, reg, c.prefix)
 			if status != http.StatusTooManyRequests {
 				break
 			}
@@ -322,7 +326,7 @@ func (p *Pipeline) lookupRegistry(ctx context.Context, run rdapRun, reg rdapRegi
 			stats.RateLimited++
 			limited++
 			if limited >= rdapMaxLimited {
-				stats.Status = "stopped"
+				stats.Status, stats.Error = "stopped", fmt.Sprintf("rate limited %d times in a row", limited)
 				return stats, nil
 			}
 			wait := retryAfter
@@ -367,26 +371,40 @@ func (p *Pipeline) lookupRegistry(ctx context.Context, run rdapRun, reg rdapRegi
 		if answered {
 			failed = 0
 		} else if failed++; failed >= rdapMaxFailed {
-			stats.Status, stats.Error = "stopped", fmt.Sprintf("%d lookups in a row failed", failed)
+			stats.Status, stats.Error = "stopped", fmt.Sprintf("%d lookups in a row failed, last: %v", failed, lastErr)
 			return stats, nil
+		}
+		if time.Since(lastProgress) >= rdapProgressEvery {
+			lastProgress = time.Now()
+			p.log("rdap: %s: %d/%d lookups, %d with feeds, %d failed, %d rate limited%s",
+				reg.Name, stats.Lookups, len(due), stats.Found, stats.Failed, stats.RateLimited, lastFailure(failed, lastErr))
 		}
 	}
 	return stats, nil
 }
 
+// lastFailure describes the current run of failed lookups for a progress line.
+func lastFailure(failed int, err error) string {
+	if failed == 0 || err == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (last %d failed: %v)", failed, err)
+}
+
 // lookupBlock asks the registry about one block. It returns the HTTP status
 // and, for a 429, the server's Retry-After (0 if it gave none).
-func lookupBlock(ctx context.Context, client *http.Client, reg rdapRegistry, prefix netip.Prefix) (rdapRecord, int, time.Duration) {
+// The error says why a lookup got no answer (Status "failed"); it is nil otherwise.
+func lookupBlock(ctx context.Context, client *http.Client, reg rdapRegistry, prefix netip.Prefix) (rdapRecord, int, time.Duration, error) {
 	r := rdapRecord{Registry: reg.Name, Query: prefix.String(), Status: "failed"}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reg.BaseURL+"/ip/"+prefix.String(), nil)
 	if err != nil {
-		return r, 0, 0
+		return r, 0, 0, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/rdap+json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return r, 0, 0
+		return r, 0, 0, err
 	}
 	defer resp.Body.Close()
 	switch {
@@ -395,12 +413,12 @@ func lookupBlock(ctx context.Context, client *http.Client, reg rdapRegistry, pre
 		if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
 			wait = time.Duration(s) * time.Second
 		}
-		return r, resp.StatusCode, wait
+		return r, resp.StatusCode, wait, fmt.Errorf("HTTP %d", resp.StatusCode)
 	case resp.StatusCode == http.StatusNotFound:
 		r.Status = "none"
-		return r, resp.StatusCode, 0
+		return r, resp.StatusCode, 0, nil
 	case resp.StatusCode != http.StatusOK:
-		return r, resp.StatusCode, 0
+		return r, resp.StatusCode, 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var network struct {
 		StartAddress string `json:"startAddress"`
@@ -415,7 +433,7 @@ func lookupBlock(ctx context.Context, client *http.Client, reg rdapRegistry, pre
 		} `json:"links"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&network); err != nil {
-		return r, resp.StatusCode, 0
+		return r, resp.StatusCode, 0, fmt.Errorf("bad answer: %w", err)
 	}
 	// The same rule as for whois objects: a geofeed link (RFC 9632 for RDAP),
 	// or a remark that mentions "geofeed".
@@ -435,7 +453,7 @@ func lookupBlock(ctx context.Context, client *http.Client, reg rdapRegistry, pre
 	if len(r.Feeds) > 0 {
 		r.Status = "found"
 	}
-	return r, resp.StatusCode, 0
+	return r, resp.StatusCode, 0, nil
 }
 
 // readStatsBlocks lists the allocated and assigned blocks of an RIR stats

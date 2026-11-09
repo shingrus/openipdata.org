@@ -5,12 +5,16 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/csv"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -133,5 +137,147 @@ func TestReadDumpBroken(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err == nil {
 		t.Error("the broken dump was kept")
+	}
+}
+
+// rdap-lookups runs beside discover: Discover (and loadRDAP) must never fail or
+// see a partial result while rdap.jsonl is appended to in pieces and compacted.
+func TestDiscoverWhileRDAPIsWritten(t *testing.T) {
+	whois := gzipped(t, "inetnum: 192.0.2.0 - 192.0.2.255\ngeofeed: https://isp.example/geofeed.csv\n")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ripe.gz", func(w http.ResponseWriter, r *http.Request) { w.Write(whois) })
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	day := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
+	p := &Pipeline{
+		DataDir:      t.TempDir(),
+		dumps:        []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}},
+		caidaBase:    server.URL + "/caida", // 404: the CAIDA lists are optional
+		now:          func() time.Time { return day },
+		allowPrivate: true,
+	}
+	path := filepath.Join(p.dir(), RDAPFile)
+	if err := os.MkdirAll(p.dir(), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	const total = 600
+	var writeErr error
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		known := map[string]rdapRecord{}
+		var file *os.File
+		for i := 0; i < total && writeErr == nil; i++ {
+			if file == nil {
+				file, writeErr = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+				if writeErr != nil {
+					return
+				}
+			}
+			r := rdapRecord{Registry: "arin", Query: fmt.Sprintf("45.%d.%d.0/24", i/256, i%256), Status: "found",
+				OK: day.Format(time.RFC3339), Checked: day.Format(time.RFC3339), Next: day.Add(time.Hour).Format(time.RFC3339),
+				Feeds: []string{fmt.Sprintf("https://feed%d.example/geofeed.csv", i)}}
+			known[r.key()] = r
+			line, _ := json.Marshal(r)
+			line = append(line, '\n')
+			// Like a bufio flush in the middle of a line: a reader can see half of it.
+			for _, part := range [][]byte{line[:len(line)/2], line[len(line)/2:]} {
+				if _, writeErr = file.Write(part); writeErr != nil {
+					return
+				}
+				runtime.Gosched()
+			}
+			if i%100 == 99 { // the end of a run: close, then compact
+				if writeErr = file.Close(); writeErr != nil {
+					return
+				}
+				file = nil
+				writeErr = compactRDAP(path, known)
+			}
+		}
+		if file != nil {
+			writeErr = file.Close()
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var readErr error
+	go func() { // a bare reader, as fast as it can go
+		defer wg.Done()
+		last := 0
+		for {
+			known, err := loadRDAP(path)
+			if err != nil {
+				readErr = err
+				return
+			}
+			// Every record is whole, and none that was complete goes missing.
+			for _, r := range known {
+				if len(r.Feeds) != 1 || r.Status != "found" || r.OK == "" {
+					readErr = fmt.Errorf("partial record %+v", r)
+					return
+				}
+			}
+			if len(known) < last {
+				readErr = fmt.Errorf("records went from %d to %d", last, len(known))
+				return
+			}
+			last = len(known)
+			select {
+			case <-written:
+				return
+			default:
+			}
+		}
+	}()
+
+	lastBlocks := 0
+	for runs := 0; ; runs++ {
+		out, err := p.Discover(context.Background())
+		if err != nil {
+			t.Fatalf("Discover run %d: %v", runs, err)
+		}
+		if out.Blocks < lastBlocks {
+			t.Fatalf("blocks went from %d to %d", lastBlocks, out.Blocks)
+		}
+		lastBlocks = out.Blocks
+		select {
+		case <-written:
+		default:
+			if runs < 1000 {
+				continue
+			}
+		}
+		break
+	}
+	wg.Wait()
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if out, err := p.Discover(context.Background()); err != nil || out.Blocks != total+1 {
+		t.Errorf("final Discover: %d blocks, %v; want %d", out.Blocks, err, total+1)
+	}
+}
+
+// Discover and LookupRDAP share the dumps directory: no cache file may have two owners.
+func TestDownloadNamesDoNotClash(t *testing.T) {
+	seen := map[string]string{}
+	for _, d := range defaultDumps {
+		seen[d.Name+".gz"] = "dump " + d.Name
+	}
+	if len(seen) != len(defaultDumps) {
+		t.Error("two dumps share a cache file name")
+	}
+	dir := t.TempDir()
+	for _, reg := range defaultRDAP {
+		name := statsPath(dir, reg.StatsURL)
+		if who, ok := seen[filepath.Base(name)]; ok {
+			t.Errorf("stats file of %s is also the file of %s", reg.Name, who)
+		}
 	}
 }
