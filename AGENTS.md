@@ -39,12 +39,14 @@
 - `public.asn_geo_pdb` mirrors PeeringDB: `sync-peeringdb` replaces it in one transaction each run.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
-- Workflows that write the ASN tables share the `asn-db` concurrency limit.
+- Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` touches no ASN table and has
+  its own `geofeeds` limit.
 - Data between workflows goes through Postgres tables, except the geofeed rows (millions of rows):
   `sync-geofeeds` uploads them to one fixed key in the private R2 bucket and `build-geo-data` reads them from there.
   A workflow's own caches and state on the VM (e.g. `/var/lib/openipdata/geofeeds/`) are never read by another workflow.
-- `sync-geofeeds` HTTP requests use IPv4 only and must never reach non-public addresses (feed URLs come from
-  whois records anyone can write). Nothing it builds is published.
+- `sync-geofeeds` HTTP and FTP requests use IPv4 only and must never reach non-public addresses (feed URLs come from
+  whois records anyone can write). Nothing it builds is published. Its RDAP results live in `rdap.jsonl` on the VM,
+  not in Postgres.
 - Secrets live only in the env file. Never put secrets or visitor IPs in Hatchet task inputs, outputs, log lines, or returned errors.
 - Pass every error from `pgx.Connect` / `ParseConfig` through `schema.HideDSN`: pgx parse errors can echo the whole `PGSQL` value.
 - The `R2` setting holds the secret key: errors about it use the fixed `publish.ErrInvalidR2`, never the value.

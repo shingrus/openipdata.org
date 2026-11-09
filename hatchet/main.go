@@ -5,7 +5,7 @@
 //	openipdata-worker run-asn [-skip-publish]    # build-asn-data
 //	openipdata-worker run-pdb                    # sync-peeringdb
 //	openipdata-worker run-domains                # update-asn-domains
-//	openipdata-worker run-geofeeds [-skip-upload | -force-upload] # sync-geofeeds
+//	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] # sync-geofeeds
 //
 // Environment: PGSQL (Postgres DSN), PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
@@ -54,6 +54,8 @@ type SyncGeofeedsInput struct {
 	// ForceUpload uploads even if the row count dropped more than 10% (for a
 	// manual run after checking that the drop is real).
 	ForceUpload bool `json:"force_upload"`
+	// RDAPBudget, if positive, caps the RDAP lookups per registry (for test runs).
+	RDAPBudget int `json:"rdap_budget"`
 }
 
 func main() {
@@ -310,20 +312,26 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 // build-geo-data. Nothing is published.
 func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-geofeeds",
-		hatchet.WithWorkflowDescription("whois + IRR dumps + feed lists -> checked geofeed rows in private R2"),
+		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists -> checked geofeed rows in private R2"),
+		// Its own limit, not asn-db: it reads and writes no ASN table.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
 	)
 
-	discover := wf.NewTask("discover", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
+	// Each result is appended as it comes in, so a retry resumes where it stopped.
+	rdap := wf.NewTask("rdap-lookups", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.RDAPOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
 		if !input.SkipUpload {
-			// Fail before the downloads, and without retries: only an env change fixes it.
+			// Fail before the lookups, and without retries: only an env change fixes it.
 			if err := p.CheckUpload(); err != nil {
-				return geofeeds.DiscoverOutput{}, hatchet.NewNonRetryableError(err)
+				return geofeeds.RDAPOutput{}, hatchet.NewNonRetryableError(err)
 			}
 		}
-		return p.Discover(ctx)
-	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+		return p.LookupRDAP(ctx, input.RDAPBudget)
+	}, taskRetry(hatchet.WithExecutionTimeout(3*time.Hour))...)
+
+	discover := wf.NewTask("discover", func(ctx hatchet.Context, _ SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
+		return newGeofeedsPipeline(taskLog(ctx)).Discover(ctx)
+	}, taskRetry(hatchet.WithParents(rdap), hatchet.WithExecutionTimeout(time.Hour))...)
 
 	// Each feed's result is saved as it comes in, so a retry resumes where it stopped.
 	check := wf.NewTask("check-feeds", func(ctx hatchet.Context, _ SyncGeofeedsInput) (geofeeds.CheckOutput, error) {
@@ -413,6 +421,7 @@ func runGeofeeds(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-geofeeds", flag.ExitOnError)
 	skipUpload := flags.Bool("skip-upload", false, "write the rows file but do not upload it")
 	forceUpload := flags.Bool("force-upload", false, "upload even if the row count dropped more than 10%")
+	rdapBudget := flags.Int("rdap-budget", 0, "cap the RDAP lookups per registry (0: the default budgets)")
 	flags.Parse(args)
 	if flags.NArg() > 0 {
 		return fmt.Errorf("run-geofeeds: unexpected argument %q", flags.Arg(0))
@@ -423,6 +432,9 @@ func runGeofeeds(ctx context.Context, args []string) error {
 		if err := p.CheckUpload(); err != nil {
 			return err
 		}
+	}
+	if _, err := p.LookupRDAP(ctx, *rdapBudget); err != nil {
+		return err
 	}
 	if _, err := p.Discover(ctx); err != nil {
 		return err

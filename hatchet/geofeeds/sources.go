@@ -32,6 +32,19 @@ var defaultDumps = []dump{
 	{"apnic-route6", "irr", "https://ftp.apnic.net/apnic/whois/apnic.db.route6.gz"},
 	{"arin-irr", "irr", "https://ftp.arin.net/pub/rr/arin.db.gz"},
 	{"lacnic-irr", "irr", "https://ftp.lacnic.net/lacnic/irr/lacnic.db.gz"},
+	// RADB serves its own IRR and mirrors of others, over FTP only. Level3's
+	// own server did not answer, and RADB carries no copy of it.
+	{"radb", "irr", "ftp://ftp.radb.net/radb/dbase/radb.db.gz"},
+	{"altdb", "irr", "ftp://ftp.radb.net/radb/dbase/altdb.db.gz"},
+	{"nttcom", "irr", "ftp://ftp.radb.net/radb/dbase/nttcom.db.gz"},
+	{"jpirr", "irr", "ftp://ftp.radb.net/radb/dbase/jpirr.db.gz"},
+	{"tc", "irr", "ftp://ftp.radb.net/radb/dbase/tc.db.gz"},
+	{"reach", "irr", "ftp://ftp.radb.net/radb/dbase/reach.db.gz"},
+	{"bell", "irr", "ftp://ftp.radb.net/radb/dbase/bell.db.gz"},
+	{"bboi", "irr", "ftp://ftp.radb.net/radb/dbase/bboi.db.gz"},
+	{"canarie", "irr", "ftp://ftp.radb.net/radb/dbase/canarie.db.gz"},
+	{"panix", "irr", "ftp://ftp.radb.net/radb/dbase/panix.db.gz"},
+	{"nestegg", "irr", "ftp://ftp.radb.net/radb/dbase/nestegg.db.gz"},
 }
 
 // listedFeeds is the hand-kept list of operator feeds that whois does not

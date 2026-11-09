@@ -95,13 +95,30 @@ geo database build through the private R2 bucket. Nothing is published.
 
 | Task | Runs after | Does |
 |---|---|---|
-| `discover` | | reads the whois and IRR dumps, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them |
+| `rdap-lookups` | | looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run |
+| `discover` | `rdap-lookups` | reads the whois and IRR dumps, the RDAP results, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them |
 | `check-feeds` | `discover` | fetches every due feed, keeps a checked copy of each working one, and writes the lists |
 | `export-rows` | `check-feeds` | writes the rows of all working feeds that pass the ownership check, and uploads them to R2 |
 
 - Whois dumps: RIPE and APNIC (`inetnum`, `inet6num`), AFRINIC, LACNIC. IRR dumps: RIPE, APNIC
-  (`route`, `route6`), ARIN, LACNIC. A feed URL counts if it is in a `geofeed:` attribute or in any
+  (`route`, `route6`), ARIN, LACNIC, and over FTP from RADB: RADB itself plus its copies of ALTDB,
+  NTTCOM, JPIRR, TC, REACH, BELL, BBOI, CANARIE, PANIX and NESTEGG (Level3 has no reachable dump). A feed URL counts if it is in a `geofeed:` attribute or in any
   value that mentions "geofeed" (such as `remarks: Geofeed <url>`); fetching will weed out the rest.
+- RDAP covers the space no public dump holds: the blocks ARIN delegates directly (networks
+  reassigned inside them are not looked up), and the LACNIC blocks of Brazil
+  and Mexico, whose national registries keep them. Blocks come from the RIRs' delegated stats
+  files. Each run looks up the due ones (never checked first), at most 20,000 for ARIN (4 a second),
+  3,000 for registro.br and 2,000 for LACNIC (1 a second). A block with a feed is checked again
+  after 7 days, one without after 30, a failed lookup after 1. A 429 waits (`Retry-After`, or 15 s
+  doubling up to 5 minutes) and asks again; after 5 in a row that registry stops for the run.
+  So does a registry after 10 failed lookups in a row, and every registry after 2 hours: the
+  rest is due next run. A failed lookup keeps the block's last answer, which counts for 45 days
+  after its last good lookup; a result not looked up for 90 days is removed.
+  A feed is a `Geofeed` remark or a `geo` link, like in whois.
+- RDAP results are appended to `/var/lib/openipdata/geofeeds/rdap.jsonl` as they come in (a
+  retried task resumes) and compacted after each run. It is this workflow's own state: losing it
+  costs a few days of lookups, while CAIDA's lists still cover ARIN. Manual runs can pass
+  `{"rdap_budget": N}` (or `run-geofeeds -rdap-budget N`) to cap the lookups per registry.
 - `hatchet/geofeeds/feeds.txt` lists operator feeds that no whois record points to (source `list`).
 - CAIDA's lists (union of the last 7 days) add ARIN and NIR feeds, which have no public dumps.
   Their use is governed by the CAIDA AUA for public datasets: publications must cite
@@ -169,6 +186,7 @@ openipdata-worker run-domains          # run update-asn-domains once locally, wi
 openipdata-worker run-geofeeds         # run sync-geofeeds once locally, without Hatchet
 openipdata-worker run-geofeeds -skip-upload  # same, without uploading the rows
 openipdata-worker run-geofeeds -force-upload # same, uploading even after a drop of over 10%
+openipdata-worker run-geofeeds -skip-upload -rdap-budget 100  # a quick local test run
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1

@@ -28,6 +28,7 @@ type Pipeline struct {
 
 	// Overridden in tests.
 	dumps        []dump
+	rdap         []rdapRegistry
 	caidaBase    string
 	now          func() time.Time
 	allowPrivate bool // let the HTTP clients reach test servers on 127.0.0.1
@@ -98,9 +99,10 @@ func (c *collector) add(source, u string, prefix netip.Prefix) {
 	}
 }
 
-// Discover downloads the dumps and lists and writes BlocksFile and URLsFile.
-// A source that fails is skipped (its previous download is used if there is
-// one); the run fails only if no whois dump could be read.
+// Discover downloads the dumps and lists, adds the stored RDAP results, and
+// writes BlocksFile and URLsFile. A source that fails is skipped (its previous
+// download is used if there is one), except a whois dump: without one, its
+// registry's space would look unowned, so the run fails.
 func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 	started := time.Now()
 	out := DiscoverOutput{Sources: map[string]SourceStats{}}
@@ -146,6 +148,39 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 		return out, fmt.Errorf("whois dumps could not be read: %s", strings.Join(missing, ", "))
 	}
 
+	// Blocks found over RDAP (rdap-lookups), with the registry as source.
+	known, err := loadRDAP(filepath.Join(p.dir(), RDAPFile))
+	if err != nil {
+		return out, err
+	}
+	rdapStats := map[string]*SourceStats{}
+	rdapURLs := map[string]map[string]bool{}
+	now := p.clock().UTC()
+	for _, r := range known {
+		// A result with no recent good lookup is left out: the block may have
+		// left the registry, or changed hands.
+		if len(r.Feeds) == 0 || !r.trusted(now) {
+			continue
+		}
+		stats := rdapStats[r.Registry]
+		if stats == nil {
+			stats = &SourceStats{Status: "rdap"}
+			rdapStats[r.Registry], rdapURLs[r.Registry] = stats, map[string]bool{}
+		}
+		for _, prefix := range networkPrefixes(r) {
+			for _, u := range r.Feeds {
+				c.add(r.Registry, u, prefix)
+				stats.Blocks++
+				rdapURLs[r.Registry][u] = true
+			}
+		}
+	}
+	for name, stats := range rdapStats {
+		stats.URLs = len(rdapURLs[name])
+		out.Sources["rdap-"+name] = *stats
+		p.log("discover: rdap-%s: %d blocks, %d URLs", name, stats.Blocks, stats.URLs)
+	}
+
 	listed := parseFeedList(listedFeeds)
 	for _, u := range listed {
 		c.add("list", u, netip.Prefix{})
@@ -189,7 +224,13 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 // readDump refreshes one dump and adds its feed URLs to c.
 func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collector, d dump, path string) SourceStats {
 	var stats SourceStats
-	status, err := fetchFile(ctx, client, d.URL, path)
+	var status string
+	var err error
+	if strings.HasPrefix(d.URL, "ftp://") {
+		status, err = fetchFTP(ctx, d.URL, path, p.allowPrivate)
+	} else {
+		status, err = fetchFile(ctx, client, d.URL, path)
+	}
 	if err != nil {
 		stats.Error = err.Error()
 		if _, statErr := os.Stat(path); statErr != nil {

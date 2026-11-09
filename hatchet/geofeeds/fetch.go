@@ -46,22 +46,26 @@ func publicAddr(addr netip.Addr) bool {
 	return true
 }
 
+// publicOnly is a net.Dialer Control function: it refuses any address that is
+// not public, after DNS resolution. Every dialer in this package uses it.
+func publicOnly(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	if addr, err := netip.ParseAddr(host); err != nil || !publicAddr(addr) {
+		return errBlockedAddress
+	}
+	return nil
+}
+
 // newHTTPClient dials IPv4 only (on the VM, IPv6 egress stalls for many hosts)
 // and only public addresses, checked after DNS resolution and on redirects.
 // allowPrivate lifts the address check for tests.
 func newHTTPClient(timeout time.Duration, allowPrivate bool) *http.Client {
 	dialer := &net.Dialer{Timeout: 20 * time.Second, KeepAlive: 30 * time.Second}
 	if !allowPrivate {
-		dialer.Control = func(_, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return err
-			}
-			if addr, err := netip.ParseAddr(host); err != nil || !publicAddr(addr) {
-				return errBlockedAddress
-			}
-			return nil
-		}
+		dialer.Control = publicOnly
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = func(ctx context.Context, _, addr string) (net.Conn, error) {
