@@ -13,6 +13,12 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 | `hatchet/` | `openipdata-worker`: the Hatchet worker; one folder per workflow |
 | `mmdbbuilder/` | `mmdbbuilder`: standalone MMDB build tool |
 
+Shared code in `hatchet/`: `schema/` (Postgres tables), `publish/` (R2 and GitHub
+releases), `rirstats/` (RIR delegated-extended stats parsing, address range to
+prefixes), `download/` (conditional HTTP download) and `outputs/` (pruning old output
+directories, last log lines, file size). `sync-geofeeds` and
+`build-geo-data` share `rirstats` and `download` but keep their own downloaded files.
+
 `hatchet/` and `mmdbbuilder/` are separate Go modules and build separately.
 The worker runs `mmdbbuilder` as an external binary; it does not import it.
 The repo root has no Go code.
@@ -88,7 +94,7 @@ The replace is refused if it would shrink the table by more than 10%. Needs `PDB
   older rows, then RDAP results past their re-check (found: 180 days, not found: 30 days).
 - `checked_at` records the last check; "not found" is stored as `domain = NULL`.
 
-### `sync-geofeeds` (`hatchet/geofeeds/`, no schedule yet: trigger it by hand)
+### `sync-geofeeds` (`hatchet/geofeeds/`, cron `0 0 * * *` UTC)
 
 Finds every geofeed (RFC 8805) URL it can, checks each feed, and hands the checked rows to the
 geo database build through the private R2 bucket. Nothing is published.
@@ -159,10 +165,16 @@ geo database build through the private R2 bucket. Nothing is published.
   feed's host (`api.cloudflare.com` and `www.cloudflare.com` are one owner), except on shared
   hosts, listed in `export.go`: there it is the first path segment (a GitHub user, an S3 or GCS
   bucket) or, on feed hosting services such as `geofeed.info`, the file itself.
+- A row must be public space: an IPv6 prefix outside `2000::/3`, or inside a reserved range
+  (`2001::/23` with Teredo, the documentation ranges `2001:db8::/32` and `3fff::/20`, and 6to4
+  `2002::/16`), is rejected as reserved. A city over 100 bytes, or with control characters or markup, is
+  dropped from the row (`bad_city`).
 - A row broader than another owner's block (a /16 over their /24) is kept and counted as
   `broad_rows`: in the MMDB, that owner's more specific rows win where they exist.
 - A stored feed copy that cannot be read is skipped (`unreadable_feeds`); the next check
   rewrites it.
+- `export-rows` reads each stored feed twice (a check, then the data). Rows a whois block backs
+  go to a temporary file and are copied after the others.
 - `export-rows` writes `/var/lib/openipdata/geofeeds/out/geofeed-rows.csv.gz`
   (`prefix,country,region,city,feed_url`) and uploads it to the **private** R2 bucket at the
   fixed key `internal/geofeeds/geofeed-rows.csv.gz`, replacing the last upload. `build-geo-data`
@@ -174,6 +186,50 @@ geo database build through the private R2 bucket. Nothing is published.
 - No Postgres tables. Dumps and feeds are streamed, never held whole in memory; local full runs
   peaked at 240–360 MB, took about 5–10 minutes, kept about 240 MB of checked feeds on disk,
   and exported about 6.4 million rows (36 MB gzipped).
+
+### `build-geo-data` (`hatchet/geo/`, cron `0 7,19 * * *` UTC)
+
+Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
+layers before it put under its prefixes.
+
+| Task | Runs after | Does |
+|---|---|---|
+| `download` | | rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows from Postgres, geofeed rows from R2 |
+| `build-mmdb` | `download` | runs `mmdbbuilder geo` on the layer files → `ip2geo-openipdata-<date>.mmdb` |
+| `publish` | `download`, `build-mmdb` | uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, pings `HC_PING_GEO` if set |
+
+- Layers, in order:
+  1. the five RIRs' delegated stats: the country each block was delegated to (IPv4 and IPv6);
+  2. ipverse/geo-ip-blocks (CC0): the country in registration records (IPv4 only);
+  3. PeeringDB: country and city for every announced prefix of an ASN that has one dominant
+     city in `public.asn_geo_pdb` and the same country in `public.asn`. An ASN that
+     `build-asn-data` has not seen in its source for 7 days (`public.asn.seen_at`) is left out;
+     a NULL `seen_at` counts only until the first run has stamped some row. This layer only refines:
+     its rows apply where layers 1 and 2 gave the same country or none, so an ASN's city does
+     not replace more specific networks registered in another country;
+  4. the geofeed rows that `sync-geofeeds` left in R2. A row broader than one RIR block (layer 1)
+     is skipped (`-within-first`), so a feed cannot change the country of networks that belong
+     to someone else; a row inside a block, or equal to it, is used.
+- The RIR stats' `ZZ`, `EU` and `AP` are not countries: those blocks give no country, but they
+  still count as delegated blocks for the `-within-first` rule.
+- Within a layer a more specific prefix wins, and for a repeated prefix the last row wins.
+  `export-rows` writes the rows that a whois block backs last, so they win over the same
+  prefix in another feed.
+- `mmdbbuilder geo` skips, with a warning, a row with an IPv6 prefix outside `2000::/3` (the
+  tree keeps IPv4 space at `::/96`), and leaves out a city that is over 100 bytes or not plain
+  text, and prints how many per layer (`layer <name>: <n> cities left out`).
+- Downloads are cached in `/var/lib/openipdata/geo/downloads/` (`Last-Modified` and ETag). When
+  a server fails, a copy it gave or confirmed in the last 3 days is used; otherwise the task
+  fails. A source that is too small (under 1,000 blocks per RIR, 200 countries, 100 PeeringDB
+  ASNs) also fails the task.
+- Geofeed rows older than 3 days are still used, with a warning, but `publish` then skips the
+  `HC_PING_GEO` ping, so the health check reports that `sync-geofeeds` has stopped delivering.
+- Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB
+  is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2geo-openipdata.mmdb`.
+- Needs `PGSQL` and `R2` always, and `GITHUB_TOKEN` to publish; a missing setting fails
+  `download` without retries. Manual runs can pass `{"skip_publish": true}` (or
+  `run-geo -skip-publish`) to build without uploading.
+- It only reads the ASN tables, so it has its own `geo` concurrency limit.
 
 ## Commands
 
@@ -187,7 +243,10 @@ openipdata-worker run-geofeeds         # run sync-geofeeds once locally, without
 openipdata-worker run-geofeeds -skip-upload  # same, without uploading the rows
 openipdata-worker run-geofeeds -force-upload # same, uploading even after a drop of over 10%
 openipdata-worker run-geofeeds -skip-upload -rdap-budget 100  # a quick local test run
+openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet
+openipdata-worker run-geo -skip-publish  # same, without uploading
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
+mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] <layer.csv[.gz]>...
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
@@ -203,7 +262,7 @@ cd mmdbbuilder && CGO_ENABLED=0 go build -trimpath -o ../bin/mmdbbuilder .
 ```
 
 The `run-*` commands need `PGSQL`, except `run-geofeeds`, which needs `R2` unless `-skip-upload`
-is given; `run-pdb` also needs `PDB_KEY`. Set `OPENIPDATA_DATA_DIR`
+is given; `run-pdb` also needs `PDB_KEY`, and `run-geo` also needs `R2`. Set `OPENIPDATA_DATA_DIR`
 to a local folder when running off the VM.
 
 ## VM setup

@@ -3,7 +3,6 @@ package geofeeds
 import (
 	"bufio"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"openipdata.org/hatchet/download"
+	"openipdata.org/hatchet/rirstats"
 )
 
 // RDAPFile holds every RDAP lookup result, one JSON line each, appended as
@@ -160,7 +162,7 @@ func (p *Pipeline) LookupRDAP(ctx context.Context, budget int) (RDAPOutput, erro
 	statsErr := map[string]error{}
 	for _, reg := range registries {
 		if _, done := statsErr[reg.StatsURL]; !done {
-			_, statsErr[reg.StatsURL] = fetchFile(ctx, statsClient, reg.StatsURL, statsPath(dumpDir, reg.StatsURL))
+			_, statsErr[reg.StatsURL] = download.File(ctx, statsClient, reg.StatsURL, statsPath(dumpDir, reg.StatsURL))
 		}
 	}
 
@@ -445,38 +447,12 @@ func readStatsBlocks(path string, countries map[string]bool) ([]netip.Prefix, er
 	}
 	defer file.Close()
 	var out []netip.Prefix
-	sc := bufio.NewScanner(file)
-	for sc.Scan() {
-		f := strings.Split(sc.Text(), "|")
-		if len(f) < 7 || strings.HasPrefix(f[0], "#") || (f[6] != "allocated" && f[6] != "assigned") {
-			continue
+	err = rirstats.Parse(file, func(country string, prefixes []netip.Prefix) {
+		if countries == nil || countries[country] {
+			out = append(out, prefixes...)
 		}
-		if countries != nil && !countries[f[1]] {
-			continue
-		}
-		start, err := netip.ParseAddr(f[3])
-		if err != nil {
-			continue
-		}
-		value, err := strconv.ParseUint(f[4], 10, 64)
-		if err != nil || value == 0 {
-			continue
-		}
-		switch {
-		case f[2] == "ipv4" && start.Is4():
-			first := uint64(binary.BigEndian.Uint32(start.AsSlice()))
-			last := first + value - 1
-			if last > 0xffffffff {
-				continue
-			}
-			var b [4]byte
-			binary.BigEndian.PutUint32(b[:], uint32(last))
-			out = append(out, rangeToPrefixes(start, netip.AddrFrom4(b))...)
-		case f[2] == "ipv6" && start.Is6() && value <= 128:
-			out = append(out, netip.PrefixFrom(start, int(value)).Masked())
-		}
-	}
-	if err := sc.Err(); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 	if len(out) == 0 {
@@ -549,7 +525,7 @@ func networkPrefixes(r rdapRecord) []netip.Prefix {
 	end, err2 := netip.ParseAddr(r.End)
 	if err1 == nil && err2 == nil && start.Is4() == end.Is4() && !end.Less(start) &&
 		query.Contains(start) && query.Contains(end) {
-		return rangeToPrefixes(start, end)
+		return rirstats.RangeToPrefixes(start, end)
 	}
 	return []netip.Prefix{query}
 }

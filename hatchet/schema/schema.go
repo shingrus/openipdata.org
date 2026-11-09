@@ -32,6 +32,10 @@ var statements = []string{
 	`CREATE INDEX IF NOT EXISTS idx_asn_org_trim ON public.asn (TRIM(organization))`,
 	`CREATE INDEX IF NOT EXISTS idx_asn_org_slug ON public.asn (organization_slug)`,
 	`CREATE INDEX IF NOT EXISTS idx_asn_country_trim ON public.asn (TRIM(country))`,
+	// seen_at: last build-asn-data run that found the ASN in the source. Rows
+	// are never deleted, so this tells current ASNs from old ones; NULL for
+	// rows written before the column was added.
+	`ALTER TABLE public.asn ADD COLUMN IF NOT EXISTS seen_at TIMESTAMPTZ`,
 	`CREATE TABLE IF NOT EXISTS public.asn_domain (
 		asn BIGINT PRIMARY KEY,
 		domain TEXT

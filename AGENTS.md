@@ -8,8 +8,8 @@
 ## Layout
 
 - `infra/`: VM provisioning (`init-hatchet-runner-vm.sh`), systemd unit, env template. No Go code.
-- `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`, `hatchet/geofeeds/` for `sync-geofeeds`). `hatchet/schema/` creates and upgrades the shared Postgres tables; `hatchet/publish/` uploads artifacts to R2 and GitHub releases.
-- `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn` now).
+- `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`, `hatchet/geofeeds/` for `sync-geofeeds`, `hatchet/geo/` for `build-geo-data`). `hatchet/schema/` creates and upgrades the shared Postgres tables; `hatchet/publish/` uploads artifacts to R2 and GitHub releases; `hatchet/rirstats/` parses RIR delegated-extended stats and splits address ranges into prefixes; `hatchet/download/` downloads a file unless the local copy is current (the caller passes the HTTP client); `hatchet/outputs/` prunes old output directories and has the small helpers `asn` and `geo` share (last log lines, file size). Workflows share this code, never each other's downloaded files.
+- `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn`, `geo`).
 - No `go.mod` or Go code at the repo root. Each module builds on its own.
 - `hatchet` must not import `mmdbbuilder`; it runs the `mmdbbuilder` binary found next to its own executable.
 
@@ -36,11 +36,13 @@
   `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`.
 - Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand.
 - Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
+  `build-asn-data` sets `public.asn.seen_at` for every ASN in the source each run; readers use it to ignore old rows
+  (NULL = not yet seen since the column was added).
 - `public.asn_geo_pdb` mirrors PeeringDB: `sync-peeringdb` replaces it in one transaction each run.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
 - Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` touches no ASN table and has
-  its own `geofeeds` limit.
+  its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.
 - Data between workflows goes through Postgres tables, except the geofeed rows (millions of rows):
   `sync-geofeeds` uploads them to one fixed key in the private R2 bucket and `build-geo-data` reads them from there.
   A workflow's own caches and state on the VM (e.g. `/var/lib/openipdata/geofeeds/`) are never read by another workflow.

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 //go:embed countries.txt
@@ -41,6 +43,7 @@ const (
 	rejectReserved   = "reserved"    // not public: private, loopback, shared (100.64/10), documentation…
 	rejectTooBroad   = "too_broad"   // shorter than /8 (IPv4) or /16 (IPv6)
 	dropBadRegion    = "bad_region"  // row kept without its region
+	dropBadCity      = "bad_city"    // row kept without its city
 )
 
 // feedRow is one checked geofeed line: prefix,country,region,city. The postal
@@ -51,7 +54,8 @@ type feedRow struct {
 }
 
 // parseRow checks one RFC 8805 record. It returns the row, or the reason it
-// was rejected; a malformed region is dropped and reported as dropBadRegion.
+// was rejected. A malformed region or city is dropped from the row, which is
+// kept, and reported as dropBadRegion or dropBadCity.
 func parseRow(fields []string) (feedRow, string) {
 	if len(fields) < 2 {
 		return feedRow{}, rejectBadLine
@@ -77,15 +81,36 @@ func parseRow(fields []string) (feedRow, string) {
 	if !countries[row.country] {
 		return feedRow{}, rejectBadCountry
 	}
+	dropped := ""
+	if !plainCity(row.city) {
+		row.city, dropped = "", dropBadCity
+	}
 	region := strings.ToUpper(field(2))
 	if region == "" {
-		return row, ""
+		return row, dropped
 	}
 	if !regionPattern.MatchString(region) || region[:2] != row.country {
 		return row, dropBadRegion
 	}
 	row.region = region
-	return row, ""
+	return row, dropped
+}
+
+const maxCityLen = 100 // bytes; the longest real city names are well under it
+
+// plainCity reports whether a city is safe to pass on: the text goes into a
+// public database as the feed wrote it, so it must be short, valid UTF-8, and
+// free of control characters and markup.
+func plainCity(city string) bool {
+	if len(city) > maxCityLen || !utf8.ValidString(city) {
+		return false
+	}
+	for _, r := range city {
+		if unicode.IsControl(r) || r == '<' || r == '>' {
+			return false
+		}
+	}
+	return true
 }
 
 // parseRowPrefix accepts a prefix or a bare address (a single host).
@@ -206,7 +231,7 @@ func writeFeed(body io.Reader, path string, header feedHeader) (feedHeader, erro
 		row, reason := parseRow(fields)
 		if reason != "" {
 			header.Rejected[reason]++
-			if reason != dropBadRegion {
+			if reason != dropBadRegion && reason != dropBadCity {
 				continue
 			}
 		}

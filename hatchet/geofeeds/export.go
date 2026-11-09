@@ -21,6 +21,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 
 	"openipdata.org/hatchet/publish"
+	"openipdata.org/hatchet/rirstats"
 )
 
 const (
@@ -34,6 +35,7 @@ const (
 	uploadFile     = "upload.json" // what the last upload sent
 	maxRowsDrop    = 0.10          // refuse an upload with this much fewer rows than the last one
 	minFirstUpload = 1_000_000     // with no previous upload, refuse fewer rows than this
+	minFeeds       = 5000          // refuse an upload from fewer working feeds than this
 )
 
 // dropOtherOwner counts rows dropped because the most specific whois block
@@ -190,17 +192,27 @@ func (o *owners) covering(p netip.Prefix) []int32 {
 	return nil
 }
 
-// allows applies the ownership rule to one row of a feed on site: the row is
-// kept unless the most specific whois block covering it links only feeds on
-// other sites. Operators link their feed from a few whois records but
-// describe all their space in it, so a row outside every linking block stays.
-func (o *owners) allows(site string, p netip.Prefix) bool {
+// classify applies the ownership rule to one row of a feed on site, with one
+// lookup. backed: the most specific whois block covering the row links a feed
+// on site, so the registry's record backs it. allowed: the row is kept, which
+// is every backed row, and every row that no block covers. A row is dropped
+// when the most specific block covering it links only feeds on other sites.
+// Operators link their feed from a few whois records but describe all their
+// space in it, so a row outside every linking block stays.
+func (o *owners) classify(site string, p netip.Prefix) (backed, allowed bool) {
 	sites := o.covering(p)
 	if sites == nil {
-		return true
+		return false, true
 	}
 	id, ok := o.sites[site]
-	return ok && slices.Contains(sites, id)
+	backed = ok && slices.Contains(sites, id)
+	return backed, backed
+}
+
+// allows reports whether the row is kept (see classify).
+func (o *owners) allows(site string, p netip.Prefix) bool {
+	_, allowed := o.classify(site, p)
+	return allowed
 }
 
 // spansOther reports whether p contains a more specific block that links no
@@ -208,7 +220,7 @@ func (o *owners) allows(site string, p netip.Prefix) bool {
 // that block's owner win wherever they exist.
 func (o *owners) spansOther(site string, p netip.Prefix) bool {
 	id, known := o.sites[site]
-	first, last := p.Masked().Addr(), lastAddr(p)
+	first, last := p.Masked().Addr(), rirstats.LastAddr(p)
 	i := sort.Search(len(o.sorted), func(i int) bool { return o.sorted[i].Addr().Compare(first) >= 0 })
 	for ; i < len(o.sorted) && o.sorted[i].Addr().Compare(last) <= 0; i++ {
 		inner := o.sorted[i]
@@ -273,12 +285,24 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 	gz := gzip.NewWriter(file)
 	w := csv.NewWriter(gz)
 	w.Write([]string{"prefix", "country", "region", "city", "feed_url"})
+	// The rows a whois block backs go last, because for a prefix that several
+	// feeds list, the build keeps the last row. They wait in a second file
+	// and are copied after the others.
+	backedFile, err := os.CreateTemp(outDir, "backed-*.csv.tmp")
+	if err != nil {
+		return out, err
+	}
+	defer os.Remove(backedFile.Name())
+	defer backedFile.Close()
+	backedW := csv.NewWriter(backedFile)
+	usable := make([]string, 0, len(urls))
 	for _, u := range urls {
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
 		path := feedPath(filepath.Join(p.dir(), FeedsDir), u)
-		rows, err := p.exportFeed(w, idx, u, path, &out)
+		// The copy is read once to check it, so a damaged one adds no rows.
+		err := readStoredFeed(path, func([]string, netip.Prefix) {})
 		if errors.Is(err, os.ErrNotExist) {
 			out.MissingFeeds++
 			continue
@@ -289,11 +313,31 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 			out.UnreadableFeeds++
 			continue
 		}
-		out.Feeds++
+		usable = append(usable, u)
+	}
+	out.Feeds = len(usable)
+	for _, u := range usable {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		rows, err := p.exportFeed(w, backedW, idx, u, feedPath(filepath.Join(p.dir(), FeedsDir), u), &out)
+		if err != nil {
+			return out, err // it was readable a moment ago
+		}
 		out.Rows += rows
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
+		return out, err
+	}
+	backedW.Flush()
+	if err := backedW.Error(); err != nil {
+		return out, err
+	}
+	if _, err := backedFile.Seek(0, io.SeekStart); err != nil {
+		return out, err
+	}
+	if _, err := io.Copy(gz, backedFile); err != nil {
 		return out, err
 	}
 	if err := gz.Close(); err != nil {
@@ -324,22 +368,25 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 }
 
 // exportFeed copies the rows of one stored feed that pass the ownership
-// check. The copy is read twice, first to check it, so a damaged one adds no
-// rows and no feed is held in memory.
-func (p *Pipeline) exportFeed(w *csv.Writer, idx *owners, feed, path string, out *ExportOutput) (int, error) {
-	if err := readStoredFeed(path, func([]string, netip.Prefix) {}); err != nil {
-		return 0, err
-	}
+// check: rows a whois block backs go to backedW, the others to w. Drops and
+// broad rows are counted from the rows that are not backed.
+func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, feed, path string, out *ExportOutput) (int, error) {
 	site, rows, dropped := feedSite(feed), 0, 0
 	err := readStoredFeed(path, func(rec []string, prefix netip.Prefix) {
-		if !idx.allows(site, prefix) {
+		backed, allowed := idx.classify(site, prefix)
+		row := []string{rec[0], rec[1], rec[2], rec[3], feed}
+		switch {
+		case backed:
+			backedW.Write(row)
+		case !allowed:
 			dropped++
 			return
+		default:
+			if idx.spansOther(site, prefix) {
+				out.BroadRows++
+			}
+			w.Write(row)
 		}
-		if idx.spansOther(site, prefix) {
-			out.BroadRows++
-		}
-		w.Write([]string{rec[0], rec[1], rec[2], rec[3], feed})
 		rows++
 	})
 	if dropped > 0 {
@@ -398,6 +445,8 @@ func (p *Pipeline) uploadRows(ctx context.Context, r2 *publish.R2, path string, 
 	switch {
 	case force:
 		p.log("export: gate skipped (force_upload)")
+	case out.Feeds < minFeeds:
+		return fmt.Errorf("%w: %d working feeds, fewer than %d", ErrGate, out.Feeds, minFeeds)
 	case last.Rows > 0 && float64(out.Rows) < float64(last.Rows)*(1-maxRowsDrop):
 		return fmt.Errorf("%w: %d rows, down from %d on %s", ErrGate, out.Rows, last.Rows, last.Date)
 	case last.Rows == 0 && out.Rows < minFirstUpload:

@@ -1,7 +1,6 @@
 package geofeeds
 
 import (
-	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -79,28 +78,6 @@ func TestObjectPrefixes(t *testing.T) {
 		}
 		if ok != tt.ok || (err != nil) != tt.bad || !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("%v: got %v ok=%v err=%v, want %v ok=%v bad=%v", tt.obj, got, ok, err, tt.want, tt.ok, tt.bad)
-		}
-	}
-}
-
-func TestRangeToPrefixes(t *testing.T) {
-	tests := []struct {
-		from, to string
-		want     []string
-	}{
-		{"0.0.0.0", "255.255.255.255", []string{"0.0.0.0/0"}},
-		{"255.255.255.255", "255.255.255.255", []string{"255.255.255.255/32"}},
-		{"192.0.2.0", "192.0.3.127", []string{"192.0.2.0/24", "192.0.3.0/25"}},
-		{"2001:db8::", "2001:db8::ffff", []string{"2001:db8::/112"}},
-		{"::", "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", []string{"::/0"}},
-	}
-	for _, tt := range tests {
-		var got []string
-		for _, p := range rangeToPrefixes(netip.MustParseAddr(tt.from), netip.MustParseAddr(tt.to)) {
-			got = append(got, p.String())
-		}
-		if !reflect.DeepEqual(got, tt.want) {
-			t.Errorf("%s - %s: got %v, want %v", tt.from, tt.to, got, tt.want)
 		}
 	}
 }

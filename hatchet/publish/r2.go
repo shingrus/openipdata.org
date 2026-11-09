@@ -1,5 +1,6 @@
 // Package publish uploads build artifacts to Cloudflare R2 and to a rolling
-// GitHub release, and pings an optional healthchecks.io check afterwards.
+// GitHub release, and pings an optional healthchecks.io check afterwards. It
+// also downloads the files one workflow leaves in R2 for another.
 package publish
 
 import (
@@ -8,8 +9,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -19,7 +22,7 @@ import (
 // secret key, so errors never repeat it (Hatchet stores returned errors).
 var ErrInvalidR2 = errors.New("invalid R2 configuration (want https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>)")
 
-// R2 uploads to one Cloudflare R2 bucket through its S3-compatible API.
+// R2 uploads to and downloads from one Cloudflare R2 bucket through its S3-compatible API.
 type R2 struct {
 	client *minio.Client
 	bucket string
@@ -80,4 +83,23 @@ func (r *R2) Upload(ctx context.Context, key, path string) (string, error) {
 		return "", fmt.Errorf("upload %s to %s: %w", filepath.Base(path), location, err)
 	}
 	return location, nil
+}
+
+// Download saves the object at key to path (through a temporary file) and
+// returns its upload time.
+func (r *R2) Download(ctx context.Context, key, path string) (time.Time, error) {
+	location := fmt.Sprintf("r2://%s/%s", r.bucket, key)
+	info, err := r.client.StatObject(ctx, r.bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("download %s: %w", location, err)
+	}
+	tmp := path + ".tmp"
+	defer os.Remove(tmp)
+	if err := r.client.FGetObject(ctx, r.bucket, key, tmp, minio.GetObjectOptions{}); err != nil {
+		return time.Time{}, fmt.Errorf("download %s: %w", location, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return time.Time{}, err
+	}
+	return info.LastModified, nil
 }

@@ -128,9 +128,6 @@ func (s *Store) Ingest(ctx context.Context, records []Record) (IngestStats, erro
 			stats.Stale++
 		}
 	}
-	if len(changed) == 0 {
-		return stats, nil
-	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -138,16 +135,37 @@ func (s *Store) Ingest(ctx context.Context, records []Record) (IngestStats, erro
 	}
 	defer tx.Rollback(ctx)
 
+	if len(changed) > 0 {
+		if err := upsertChanged(ctx, tx, changed); err != nil {
+			return stats, err
+		}
+	}
+	// Every ASN in the source counts as seen, changed or not.
+	ids := make([]int64, len(records))
+	for i, r := range records {
+		ids[i] = r.ASN
+	}
+	if _, err := tx.Exec(ctx, markSeenSQL, ids); err != nil {
+		return stats, fmt.Errorf("mark asn seen: %w", err)
+	}
+	return stats, tx.Commit(ctx)
+}
+
+// markSeenSQL stamps the ASNs that are in this run's source.
+const markSeenSQL = `UPDATE public.asn SET seen_at = now() WHERE asn = ANY($1)`
+
+// upsertChanged copies the rows through a temporary table into public.asn.
+func upsertChanged(ctx context.Context, tx pgx.Tx, changed [][]any) error {
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE asn_stage (
 		asn BIGINT, handle TEXT, organization TEXT, organization_slug TEXT, country TEXT,
 		ip_amount TEXT, ipv4_amount TEXT, ipv6_amount TEXT, json TEXT
 	) ON COMMIT DROP`); err != nil {
-		return stats, err
+		return err
 	}
 	columns := []string{"asn", "handle", "organization", "organization_slug", "country",
 		"ip_amount", "ipv4_amount", "ipv6_amount", "json"}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"asn_stage"}, columns, pgx.CopyFromRows(changed)); err != nil {
-		return stats, fmt.Errorf("copy changed rows: %w", err)
+		return fmt.Errorf("copy changed rows: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO public.asn
 		(asn, handle, organization, organization_slug, country, ip_amount, ipv4_amount, ipv6_amount, json)
@@ -163,9 +181,9 @@ func (s *Store) Ingest(ctx context.Context, records []Record) (IngestStats, erro
 			ipv4_amount = excluded.ipv4_amount,
 			ipv6_amount = excluded.ipv6_amount,
 			json = excluded.json`); err != nil {
-		return stats, fmt.Errorf("upsert asn: %w", err)
+		return fmt.Errorf("upsert asn: %w", err)
 	}
-	return stats, tx.Commit(ctx)
+	return nil
 }
 
 func (s *Store) rowDigests(ctx context.Context) (map[int64]string, error) {

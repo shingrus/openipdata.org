@@ -35,3 +35,12 @@ func TestHideDSN(t *testing.T) {
 		t.Error("HideDSN changed a non-parse error")
 	}
 }
+
+func TestEnsureAddsSeenAt(t *testing.T) {
+	for _, stmt := range statements {
+		if strings.Contains(stmt, "public.asn ADD COLUMN IF NOT EXISTS seen_at") {
+			return
+		}
+	}
+	t.Error("no idempotent statement adds public.asn.seen_at")
+}

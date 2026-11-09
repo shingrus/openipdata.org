@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -61,5 +62,12 @@ func TestExportSQLiteDomains(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("asn_domain = %v, want %v", got, want)
+	}
+}
+
+// Every ASN of a run is stamped, including rows that did not change.
+func TestMarkSeenSQL(t *testing.T) {
+	if !strings.Contains(markSeenSQL, "UPDATE public.asn SET seen_at = now() WHERE asn = ANY($1)") {
+		t.Errorf("markSeenSQL = %s", markSeenSQL)
 	}
 }

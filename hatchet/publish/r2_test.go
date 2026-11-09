@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseR2(t *testing.T) {
@@ -81,5 +82,39 @@ func TestR2Upload(t *testing.T) {
 	}
 	if !strings.HasPrefix(gotAuth, "AWS4-HMAC-SHA256 Credential=KEYID123/") || strings.Contains(gotAuth, "s3cr3t") {
 		t.Errorf("Authorization = %q", gotAuth)
+	}
+}
+
+func TestR2Download(t *testing.T) {
+	modified := time.Date(2026, 11, 9, 1, 2, 3, 0, time.UTC)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/openipdata-dbs/internal/rows.csv.gz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Last-Modified", modified.Format(http.TimeFormat))
+		w.Header().Set("ETag", `"0123456789abcdef"`)
+		w.Header().Set("Content-Length", "10")
+		if r.Method == http.MethodGet {
+			w.Write([]byte("rows bytes"))
+		}
+	}))
+	defer server.Close()
+
+	host := strings.TrimPrefix(server.URL, "https://")
+	r2, err := newR2("https://KEYID123:s3cr3tkey@"+host+"/openipdata-dbs", server.Client().Transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "rows.csv.gz")
+	got, err := r2.Download(context.Background(), "internal/rows.csv.gz", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "rows bytes" || !got.Equal(modified) {
+		t.Errorf("file %q, modified %v", data, got)
+	}
+	if _, err := r2.Download(context.Background(), "internal/missing", path+"2"); err == nil {
+		t.Error("a missing object downloaded")
 	}
 }

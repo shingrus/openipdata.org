@@ -25,49 +25,6 @@ func gzipped(t *testing.T, text string) []byte {
 	return buf.Bytes()
 }
 
-func TestFetchFile(t *testing.T) {
-	modified := time.Date(2026, 11, 8, 23, 20, 43, 0, time.UTC)
-	requests := 0
-	fail := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		if fail {
-			http.Error(w, "down", http.StatusServiceUnavailable)
-			return
-		}
-		if since, err := http.ParseTime(r.Header.Get("If-Modified-Since")); err == nil && !modified.After(since) {
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("Last-Modified", modified.Format(http.TimeFormat))
-		w.Write([]byte("data"))
-	}))
-	defer server.Close()
-
-	client := newHTTPClient(time.Minute, true)
-	path := filepath.Join(t.TempDir(), "dump.gz")
-	ctx := context.Background()
-	if status, err := fetchFile(ctx, client, server.URL, path); err != nil || status != statusDownloaded {
-		t.Fatalf("first fetch: %s %v", status, err)
-	}
-	if info, err := os.Stat(path); err != nil || !info.ModTime().Equal(modified) {
-		t.Fatalf("mtime not set to Last-Modified: %v %v", info, err)
-	}
-	if status, err := fetchFile(ctx, client, server.URL, path); err != nil || status != statusCached {
-		t.Fatalf("second fetch: %s %v", status, err)
-	}
-	fail = true
-	if _, err := fetchFile(ctx, client, server.URL, path); err == nil {
-		t.Fatal("want an error from a failing server")
-	}
-	if data, _ := os.ReadFile(path); string(data) != "data" {
-		t.Errorf("a failed fetch changed the file: %q", data)
-	}
-	if requests != 3 {
-		t.Errorf("requests = %d", requests)
-	}
-}
-
 func TestDiscover(t *testing.T) {
 	whois := gzipped(t, "inetnum: 192.0.2.0 - 192.0.2.255\nremarks: Geofeed https://isp.example/geofeed.csv\n\n"+
 		"inetnum: 198.51.100.0 - 198.51.100.255\ngeofeed: https://isp.example/geofeed.csv\n\n"+

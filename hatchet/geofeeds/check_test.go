@@ -20,7 +20,7 @@ func TestParseRow(t *testing.T) {
 		line, want, reason string
 	}{
 		{"45.10.2.0/24,US,US-CA,San Jose,95131", "45.10.2.0/24 US US-CA San Jose", ""},
-		{" 2001:db8:1::/48 , de , de-be , Berlin", "2001:db8:1::/48 DE DE-BE Berlin", ""},
+		{" 2a00:1450:1::/48 , de , de-be , Berlin", "2a00:1450:1::/48 DE DE-BE Berlin", ""},
 		{"45.10.100.7,GB,,", "45.10.100.7/32 GB  ", ""},
 		{"45.10.113.9/24,JP,Tokyo,Tokyo", "45.10.113.0/24 JP  Tokyo", dropBadRegion},
 		{"45.10.113.0/24,JP,US-CA,", "45.10.113.0/24 JP  ", dropBadRegion},
@@ -28,6 +28,12 @@ func TestParseRow(t *testing.T) {
 		{"100.64.1.0/24,US,,", "", rejectReserved},
 		{"192.0.2.0/24,US,,", "", rejectReserved}, // documentation range
 		{"fe80::/64,US,,", "", rejectReserved},
+		{"::800:0/104,RU,,Moscow", "", rejectReserved}, // 8.0.0.0/8 in an IPv6 MMDB tree
+		{"2002:c000:204::/48,US,,", "", rejectReserved},
+		{"2001:db8::/32,US,,", "", rejectReserved}, // documentation
+		{"2001::/32,US,,", "", rejectReserved},     // Teredo
+		{"45.10.113.0/24,JP,,<b>Tokyo</b>", "45.10.113.0/24 JP  ", dropBadCity},
+		{"45.10.113.0/24,JP,," + strings.Repeat("x", maxCityLen+1), "45.10.113.0/24 JP  ", dropBadCity},
 		{"1.0.0.0/7,US,,", "", rejectTooBroad},
 		{"45.10.2.0/24,ZZ,,", "", rejectBadCountry},
 		{"45.10.2.0/24,,,", "", rejectBadCountry},
@@ -68,7 +74,7 @@ func TestWriteFeed(t *testing.T) {
 
 func TestFetchFeed(t *testing.T) {
 	feeds := map[string]string{
-		"/ok":    "45.10.2.0/24,US,US-CA,San Jose\n2001:db8::/32,DE,,\n",
+		"/ok":    "45.10.2.0/24,US,US-CA,San Jose\n2a00:1450::/32,DE,,\n",
 		"/html":  "\n  <!DOCTYPE html><html></html>",
 		"/empty": "# nothing here\n",
 		"/bad":   "hello,world\n",
@@ -256,7 +262,8 @@ func TestPublicAddr(t *testing.T) {
 	for addr, want := range map[string]bool{
 		"8.8.8.8": true, "193.0.0.1": true,
 		"10.0.0.1": false, "127.0.0.1": false, "169.254.169.254": false, "100.64.0.1": false,
-		"0.1.2.3": false, "192.0.0.8": false, "198.18.0.5": false, "240.0.0.1": false, "::ffff:10.0.0.1": false,
+		"2a00:1450::1": true, "2001:db8::1": false, "2001::1": false, "2001:1::1": false, "2001:200::1": true,
+		"3fff::1": false, "2002::1": false, "::1": false, "0.1.2.3": false, "192.0.0.8": false, "198.18.0.5": false, "240.0.0.1": false, "::ffff:10.0.0.1": false,
 	} {
 		if got := publicAddr(netip.MustParseAddr(addr)); got != want {
 			t.Errorf("publicAddr(%s) = %v, want %v", addr, got, want)

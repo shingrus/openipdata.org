@@ -8,11 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"openipdata.org/hatchet/outputs"
 	"openipdata.org/hatchet/publish"
 )
 
@@ -197,13 +197,13 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return BuildMMDBOutput{}, fmt.Errorf("mmdbbuilder: %w: %s", err, lastLines(stderr.String(), 5))
+		return BuildMMDBOutput{}, fmt.Errorf("mmdbbuilder: %w: %s", err, outputs.LastLines(stderr.String(), 5))
 	}
 	p.log("mmdb: %s", strings.TrimSpace(stdout.String()))
-	if summary := lastLines(stderr.String(), 1); summary != "" {
+	if summary := outputs.LastLines(stderr.String(), 1); summary != "" {
 		p.log("mmdb: %s", summary)
 	}
-	out := BuildMMDBOutput{Path: final, SizeBytes: fileSize(final)}
+	out := BuildMMDBOutput{Path: final, SizeBytes: outputs.FileSize(final)}
 	if m := mmdbSummary.FindStringSubmatch(stdout.String()); m != nil {
 		out.Entries, _ = strconv.Atoi(m[1])
 		out.Prefixes, _ = strconv.Atoi(m[2])
@@ -216,14 +216,6 @@ type ExportOutput struct {
 	Path      string      `json:"path"`
 	SizeBytes int64       `json:"size_bytes"`
 	Stats     ExportStats `json:"stats"`
-}
-
-func fileSize(path string) int64 {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	return info.Size()
 }
 
 // ExportSQLite writes a fresh asn.sqlite3 from Postgres-backed data, then
@@ -266,8 +258,8 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 		return ExportOutput{}, err
 	}
 	p.log("export: wrote %s (asns=%d domains=%d geo_pdb=%d)", final, stats.ASNs, stats.Domains, stats.GeoPDB)
-	p.pruneOutputs()
-	return ExportOutput{Path: final, SizeBytes: fileSize(final), Stats: stats}, nil
+	outputs.Prune(filepath.Join(p.DataDir, "out", "asn"), keepOutputDirs)
+	return ExportOutput{Path: final, SizeBytes: outputs.FileSize(final), Stats: stats}, nil
 }
 
 // PublishOutput lists where the artifacts went.
@@ -322,7 +314,7 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath
 		}
 		p.log("publish: %s", location)
 		out.R2 = append(out.R2, location)
-		out.Bytes += fileSize(path)
+		out.Bytes += outputs.FileSize(path)
 	}
 
 	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB.\n\nBuilt: %s\nSource: %s@%s",
@@ -338,34 +330,6 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath
 	}
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
 	return out, nil
-}
-
-// pruneOutputs keeps the newest few dated output directories.
-func (p *Pipeline) pruneOutputs() {
-	root := filepath.Join(p.DataDir, "out", "asn")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return
-	}
-	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, e.Name())
-		}
-	}
-	sort.Strings(dirs)
-	for len(dirs) > keepOutputDirs {
-		os.RemoveAll(filepath.Join(root, dirs[0]))
-		dirs = dirs[1:]
-	}
-}
-
-func lastLines(text string, n int) string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n")
 }
 
 func runGit(ctx context.Context, args ...string) error {

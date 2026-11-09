@@ -52,8 +52,8 @@ type asset struct {
 	Name string `json:"name"`
 }
 
-// Replace uploads path as assetName with body as the release text and returns
-// the stable download URL. The new file is uploaded under a temporary name, the
+// Replace uploads path as assetName with body as the release text (an empty
+// body keeps the current text) and returns the stable download URL. The new file is uploaded under a temporary name, the
 // old asset is renamed aside, the new one takes its name, and only then is the
 // old one deleted. A failed swap puts the old asset back, so the URL is missing
 // only between the two renames.
@@ -114,6 +114,7 @@ func (r *Release) renameAsset(ctx context.Context, id int64, name string) error 
 }
 
 // ensureRelease creates the release or updates its text, and returns it.
+// Several workflows share the release; each passes its own body or none.
 func (r *Release) ensureRelease(ctx context.Context, body string) (release, error) {
 	var rel release
 	err := r.do(ctx, http.MethodGet, r.apiURL("releases/tags/"+url.PathEscape(r.Tag)), nil, "", -1, &rel)
@@ -124,10 +125,13 @@ func (r *Release) ensureRelease(ctx context.Context, body string) (release, erro
 			"tag_name": r.Tag, "name": r.Name, "body": body, "make_latest": "true",
 		}), "application/json", -1, &rel)
 	case err == nil:
+		fields := map[string]any{"name": r.Name, "make_latest": "true"}
+		if body != "" {
+			fields["body"] = body
+		}
 		var updated release
-		err = r.do(ctx, http.MethodPatch, r.apiURL(fmt.Sprintf("releases/%d", rel.ID)), jsonBody(map[string]any{
-			"name": r.Name, "body": body, "make_latest": "true",
-		}), "application/json", -1, &updated)
+		err = r.do(ctx, http.MethodPatch, r.apiURL(fmt.Sprintf("releases/%d", rel.ID)), jsonBody(fields),
+			"application/json", -1, &updated)
 		if err == nil {
 			updated.Assets = rel.Assets
 			rel = updated

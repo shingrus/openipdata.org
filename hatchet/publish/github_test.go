@@ -23,7 +23,8 @@ type fakeGitHub struct {
 	calls   []string
 	upload  []byte
 	renames []string // "<id>:<new name>"
-	failNew bool     // fail renaming the uploaded asset (ID 99)
+	patched map[string]any
+	failNew bool // fail renaming the uploaded asset (ID 99)
 }
 
 func newFakeGitHub(t *testing.T, exists bool, assets []asset) *fakeGitHub {
@@ -54,6 +55,7 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		rel["assets"] = []asset{}
 		json.NewEncoder(w).Encode(rel)
 	case r.Method == http.MethodPatch && r.URL.Path == "/repos/o/r/releases/7":
+		json.NewDecoder(r.Body).Decode(&f.patched)
 		json.NewEncoder(w).Encode(map[string]any{"id": 7, "upload_url": rel["upload_url"]})
 	case r.Method == http.MethodPost && r.URL.Path == "/uploads/7/assets":
 		f.upload, _ = io.ReadAll(r.Body)
@@ -203,5 +205,18 @@ func TestPing(t *testing.T) {
 	err := Ping(context.Background(), down.URL+"/ping/secret-uuid")
 	if err == nil || strings.Contains(err.Error(), "secret-uuid") {
 		t.Errorf("err = %v", fmt.Sprint(err))
+	}
+}
+
+func TestReleaseReplaceKeepsTextWithoutBody(t *testing.T) {
+	f := newFakeGitHub(t, true, nil)
+	r := &Release{Token: "tok", Repo: "o/r", Tag: "latest", Name: "Latest MMDBs", api: f.server.URL, http: f.server.Client()}
+	path := filepath.Join(t.TempDir(), "geo.mmdb")
+	os.WriteFile(path, []byte("geo"), 0o644)
+	if _, err := r.Replace(context.Background(), path, "ip2geo-openipdata.mmdb", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.patched["body"]; ok || f.patched["name"] != "Latest MMDBs" {
+		t.Errorf("release update = %v, want no body", f.patched)
 	}
 }

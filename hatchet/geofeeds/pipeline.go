@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"openipdata.org/hatchet/download"
 )
 
 // Pipeline runs the geofeed sync. Each method is one task; the Hatchet
@@ -229,7 +231,7 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 	if strings.HasPrefix(d.URL, "ftp://") {
 		status, err = fetchFTP(ctx, d.URL, path, p.allowPrivate)
 	} else {
-		status, err = fetchFile(ctx, client, d.URL, path)
+		status, err = download.File(ctx, client, d.URL, path)
 	}
 	if err != nil {
 		stats.Error = err.Error()

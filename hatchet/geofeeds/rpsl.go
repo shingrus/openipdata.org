@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"openipdata.org/hatchet/rirstats"
 )
 
 // attr is one RPSL attribute; continuation lines are joined with a space.
@@ -109,7 +111,7 @@ func objectPrefixes(obj []attr) (prefixes []netip.Prefix, ok bool, err error) {
 			if err1 != nil || err2 != nil || !from.Is4() || !to.Is4() || to.Less(from) {
 				return nil, true, fmt.Errorf("bad inetnum %q", value)
 			}
-			return rangeToPrefixes(from, to), true, nil
+			return rirstats.RangeToPrefixes(from, to), true, nil
 		}
 		p, err := parsePrefix(value) // LACNIC writes inetnums as prefixes
 		if err != nil {
@@ -140,38 +142,4 @@ func parsePrefix(s string) (netip.Prefix, error) {
 		return netip.Prefix{}, fmt.Errorf("bad prefix %q", s)
 	}
 	return p.Masked(), nil
-}
-
-// rangeToPrefixes splits an inclusive address range into the fewest prefixes.
-func rangeToPrefixes(from, to netip.Addr) []netip.Prefix {
-	var out []netip.Prefix
-	for from.IsValid() && !to.Less(from) {
-		p := netip.PrefixFrom(from, from.BitLen())
-		for bits := 0; bits <= from.BitLen(); bits++ {
-			c := netip.PrefixFrom(from, bits)
-			if c.Masked().Addr() == from && !to.Less(lastAddr(c)) {
-				p = c
-				break
-			}
-		}
-		out = append(out, p)
-		from = lastAddr(p).Next() // invalid after the last address: ends the loop
-	}
-	return out
-}
-
-// lastAddr returns the highest address in p.
-func lastAddr(p netip.Prefix) netip.Addr {
-	b := p.Masked().Addr().As16()
-	hostBits := p.Addr().BitLen() - p.Bits()
-	for i := 15; hostBits > 0; i-- {
-		n := min(hostBits, 8)
-		b[i] |= byte(1<<n - 1)
-		hostBits -= n
-	}
-	addr := netip.AddrFrom16(b)
-	if p.Addr().Is4() {
-		addr = addr.Unmap()
-	}
-	return addr
 }

@@ -56,6 +56,29 @@ func TestOwnersAllows(t *testing.T) {
 	}
 }
 
+// One lookup tells backed rows (the registry links this feed) from the rest.
+func TestOwnersClassify(t *testing.T) {
+	idx, err := loadOwners(writeTestBlocks(t, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		feed, prefix    string
+		backed, allowed bool
+	}{
+		{"https://isp.example/feed.csv", "45.10.112.0/24", true, true},
+		{"https://isp.example/feed.csv", "45.10.2.0/24", false, true},
+		{"https://isp.example/feed.csv", "45.10.113.0/25", false, false},
+		{"https://list.example/feed.csv", "45.10.112.0/24", false, false},
+	}
+	for _, tt := range tests {
+		backed, allowed := idx.classify(feedSite(tt.feed), netip.MustParsePrefix(tt.prefix))
+		if backed != tt.backed || allowed != tt.allowed {
+			t.Errorf("%s %s: backed %v allowed %v", tt.feed, tt.prefix, backed, allowed)
+		}
+	}
+}
+
 func TestExportRows(t *testing.T) {
 	now := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
 	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }}
@@ -103,11 +126,12 @@ func TestExportRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ = io.ReadAll(gz)
+	// The row a whois block backs comes last, so it wins a repeated prefix.
 	want := "prefix,country,region,city,feed_url\n" +
-		"45.10.112.0/24,DE,DE-BE,Berlin,https://isp.example/feed.csv\n" +
 		"45.10.2.0/24,DE,,,https://isp.example/feed.csv\n" +
 		"45.10.112.0/21,DE,,,https://isp.example/feed.csv\n" +
-		"45.10.100.0/24,US,US-CA,San Jose,https://list.example/feed.csv\n"
+		"45.10.100.0/24,US,US-CA,San Jose,https://list.example/feed.csv\n" +
+		"45.10.112.0/24,DE,DE-BE,Berlin,https://isp.example/feed.csv\n"
 	if string(data) != want {
 		t.Errorf("rows file:\n%s\nwant:\n%s", data, want)
 	}
@@ -116,7 +140,10 @@ func TestExportRows(t *testing.T) {
 func TestUploadGate(t *testing.T) {
 	p := &Pipeline{DataDir: t.TempDir()}
 	os.MkdirAll(p.dir(), 0o750)
-	out := &ExportOutput{Rows: 850}
+	if err := p.uploadRows(context.Background(), nil, "unused", false, &ExportOutput{Rows: 2_000_000, Feeds: minFeeds - 1}); !errors.Is(err, ErrGate) {
+		t.Errorf("upload from %d feeds: %v", minFeeds-1, err)
+	}
+	out := &ExportOutput{Rows: 850, Feeds: minFeeds}
 	if err := p.uploadRows(context.Background(), nil, "unused", false, out); !errors.Is(err, ErrGate) {
 		t.Errorf("first upload of 850 rows: %v", err)
 	}

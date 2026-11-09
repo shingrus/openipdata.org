@@ -6,11 +6,12 @@
 //	openipdata-worker run-pdb                    # sync-peeringdb
 //	openipdata-worker run-domains                # update-asn-domains
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] # sync-geofeeds
+//	openipdata-worker run-geo [-skip-publish]    # build-geo-data
 //
 // Environment: PGSQL (Postgres DSN), PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
-// GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN
-// (optional), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
+// GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
+// HC_PING_GEO (optional), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // mmdbbuilder is expected next to this binary.
 package main
 
@@ -31,6 +32,7 @@ import (
 
 	"openipdata.org/hatchet/asn"
 	"openipdata.org/hatchet/domains"
+	"openipdata.org/hatchet/geo"
 	"openipdata.org/hatchet/geofeeds"
 	"openipdata.org/hatchet/pdb"
 )
@@ -58,6 +60,12 @@ type SyncGeofeedsInput struct {
 	RDAPBudget int `json:"rdap_budget"`
 }
 
+// BuildGeoInput is the build-geo-data input; cron runs use the zero value.
+type BuildGeoInput struct {
+	// SkipPublish builds the MMDB but uploads nothing (for manual test runs).
+	SkipPublish bool `json:"skip_publish"`
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -79,8 +87,10 @@ func main() {
 		err = runDomains(ctx)
 	case "run-geofeeds":
 		err = runGeofeeds(ctx, os.Args[2:])
+	case "run-geo":
+		err = runGeo(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, or run-geofeeds)", command)
+		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, or run-geo)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -90,24 +100,54 @@ func main() {
 
 // newPipeline reads the environment; progress receives log lines.
 func newPipeline(progress func(string)) (*asn.Pipeline, error) {
-	exe, err := os.Executable()
+	builder, err := mmdbBuilder()
 	if err != nil {
 		return nil, err
-	}
-	repo := env("GITHUB_REPO")
-	if repo == "" {
-		repo = "shingrus/openipdata.org"
 	}
 	return &asn.Pipeline{
 		DataDir:     dataDir(),
 		PGSQL:       pgsql(),
-		MMDBBuilder: filepath.Join(filepath.Dir(exe), "mmdbbuilder"),
+		MMDBBuilder: builder,
 		Progress:    progress,
 		R2:          env("R2"),
 		GitHubToken: env("GITHUB_TOKEN"),
-		GitHubRepo:  repo,
+		GitHubRepo:  githubRepo(),
 		HCPing:      env("HC_PING_ASN"),
 	}, nil
+}
+
+// newGeoPipeline reads the environment; progress receives log lines.
+func newGeoPipeline(progress func(string)) (*geo.Pipeline, error) {
+	builder, err := mmdbBuilder()
+	if err != nil {
+		return nil, err
+	}
+	return &geo.Pipeline{
+		DataDir:     dataDir(),
+		PGSQL:       pgsql(),
+		MMDBBuilder: builder,
+		Progress:    progress,
+		R2:          env("R2"),
+		GitHubToken: env("GITHUB_TOKEN"),
+		GitHubRepo:  githubRepo(),
+		HCPing:      env("HC_PING_GEO"),
+	}, nil
+}
+
+// mmdbBuilder is the mmdbbuilder binary next to this one.
+func mmdbBuilder() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(exe), "mmdbbuilder"), nil
+}
+
+func githubRepo() string {
+	if repo := env("GITHUB_REPO"); repo != "" {
+		return repo
+	}
+	return "shingrus/openipdata.org"
 }
 
 func env(key string) string { return strings.TrimSpace(os.Getenv(key)) }
@@ -162,6 +202,7 @@ func serve(ctx context.Context) error {
 			syncPeeringDBWorkflow(client),
 			updateASNDomainsWorkflow(client),
 			syncGeofeedsWorkflow(client),
+			buildGeoWorkflow(client),
 		),
 		hatchet.WithSlots(4),
 	)
@@ -307,12 +348,13 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	return wf
 }
 
-// syncGeofeedsWorkflow has no schedule yet: it runs only when triggered. The
-// URL lists stay on the VM; the checked rows go to the private R2 bucket for
-// build-geo-data. Nothing is published.
+// syncGeofeedsWorkflow runs daily, ahead of build-geo-data. The URL lists stay
+// on the VM; the checked rows go to the private R2 bucket for build-geo-data.
+// Nothing is published.
 func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-geofeeds",
 		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists -> checked geofeed rows in private R2"),
+		hatchet.WithWorkflowCron("0 0 * * *"),
 		// Its own limit, not asn-db: it reads and writes no ASN table.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
 	)
@@ -351,6 +393,64 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		}
 		return out, err
 	}, taskRetry(hatchet.WithParents(check), hatchet.WithExecutionTimeout(time.Hour))...)
+
+	return wf
+}
+
+func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("build-geo-data",
+		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + geofeed rows (R2) -> ip2geo MMDB"),
+		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
+		hatchet.WithWorkflowCron("0 7,19 * * *"),
+		// Its own limit, not asn-db: it only reads the ASN tables.
+		hatchet.WithWorkflowConcurrency(oneRunLimit("geo")),
+	)
+
+	download := wf.NewTask("download", func(ctx hatchet.Context, input BuildGeoInput) (geo.Source, error) {
+		p, err := newGeoPipeline(taskLog(ctx))
+		if err != nil {
+			return geo.Source{}, err
+		}
+		// Fail before the downloads, and without retries: only an env change fixes it.
+		if err := p.CheckSettings(!input.SkipPublish); err != nil {
+			return geo.Source{}, hatchet.NewNonRetryableError(err)
+		}
+		return p.Download(ctx, time.Now())
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+
+	// withSource returns the pipeline and what download prepared.
+	withSource := func(ctx hatchet.Context) (*geo.Pipeline, geo.Source, error) {
+		var src geo.Source
+		if err := ctx.ParentOutput(download, &src); err != nil {
+			return nil, src, err
+		}
+		p, err := newGeoPipeline(taskLog(ctx))
+		return p, src, err
+	}
+
+	mmdb := wf.NewTask("build-mmdb", func(ctx hatchet.Context, _ BuildGeoInput) (geo.BuildMMDBOutput, error) {
+		p, src, err := withSource(ctx)
+		if err != nil {
+			return geo.BuildMMDBOutput{}, err
+		}
+		return p.BuildMMDB(ctx, src)
+	}, taskRetry(hatchet.WithParents(download), hatchet.WithExecutionTimeout(time.Hour))...)
+
+	wf.NewTask("publish", func(ctx hatchet.Context, input BuildGeoInput) (geo.PublishOutput, error) {
+		if input.SkipPublish {
+			taskLog(ctx)("publish: skipped (skip_publish=true)")
+			return geo.PublishOutput{Skipped: true}, nil
+		}
+		p, src, err := withSource(ctx)
+		if err != nil {
+			return geo.PublishOutput{}, err
+		}
+		var built geo.BuildMMDBOutput
+		if err := ctx.ParentOutput(mmdb, &built); err != nil {
+			return geo.PublishOutput{}, err
+		}
+		return p.Publish(ctx, src, built.Path)
+	}, taskRetry(hatchet.WithParents(download, mmdb), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	return wf
 }
@@ -443,5 +543,37 @@ func runGeofeeds(ctx context.Context, args []string) error {
 		return err
 	}
 	_, err := p.ExportRows(ctx, !*skipUpload, *forceUpload)
+	return err
+}
+
+// runGeo runs the build-geo-data tasks once, in order, without Hatchet.
+func runGeo(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-geo", flag.ExitOnError)
+	skipPublish := flags.Bool("skip-publish", false, "build the MMDB but upload nothing")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-geo: unexpected argument %q", flags.Arg(0))
+	}
+
+	p, err := newGeoPipeline(cliLog)
+	if err != nil {
+		return err
+	}
+	if err := p.CheckSettings(!*skipPublish); err != nil {
+		return err
+	}
+	src, err := p.Download(ctx, time.Now())
+	if err != nil {
+		return err
+	}
+	built, err := p.BuildMMDB(ctx, src)
+	if err != nil {
+		return err
+	}
+	if *skipPublish {
+		cliLog("publish: skipped (-skip-publish)")
+		return nil
+	}
+	_, err = p.Publish(ctx, src, built.Path)
 	return err
 }
