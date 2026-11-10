@@ -108,7 +108,7 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | 30 | `30-pdb.csv.gz` | `public.asn_geo_pdb`: ASN's dominant city (≥30% of its presence) | city | same-country (only refines) |
 | 40 | `40-hosting.csv.gz` | single-city PeeringDB `Content` networks, non-Global scope | city | first-country (only back to the RIR country) |
 | 50 | `50-ix.csv.gz` | `public.geo_ix_pdb`: exchange peering LANs | city | — |
-| 60 | `60-whois.csv.gz` | whois `geoloc:`, most populous place within 25 km | city | within-first |
+| 60 | `60-whois.csv.gz` | whois `geoloc:`, most populous place within 25 km (measured 85.8% within 100 km) | city | within-first |
 | 70 | `70-geofeeds.csv.gz` | operator geofeeds | city | within-first |
 
 - Optional layers (40, 50, 60) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
@@ -128,12 +128,10 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 
 City accuracy by distance (≤100 km, GeoNames) is planned; today city matches are by name.
 
-## In progress and planned
+## Planned
 
 | Item | Status | Expected effect |
 | --- | --- | --- |
-| Whois `geoloc:` layer (`60-whois`) | written, reviewed, tests pass; not deployed | +~83k /24s with a city, 85.8% within 100 km |
-| Layer refactor: one geofeed format, numbered files, one rules table | written, reviewed, tests pass; not deployed | less code; after deploy run `sync-geofeeds` once by hand before `build-geo-data` |
 | `build-geo-data` every 4 h | decided | results reach users within ~4 h |
 | `resolve-ips`: visitor /24s from nossl.sh `/api/unknown` → traceroute → nearest routers → city → `65-rdns` | design | open: where the Atlas part runs (own workflow or inside `resolve-ips`) |
 | Atlas routers ≤1 ms from a probe → `atlas_router_locations`; learn and measure rDNS name → city rules | design | ~7,300 located routers per round; ground truth for rules |
