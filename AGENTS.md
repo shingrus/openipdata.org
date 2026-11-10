@@ -45,8 +45,10 @@
   An asn_geo_pdb shrink refuses the whole replace; a geo_ix_pdb shrink or empty result only keeps the old
   geo_ix_pdb rows (`StoreStats.IXKept`) and asn_geo_pdb is still replaced.
 - `build-geo-data` only reads these tables and runs DDL only for `public.geo_eval` (`schema.EnsureGeoEval`), never `schema.Ensure`. A missing or empty `public.geo_ix_pdb`
-  skips the `ix.csv` layer for that run (`Source.IXSkipped`, used by `build-mmdb` and the holdout build alike); a
-  table with 1 to 199 usable rows fails. Exchanges without a city are never written to `ix.csv`.
+  skips the `ix.csv` layer for that run, and missing facility columns or no matching network skip `hosting.csv`
+  (`Source.SkippedLayers`, used by `build-mmdb` and the holdout build alike); an `ix.csv` of 1 to 199 usable rows
+  fails, `hosting.csv` has no minimum. Exchanges without a city are never written to `ix.csv`.
+  `asn_geo_pdb.fac_count`/`fac_city`/`fac_country` (facilities only, city set only if all are in one city) feed `hosting.csv`.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
 - Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes no table (its `probe-domains`

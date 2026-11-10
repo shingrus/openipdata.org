@@ -70,6 +70,12 @@ var statements = []string{
 	// before the columns were added, until the next sync-peeringdb run.
 	`ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS info_scope TEXT`,
 	`ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS info_type TEXT`,
+	// Facilities (netfac) only, no exchanges: fac_count is how many the network
+	// has; fac_city and fac_country are set only when all of them are in one city.
+	// NULL for rows written before the columns were added.
+	`ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS fac_count INTEGER`,
+	`ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS fac_city TEXT`,
+	`ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS fac_country TEXT`,
 	// Peering LAN prefixes of internet exchanges with the exchange's country and
 	// city; sync-peeringdb replaces them together with asn_geo_pdb.
 	`CREATE TABLE IF NOT EXISTS public.geo_ix_pdb (

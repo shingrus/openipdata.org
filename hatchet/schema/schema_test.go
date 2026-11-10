@@ -38,3 +38,16 @@ func TestEnsureIncludesGeoEval(t *testing.T) {
 		t.Fatal("Ensure does not run the geo_eval statement")
 	}
 }
+
+func TestEnsureAddsFacilityColumns(t *testing.T) {
+	r := &recorder{}
+	if err := Ensure(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"fac_count INTEGER", "fac_city TEXT", "fac_country TEXT"} {
+		want := "ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS " + col
+		if !slices.Contains(r.sqls, want) {
+			t.Errorf("Ensure does not run %q", want)
+		}
+	}
+}

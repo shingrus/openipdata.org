@@ -29,25 +29,59 @@ const pdbQuery = `SELECT a.json, upper(btrim(g.country)), btrim(g.city)
 	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
 	WHERE btrim(coalesce(g.city, '')) <> ''
 	  AND upper(btrim(a.country)) = upper(btrim(g.country))
-	  AND (a.seen_at > now() - interval '7 days'
-	       OR (a.seen_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.asn WHERE seen_at IS NOT NULL)))
+	  AND ` + seenAtFilter + `
+	ORDER BY a.asn`
+
+// seenAtFilter is the seen_at rule that pdbQuery and hostingQuery share.
+const seenAtFilter = `(a.seen_at > now() - interval '7 days'
+	       OR (a.seen_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.asn WHERE seen_at IS NOT NULL)))`
+
+// hostingQuery picks hosting networks whose PeeringDB facilities are all in
+// one city (sync-peeringdb sets fac_city only then). "Content" is PeeringDB's
+// network type for hosting, cloud and content networks. A Global-scope
+// network is left out, and so is one without a 2-letter facility country.
+// The registration country is not compared: this layer may change it, which
+// is the point (a hoster's block registered to a customer abroad). Read only.
+const hostingQuery = `SELECT a.json, upper(btrim(g.fac_country)), btrim(g.fac_city)
+	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
+	WHERE g.info_type = 'Content'
+	  AND coalesce(g.info_scope, '') <> 'Global'
+	  AND g.fac_count >= 1
+	  AND btrim(coalesce(g.fac_city, '')) <> ''
+	  AND length(btrim(coalesce(g.fac_country, ''))) = 2
+	  AND ` + seenAtFilter + `
 	ORDER BY a.asn`
 
 // writePDBRows writes every announced prefix of those ASNs as a layer row
 // with the PeeringDB country and city.
 func writePDBRows(ctx context.Context, dsn string, w *csv.Writer) (asns, prefixes int, err error) {
+	conn, err := connect(ctx, dsn)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer conn.Close(ctx)
+	return writeASNPrefixRows(ctx, conn, pdbQuery, w)
+}
+
+// connect opens the read-only connection. There is no schema.Ensure in this
+// workflow: Ensure's ALTER TABLE statements take ACCESS EXCLUSIVE locks on
+// tables the writers own. The writers create the columns the queries use.
+func connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	if dsn == "" {
-		return 0, 0, fmt.Errorf("PGSQL is not set")
+		return nil, fmt.Errorf("PGSQL is not set")
 	}
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return 0, 0, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
+		return nil, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
 	}
-	defer conn.Close(ctx)
-	// No schema.Ensure here: this is a read-only workflow, and Ensure's ALTER TABLE
-	// statements take ACCESS EXCLUSIVE locks on tables the writers own. The writers
-	// create the columns the query uses (seen_at).
-	rows, err := conn.Query(ctx, pdbQuery)
+	return conn, nil
+}
+
+// writeASNPrefixRows runs a query that returns (public.asn.json, country,
+// city) and writes every announced prefix of each ASN as a layer row. It
+// returns the number of ASNs that had a prefix and the number of prefixes.
+func writeASNPrefixRows(ctx context.Context, conn *pgx.Conn, query string, w *csv.Writer) (asns, prefixes int, err error) {
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -68,6 +102,35 @@ func writePDBRows(ctx context.Context, dsn string, w *csv.Writer) (asns, prefixe
 		}
 	}
 	return asns, prefixes, rows.Err()
+}
+
+// writeHostingRows writes every announced prefix of the hosting networks as a
+// layer row and returns how many. Before sync-peeringdb has added the
+// facility columns the query would fail, so it returns ErrNoRows then, and
+// when nothing matches.
+func writeHostingRows(ctx context.Context, dsn string, w *csv.Writer) (int, error) {
+	conn, err := connect(ctx, dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close(ctx)
+	var columns int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns
+		WHERE table_schema = 'public' AND table_name = 'asn_geo_pdb'
+		  AND column_name IN ('info_type', 'info_scope', 'fac_count', 'fac_city', 'fac_country')`).Scan(&columns); err != nil {
+		return 0, err
+	}
+	if columns < 5 {
+		return 0, ErrNoRows
+	}
+	_, prefixes, err := writeASNPrefixRows(ctx, conn, hostingQuery, w)
+	if err != nil {
+		return 0, err
+	}
+	if prefixes == 0 {
+		return 0, ErrNoRows
+	}
+	return prefixes, nil
 }
 
 // asnPrefixes reads the announced prefixes from a public.asn json value;
@@ -101,21 +164,19 @@ const ixQuery = `SELECT prefix, upper(btrim(country)), btrim(city)
 	  AND btrim(coalesce(city, '')) <> ''
 	ORDER BY prefix`
 
-// ErrNoIXRows means public.geo_ix_pdb does not exist yet or has no rows, which
-// is the state before sync-peeringdb has run once with the exchange prefixes.
-var ErrNoIXRows = errors.New("public.geo_ix_pdb has no rows")
+// ErrNoRows means an optional layer has no rows: its source does not exist yet
+// or is empty, which is the state before sync-peeringdb has run once with the
+// data the layer needs. The layer is skipped for that run.
+var ErrNoRows = errors.New("layer has no rows")
 
 // writeIXRows writes every exchange prefix that has a city as a layer row and
 // returns how many. It only reads: no DDL, as ALTER TABLE would take a lock
-// that can block on sync-peeringdb's replace. It returns ErrNoIXRows when the
+// that can block on sync-peeringdb's replace. It returns ErrNoRows when the
 // table is missing or empty.
 func writeIXRows(ctx context.Context, dsn string, w *csv.Writer) (int, error) {
-	if dsn == "" {
-		return 0, fmt.Errorf("PGSQL is not set")
-	}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, err := connect(ctx, dsn)
 	if err != nil {
-		return 0, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
+		return 0, err
 	}
 	defer conn.Close(ctx)
 	// to_regclass is NULL for a table that does not exist yet.
@@ -124,7 +185,7 @@ func writeIXRows(ctx context.Context, dsn string, w *csv.Writer) (int, error) {
 		return 0, err
 	}
 	if table == nil {
-		return 0, ErrNoIXRows
+		return 0, ErrNoRows
 	}
 	rows, err := conn.Query(ctx, ixQuery)
 	if err != nil {
@@ -153,7 +214,7 @@ func writeIXRows(ctx context.Context, dsn string, w *csv.Writer) (int, error) {
 		return 0, err
 	}
 	if total == 0 {
-		return 0, ErrNoIXRows
+		return 0, ErrNoRows
 	}
 	return 0, nil
 }

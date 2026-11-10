@@ -199,3 +199,82 @@ func TestIXKeepReason(t *testing.T) {
 		t.Error("asn_geo_pdb shrink accepted")
 	}
 }
+
+func TestSingleCity(t *testing.T) {
+	facs := map[int64]place{
+		1: {"FR", "Roubaix"},
+		2: {"fr", "roubaix"}, // same city, other case
+		3: {"FR", "Paris"},
+		4: {"US", "Paris"},
+		5: {"FR", ""},
+		6: {"France", "Roubaix"},
+		7: {"FR", "Roubaix"},
+	}
+	cases := []struct {
+		name          string
+		ids           []int64
+		count         int
+		city, country string
+	}{
+		{"one facility", []int64{1}, 1, "Roubaix", "FR"},
+		{"same city, case differs", []int64{1, 2}, 2, "Roubaix", "FR"},
+		{"two facilities in one city", []int64{1, 7}, 2, "Roubaix", "FR"},
+		{"a repeated link counts once", []int64{1, 1, 7}, 2, "Roubaix", "FR"},
+		{"two cities", []int64{1, 3}, 2, "", ""},
+		{"same name, other country", []int64{3, 4}, 2, "", ""},
+		{"one facility without a city", []int64{1, 5}, 2, "", ""},
+		{"country is not 2 letters", []int64{6}, 1, "", ""},
+		{"unknown facility", []int64{1, 99}, 2, "", ""},
+		{"no facilities", nil, 0, "", ""},
+	}
+	for _, c := range cases {
+		count, city, country := singleCity(c.ids, facs)
+		if count != c.count || city != c.city || country != c.country {
+			t.Errorf("%s: got (%d, %q, %q), want (%d, %q, %q)", c.name, count, city, country, c.count, c.city, c.country)
+		}
+	}
+}
+
+// Compute stores the facility count and the single city; exchanges do not count.
+func TestComputeFacilityCity(t *testing.T) {
+	dir := t.TempDir()
+	writeDataset(t, dir, "org", `{"id": 1, "country": "DE"}`)
+	writeDataset(t, dir, "fac",
+		`{"id": 10, "city": "Roubaix", "country": "FR"}`,
+		`{"id": 11, "city": " ROUBAIX ", "country": "FR"}`,
+		`{"id": 12, "city": "Paris", "country": "FR"}`,
+	)
+	writeDataset(t, dir, "ix", `{"id": 20, "city": "Frankfurt", "country": "DE"}`)
+	writeDataset(t, dir, "net",
+		`{"id": 100, "asn": 64500, "org_id": 1, "info_type": "Content", "info_scope": "Europe"}`,
+		`{"id": 101, "asn": 64501, "org_id": 1}`,
+		`{"id": 102, "asn": 64502, "org_id": 1}`,
+	)
+	writeDataset(t, dir, "netfac",
+		`{"net_id": 100, "fac_id": 10}`, `{"net_id": 100, "fac_id": 11}`,
+		`{"net_id": 101, "fac_id": 10}`, `{"net_id": 101, "fac_id": 12}`,
+	)
+	writeDataset(t, dir, "netixlan", `{"net_id": 100, "ix_id": 20}`, `{"net_id": 102, "ix_id": 20}`)
+
+	rows, err := Compute(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		count         int
+		city, country string
+	}{{2, "Roubaix", "FR"}, {2, "<nil>", "<nil>"}, {0, "<nil>", "<nil>"}}
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows", len(rows))
+	}
+	for i, w := range want {
+		r := rows[i]
+		if r.FacCount != w.count || str(r.FacCity) != w.city || str(r.FacCountry) != w.country {
+			t.Errorf("row %d = (%d, %s, %s), want %+v", i, r.FacCount, str(r.FacCity), str(r.FacCountry), w)
+		}
+	}
+	// The exchange in Frankfurt still counts for the dominant city: unchanged.
+	if str(rows[0].InfoType) != "Content" {
+		t.Errorf("info_type = %s", str(rows[0].InfoType))
+	}
+}

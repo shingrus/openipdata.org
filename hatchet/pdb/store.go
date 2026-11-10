@@ -99,10 +99,10 @@ func Replace(ctx context.Context, dsn string, rows []GeoRow, ixRows []IXRow) (St
 	}
 	copyRows := make([][]any, len(rows))
 	for i, r := range rows {
-		copyRows[i] = []any{r.ASN, r.Country, r.City, r.Dominance, r.Domain, r.InfoScope, r.InfoType}
+		copyRows[i] = []any{r.ASN, r.Country, r.City, r.Dominance, r.Domain, r.InfoScope, r.InfoType, r.FacCount, r.FacCity, r.FacCountry}
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"public", "asn_geo_pdb"},
-		[]string{"asn", "country", "city", "dominance", "domain", "info_scope", "info_type"}, pgx.CopyFromRows(copyRows)); err != nil {
+		[]string{"asn", "country", "city", "dominance", "domain", "info_scope", "info_type", "fac_count", "fac_city", "fac_country"}, pgx.CopyFromRows(copyRows)); err != nil {
 		return stats, fmt.Errorf("copy rows: %w", err)
 	}
 	if stats.IXKept != "" {

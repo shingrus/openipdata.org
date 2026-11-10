@@ -24,6 +24,12 @@ type GeoRow struct {
 	// InfoScope and InfoType are the network's own "scope" and "type" in PeeringDB.
 	InfoScope *string
 	InfoType  *string
+	// FacCount is the number of distinct facilities (netfac) the network lists.
+	// FacCity and FacCountry are set only when ALL of them are in one city (see
+	// singleCity); exchanges do not count here.
+	FacCount   int
+	FacCity    *string
+	FacCountry *string
 }
 
 type orgRow struct {
@@ -116,6 +122,7 @@ func Compute(dir string) ([]GeoRow, error) {
 			points = append(points, places["ix"][id])
 		}
 		country, city, dominance := bestPlace(points, strings.TrimSpace(org.Country))
+		facCount, facCity, facCountry := singleCity(netFacs[n.ID], places["fac"])
 
 		domain := domainFromWebsite(n.Website)
 		if domain == "" {
@@ -129,6 +136,10 @@ func Compute(dir string) ([]GeoRow, error) {
 			Domain:    optional(domain),
 			InfoScope: optional(strings.TrimSpace(n.InfoScope)),
 			InfoType:  optional(strings.TrimSpace(n.InfoType)),
+
+			FacCount:   facCount,
+			FacCity:    optional(facCity),
+			FacCountry: optional(facCountry),
 		})
 	}
 	return rows, nil
@@ -162,6 +173,42 @@ func bestPlace(points []place, hqCountry string) (string, string, float64) {
 		return country, "", share
 	}
 	return country, city, share
+}
+
+// singleCity counts the distinct facilities in facIDs and, only if every one
+// of them is in the same city, returns that city and its country. City names
+// are compared case-insensitively (normCity already trimmed them) together with
+// the country, so "Paris" in FR and in US are two cities. A facility that is
+// unknown, or lacks a city or a 2-letter country, cannot be shown to be in that
+// city, so the city and country are empty then. No facilities: 0, "", "".
+func singleCity(facIDs []int64, facs map[int64]place) (count int, city, country string) {
+	seen := map[int64]bool{}
+	var key string
+	ok := true
+	for _, id := range facIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		count++
+		f, known := facs[id]
+		code := strings.ToUpper(f.country)
+		if !known || f.city == "" || len(code) != 2 {
+			ok = false
+			continue
+		}
+		k := code + "/" + strings.ToLower(f.city)
+		switch {
+		case key == "":
+			key, city, country = k, f.city, code
+		case key != k:
+			ok = false
+		}
+	}
+	if !ok || count == 0 {
+		return count, "", ""
+	}
+	return count, city, country
 }
 
 // mostCommon returns the most frequent value; ties go to the value seen first.

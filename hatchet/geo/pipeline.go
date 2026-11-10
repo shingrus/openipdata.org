@@ -9,10 +9,14 @@
 //  2. ipverse/geo-ip-blocks: the country in registration records (IPv4 only)
 //  3. PeeringDB: country and city of ASNs with one dominant city (Postgres);
 //     applied only where layers 1 and 2 gave the same country or none
-//  4. PeeringDB internet exchange peering LAN prefixes: the exchange's country
+//  4. hosting networks whose PeeringDB facilities are all in one city: that
+//     city and country for every announced prefix (Postgres); applied only
+//     where the RIR stats (layer 1) give the same country, so it can only
+//     change a country back to the delegated one; skipped while no network matches
+//  5. PeeringDB internet exchange peering LAN prefixes: the exchange's country
 //     and city (Postgres); exchanges without a city are left out, and the
 //     whole layer is skipped while the table has no rows
-//  5. geofeed rows from sync-geofeeds (private R2); a row broader than one
+//  6. geofeed rows from sync-geofeeds (private R2); a row broader than one
 //     RIR block is skipped
 package geo
 
@@ -26,6 +30,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,7 +52,7 @@ const (
 	minStatsBlocks  = 1000 // per RIR
 	minGeoCountries = 200
 	minPDBASNs      = 100
-	minIXPrefixes   = 200
+	minIXPrefixes   = 200 // the hosting layer has no minimum: it may legitimately be small
 
 	// Geofeed rows older than rowsMaxAge are still used (old rows are better
 	// than none), but the run warns and skips the health check ping.
@@ -57,15 +62,16 @@ const (
 // Layer files in DataDir/geo/layers, rebuilt by Download, in the order
 // mmdbbuilder applies them.
 const (
-	RIRLayer    = "rir.csv"
-	BlocksLayer = "geo-ip-blocks.csv"
-	PDBLayer    = "pdb.csv"
-	IXLayer     = "ix.csv"
-	FeedsLayer  = "geofeed-rows.csv.gz"
-	NamesFile   = "names.tsv"
+	RIRLayer     = "rir.csv"
+	BlocksLayer  = "geo-ip-blocks.csv"
+	PDBLayer     = "pdb.csv"
+	HostingLayer = "hosting.csv"
+	IXLayer      = "ix.csv"
+	FeedsLayer   = "geofeed-rows.csv.gz"
+	NamesFile    = "names.tsv"
 )
 
-var layerOrder = []string{RIRLayer, BlocksLayer, PDBLayer, IXLayer, FeedsLayer}
+var layerOrder = []string{RIRLayer, BlocksLayer, PDBLayer, HostingLayer, IXLayer, FeedsLayer}
 
 // Pipeline runs the geo database build.
 type Pipeline struct {
@@ -81,10 +87,11 @@ type Pipeline struct {
 	IPinfoToken string // optional; without it Evaluate skips the IPinfo reference. A secret: never log it
 
 	// Tests only.
-	stats     []struct{ Name, URL string }
-	geoBlocks string
-	refURLs   *evalURLs
-	writeIX   func(ctx context.Context, w *csv.Writer) (int, error)
+	stats        []struct{ Name, URL string }
+	geoBlocks    string
+	refURLs      *evalURLs
+	writeIX      func(ctx context.Context, w *csv.Writer) (int, error)
+	writeHosting func(ctx context.Context, w *csv.Writer) (int, error)
 }
 
 // Source is what Download prepared for the run.
@@ -96,8 +103,13 @@ type Source struct {
 	PDBASNs       int               `json:"pdb_asns"`
 	FeedsUploaded string            `json:"geofeed_rows_uploaded"` // when sync-geofeeds uploaded them
 	FeedsStale    bool              `json:"geofeed_rows_stale,omitempty"`
-	IXSkipped     bool              `json:"ix_layer_skipped,omitempty"` // public.geo_ix_pdb had no rows: the exchange layer is not built
+
+	// SkippedLayers are the optional layer files (ix.csv, hosting.csv) that had
+	// no rows this run and are not built; BuildMMDB and the holdout build leave them out.
+	SkippedLayers []string `json:"skipped_layers,omitempty"`
 }
+
+func (s Source) skipped(layer string) bool { return slices.Contains(s.SkippedLayers, layer) }
 
 func (p *Pipeline) dir() string       { return filepath.Join(p.DataDir, "geo") }
 func (p *Pipeline) layersDir() string { return filepath.Join(p.dir(), "layers") }
@@ -220,12 +232,27 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 	src.Rows[PDBLayer] = rows
 	p.log("download: PeeringDB rows for %d ASNs, %d prefixes", src.PDBASNs, rows)
 
-	// 4. Internet exchange peering LAN prefixes.
-	if err := p.downloadIX(ctx, layers, &src); err != nil {
+	// 4. Hosting networks with all facilities in one city.
+	write := p.writeHosting
+	if write == nil {
+		write = func(ctx context.Context, w *csv.Writer) (int, error) { return writeHostingRows(ctx, p.PGSQL, w) }
+	}
+	if err := p.downloadOptional(ctx, layers, &src, HostingLayer, 0, "PeeringDB hosting networks",
+		"has sync-peeringdb run since the facility columns were added?", write); err != nil {
 		return src, err
 	}
 
-	// 5. Geofeed rows.
+	// 5. Internet exchange peering LAN prefixes.
+	write = p.writeIX
+	if write == nil {
+		write = func(ctx context.Context, w *csv.Writer) (int, error) { return writeIXRows(ctx, p.PGSQL, w) }
+	}
+	if err := p.downloadOptional(ctx, layers, &src, IXLayer, minIXPrefixes, "PeeringDB exchange prefixes",
+		"has sync-peeringdb run since the exchange layer was added?", write); err != nil {
+		return src, err
+	}
+
+	// 6. Geofeed rows.
 	r2, err := publish.NewR2(p.R2)
 	if err != nil {
 		return src, err
@@ -243,37 +270,35 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 	return src, nil
 }
 
-// downloadIX writes the exchange prefix layer. While public.geo_ix_pdb is
-// missing or empty (sync-peeringdb has not run since the table was added) the
-// layer is skipped for this run: src.IXSkipped is set, so BuildMMDB and
-// Evaluate leave it out, and a stale file from an earlier run is removed. A
-// table with some rows but too few is a real problem and fails.
-func (p *Pipeline) downloadIX(ctx context.Context, layers string, src *Source) error {
-	write := p.writeIX
-	if write == nil {
-		write = func(ctx context.Context, w *csv.Writer) (int, error) { return writeIXRows(ctx, p.PGSQL, w) }
-	}
-	path := filepath.Join(layers, IXLayer)
+// downloadOptional writes an optional layer file. When write returns ErrNoRows
+// (its source is missing or empty, the state before sync-peeringdb has filled
+// it) the layer is skipped for this run: its name goes into src.SkippedLayers,
+// so BuildMMDB and Evaluate leave it out, and a stale file from an earlier run
+// is removed. Any other error fails, and so does fewer than minRows rows (a
+// minRows of 0 accepts any count).
+func (p *Pipeline) downloadOptional(ctx context.Context, layers string, src *Source, name string, minRows int,
+	label, hint string, write func(context.Context, *csv.Writer) (int, error)) error {
+	path := filepath.Join(layers, name)
 	rows, err := writeLayer(path, func(w *csv.Writer) error {
 		n, err := write(ctx, w)
-		if err == nil && n < minIXPrefixes {
-			err = fmt.Errorf("%d prefixes, fewer than %d", n, minIXPrefixes)
+		if err == nil && n < minRows {
+			err = fmt.Errorf("%d prefixes, fewer than %d", n, minRows)
 		}
 		return err
 	})
-	if errors.Is(err, ErrNoIXRows) {
-		src.IXSkipped = true
+	if errors.Is(err, ErrNoRows) {
+		src.SkippedLayers = append(src.SkippedLayers, name)
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		p.log("download: WARNING public.geo_ix_pdb has no rows (has sync-peeringdb run since the exchange layer was added?); building without the exchange prefix layer")
+		p.log("download: WARNING %s has no rows (%s); building without the %s layer", label, hint, name)
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("PeeringDB exchange prefixes: %w", err)
+		return fmt.Errorf("%s: %w", label, err)
 	}
-	src.Rows[IXLayer] = rows
-	p.log("download: PeeringDB exchange prefixes, %d rows", rows)
+	src.Rows[name] = rows
+	p.log("download: %s, %d rows", label, rows)
 	return nil
 }
 
@@ -344,17 +369,24 @@ var layerSummary = regexp.MustCompile(`(?m)^layer (\S+): \d+ rows, (\d+) prefixe
 
 // geoArgs are the arguments of "mmdbbuilder geo": the layer files in order,
 // with feeds in place of the geofeed rows layer. The layer file names matter
-// to the flags, so feeds must be named FeedsLayer. src.IXSkipped leaves the
-// exchange layer out; BuildMMDB and the holdout build both go through here, so
+// to the flags, so feeds must be named FeedsLayer. src.SkippedLayers leaves
+// those layers out; BuildMMDB and the holdout build both go through here, so
 // they use the same layers.
 func (p *Pipeline) geoArgs(out, feeds string, src Source) []string {
-	// The exchange prefixes are a plain layer: they come after the PeeringDB
-	// rows and before the geofeeds, so operator geofeeds still win.
+	// The hosting and exchange layers are plain layers: they come after the
+	// PeeringDB rows and before the geofeeds, so operator geofeeds still win.
 	// The PeeringDB rows only refine: an ASN's city must not replace more
 	// specific networks that the registration data puts in another country.
+	// A hosting row applies only where the RIR stats (the first layer) give the
+	// row's country, so the layer can only change a country back to the
+	// delegated one; PeeringDB facility lists can be incomplete. The flag is
+	// left out with the layer: mmdbbuilder is not told about a file it does not get.
 	args := []string{"geo", "-out", out, "-names", filepath.Join(p.layersDir(), NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer}
+	if !src.skipped(HostingLayer) {
+		args = append(args, "-first-country", HostingLayer)
+	}
 	for _, name := range layerOrder {
-		if name == IXLayer && src.IXSkipped {
+		if src.skipped(name) {
 			continue
 		}
 		if name == FeedsLayer {

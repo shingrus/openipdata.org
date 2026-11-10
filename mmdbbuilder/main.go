@@ -1,13 +1,16 @@
 // Command mmdbbuilder builds and checks openipdata MMDB files.
 //
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
-//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-debug] <layer.csv[.gz]>...
+//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv[.gz]>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, a layer named in -same-country applies only where the country so
 // far is the same or unknown. A layer named in -within-first is used only for
-// rows no broader than one prefix of the first layer; others are skipped.
+// rows no broader than one prefix of the first layer; others are skipped. A
+// layer named in -first-country applies a row only to the addresses where the
+// first layer gives the row's country (a broad row is split); a row with no
+// such address is skipped.
 //
 // eval scores an ip2geo MMDB (IPv4 only) and prints one JSON object. See eval.go.
 package main
@@ -40,7 +43,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-debug] <layer.csv[.gz]>...")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv[.gz]>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
@@ -53,12 +56,13 @@ func runGeo(args []string) {
 	debugMode := flags.Bool("debug", false, "include the network in each record")
 	sameCountry := flags.String("same-country", "", "layer file names (comma-separated) whose rows apply only where the country so far is the same or unknown")
 	withinFirst := flags.String("within-first", "", "layer file names (comma-separated) whose rows are used only if no broader than one prefix of the first layer")
+	firstCountry := flags.String("first-country", "", "layer file names (comma-separated) whose rows apply only to the addresses where the first layer gives the row's country")
 	flags.Parse(args)
 
 	if *out == "" || flags.NArg() == 0 {
 		usage()
 	}
-	stats, err := buildGeo(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst))
+	stats, err := buildGeo(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry))
 	prefixes := 0
 	for _, s := range stats {
 		fmt.Printf("layer %s: %d rows, %d prefixes, %d skipped\n", s.name, s.rows, s.prefixes, s.skipped)

@@ -50,7 +50,7 @@ func TestBuildGeo(t *testing.T) {
 	names := writeFile(t, filepath.Join(dir, "names.tsv"), "GB\tUnited Kingdom\nUS\tUnited States\n")
 
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{base, pdb, feeds}, names, out, false, nil, nil)
+	stats, err := buildGeo([]string{base, pdb, feeds}, names, out, false, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestBuildGeoFailures(t *testing.T) {
 		"bad-rows.csv":  "prefix,country,city\nnope,US,\n",
 		"no-header.csv": "45.0.0.0/8,US,\n",
 	} {
-		if _, err := buildGeo([]string{writeFile(t, filepath.Join(dir, name), body)}, "", out, false, nil, nil); err == nil {
+		if _, err := buildGeo([]string{writeFile(t, filepath.Join(dir, name), body)}, "", out, false, nil, nil, nil); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
@@ -134,7 +134,7 @@ func TestBuildGeoSameCountry(t *testing.T) {
 	base := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n45.0.0.0/8,US,\n45.10.0.0/16,CA,\n")
 	pdb := writeFile(t, filepath.Join(dir, "pdb.csv"), "prefix,country,city\n45.0.0.0/8,US,Dallas\n46.0.0.0/8,FR,Paris\n")
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv": true}, nil); err != nil {
+	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv": true}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for ip, want := range map[string]map[string]any{
@@ -161,7 +161,7 @@ func TestBuildGeoHostileRows(t *testing.T) {
 		"45.20.0.0/16,US,<script>alert(1)</script>\n"+
 		"45.30.0.0/16,US,"+strings.Repeat("x", maxCityLen+1)+"\n")
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{layer}, "", out, false, nil, nil)
+	stats, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestBuildGeoWithinFirst(t *testing.T) {
 		"2a00:0:1::/48,FR,Paris\n"+ // inside the block
 		"46.0.0.0/24,BE,\n") // outside every block: skipped too
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv": true, "rir.csv": true})
+	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv": true, "rir.csv": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,6 +214,58 @@ func TestBuildGeoWithinFirst(t *testing.T) {
 	} {
 		if got := lookupGeo(t, out, ip)["country_code"]; got != nil && got != want || got == nil && want != "" {
 			t.Errorf("%s = %v, want %q", ip, got, want)
+		}
+	}
+}
+
+// A first-country layer applies a row only where the first layer gives the
+// row's country; a row that spans first-layer ranges is split.
+func TestBuildGeoFirstCountry(t *testing.T) {
+	dir := t.TempDir()
+	rir := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n"+
+		"45.0.0.0/16,FR,\n45.1.0.0/16,DE,\n45.2.0.0/16,US,\n"+
+		"45.4.0.0/16,FR,\n45.4.8.0/24,DE,\n"+ // a more specific block of another country
+		"47.0.0.0/8,,\n"+ // delegated, no country
+		"2a00::/32,FR,\n2a01::/32,DE,\n")
+	// Registration data: all of it says Italy (or the US), which the hosting layer may undo.
+	blocks := writeFile(t, filepath.Join(dir, "geo-ip-blocks.csv"), "prefix,country,city\n"+
+		"45.0.0.0/13,IT,\n47.0.0.0/8,IT,\n48.0.0.0/8,IT,\n2a00::/31,IT,\n")
+	hosting := writeFile(t, filepath.Join(dir, "hosting.csv"), "prefix,country,city\n"+
+		"45.0.5.0/24,FR,Paris\n"+ // first layer FR: applies
+		"45.2.5.0/24,DE,Berlin\n"+ // first layer US: skipped
+		"45.0.0.0/15,FR,Lyon\n"+ // spans FR and DE: only the FR half
+		"45.4.0.0/16,FR,Nice\n"+ // FR with a DE hole
+		"47.1.0.0/16,FR,Lille\n"+ // first layer has no country: skipped
+		"48.0.0.0/24,FR,Metz\n"+ // outside the first layer: skipped
+		"2a00:0:1::/48,FR,Paris\n"+
+		"2a01::/48,FR,Paris\n") // first layer DE: skipped
+	out := filepath.Join(dir, "ip2geo.mmdb")
+	stats, err := buildGeo([]string{rir, blocks, hosting}, "", out, false, nil, nil, map[string]bool{"hosting.csv": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 4 rows apply; the Nice /16 minus the DE /24 hole is 8 networks, the others 1 each.
+	if want := (geoLayerStats{name: "hosting.csv", rows: 4, prefixes: 11, skipped: 4}); stats[2] != want {
+		t.Errorf("stats = %+v, want %+v", stats[2], want)
+	}
+	for ip, want := range map[string][2]string{
+		"45.0.5.1":    {"FR", "Paris"},
+		"45.0.9.1":    {"FR", "Lyon"},
+		"45.1.0.1":    {"IT", ""}, // DE half of the Lyon row
+		"45.2.5.1":    {"IT", ""},
+		"45.4.1.1":    {"FR", "Nice"},
+		"45.4.8.1":    {"IT", ""}, // the DE block inside the Nice row
+		"45.4.9.1":    {"FR", "Nice"},
+		"47.1.0.1":    {"IT", ""},
+		"48.0.0.1":    {"IT", ""},
+		"2a00:0:1::1": {"FR", "Paris"},
+		"2a00:0:2::1": {"IT", ""},
+	} {
+		got := lookupGeo(t, out, ip)
+		code, _ := got["country_code"].(string)
+		city, _ := got["city_name"].(string)
+		if code != want[0] || city != want[1] {
+			t.Errorf("%s = %v, want %v", ip, got, want)
 		}
 	}
 }

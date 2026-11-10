@@ -151,8 +151,8 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 	args, _ := os.ReadFile(argsFile)
 	kept := filepath.Join(eval, "holdout", FeedsLayer)
 	want := strings.Join([]string{"geo", "-out", filepath.Join(eval, "holdout.mmdb"),
-		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer,
-		filepath.Join(layers, RIRLayer), filepath.Join(layers, BlocksLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, IXLayer), kept}, " ")
+		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer, "-first-country", HostingLayer,
+		filepath.Join(layers, RIRLayer), filepath.Join(layers, BlocksLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, HostingLayer), filepath.Join(layers, IXLayer), kept}, " ")
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
 	}
@@ -161,13 +161,21 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 		t.Errorf("%s %s %q", mmdb, truth, status)
 	}
 
-	// A skipped exchange layer is left out of the holdout build as well.
-	if _, _, _, err = p.prepareHoldout(context.Background(), Source{IXSkipped: true}, eval); err != nil {
+	// Skipped optional layers are left out of the holdout build as well.
+	if _, _, _, err = p.prepareHoldout(context.Background(), Source{SkippedLayers: []string{HostingLayer, IXLayer}}, eval); err != nil {
 		t.Fatal(err)
 	}
 	args, _ = os.ReadFile(argsFile)
-	if strings.Contains(string(args), IXLayer) || !strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, PDBLayer)+" "+kept) {
+	if strings.Contains(string(args), IXLayer) || strings.Contains(string(args), HostingLayer) ||
+		!strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, PDBLayer)+" "+kept) {
 		t.Errorf("skipped args = %s", args)
+	}
+	if _, _, _, err = p.prepareHoldout(context.Background(), Source{SkippedLayers: []string{HostingLayer}}, eval); err != nil {
+		t.Fatal(err)
+	}
+	args, _ = os.ReadFile(argsFile)
+	if strings.Contains(string(args), HostingLayer) || strings.Contains(string(args), "-first-country") || !strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, IXLayer)+" "+kept) {
+		t.Errorf("hosting skipped args = %s", args)
 	}
 
 	// Nothing held out outside the kept feeds: nothing to score, no build.

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/maxmind/mmdbwriter"
 	"github.com/maxmind/mmdbwriter/inserter"
 	"github.com/maxmind/mmdbwriter/mmdbtype"
 )
@@ -39,7 +41,8 @@ type geoLayerStats struct {
 
 type geoEntry struct {
 	prefix netip.Prefix
-	place  int // index into the record list
+	place  int            // index into the record list
+	parts  []netip.Prefix // for a firstCountry layer: where the row applies; nil means all of prefix
 }
 
 // place is the value written for a prefix.
@@ -60,7 +63,16 @@ type place struct{ code, city string }
 // broader than one prefix of the first layer, so a broad row cannot change
 // the country of networks that belong to someone else. A first-layer row with
 // an empty country writes nothing, but still counts as a prefix for this.
-func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst map[string]bool) ([]geoLayerStats, error) {
+//
+// A layer named in firstCountry (by file name) applies a row only to the
+// addresses where the country of the first layer equals the row's country, so
+// it can only change a country back to the one the first layer gives. This is
+// not the same as sameCountry, which compares with whatever the layers before
+// it left. A row broader than the first-layer blocks is split: it is written
+// over the parts where the first layer has its country, and the rest is left
+// alone. A row with no such part is skipped and counted in the skipped total.
+// Addresses the first layer has no country for never match.
+func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool) ([]geoLayerStats, error) {
 	names, err := loadNames(namesPath)
 	if err != nil {
 		return nil, err
@@ -73,9 +85,16 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 	var records []mmdbtype.Map
 	var stats []geoLayerStats
 	first := newBlockSet()
+	var firstTree *mmdbwriter.Tree // country of the first layer, only when a layer needs it
+	if len(firstCountry) > 0 {
+		if firstTree, err = newWriter("first", "FIRST"); err != nil {
+			return nil, err
+		}
+	}
 	for n, path := range layers {
 		s := geoLayerStats{name: filepath.Base(path)}
 		limited := n > 0 && withinFirst[s.name] && s.name != stats[0].name
+		matching := n > 0 && firstCountry[s.name] && s.name != stats[0].name
 		var entries []geoEntry
 		err := readLayer(path, func(line int, prefix, code, city string) {
 			p, err := parseGeoPrefix(prefix)
@@ -98,6 +117,13 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 				warnf(&s, "%s:%d: %s is broader than any block of %s", s.name, line, prefix, stats[0].name)
 				return
 			}
+			var parts []netip.Prefix
+			if matching {
+				if parts = countryParts(firstTree, p, code); len(parts) == 0 {
+					warnf(&s, "%s:%d: %s has no address where %s gives %s", s.name, line, prefix, stats[0].name, code)
+					return
+				}
+			}
 			key := place{code, cleanCity(city)}
 			if key.city == "" && strings.TrimSpace(city) != "" {
 				s.noCity++
@@ -112,7 +138,7 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 				places[key] = idx
 				records = append(records, record)
 			}
-			entries = append(entries, geoEntry{p, idx})
+			entries = append(entries, geoEntry{p, idx, parts})
 			s.rows++
 		})
 		if err != nil {
@@ -145,10 +171,21 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 			if sameCountry[s.name] {
 				insert = whereCountry(record, records[e.place]["country_code"])
 			}
-			if err := writer.InsertFunc(ipNet(e.prefix), insert); err != nil {
-				return stats, fmt.Errorf("insert %s (%s): %w", e.prefix, s.name, err)
+			parts := e.parts
+			if parts == nil {
+				parts = []netip.Prefix{e.prefix}
 			}
-			s.prefixes++
+			for _, part := range parts {
+				if err := writer.InsertFunc(ipNet(part), insert); err != nil {
+					return stats, fmt.Errorf("insert %s (%s): %w", part, s.name, err)
+				}
+				s.prefixes++
+			}
+			if n == 0 && firstTree != nil {
+				if err := firstTree.Insert(ipNet(e.prefix), records[e.place]["country_code"]); err != nil {
+					return stats, fmt.Errorf("insert %s (%s): %w", e.prefix, s.name, err)
+				}
+			}
 		}
 		stats = append(stats, s)
 	}
@@ -199,6 +236,52 @@ func whereCountry(record mmdbtype.Map, code mmdbtype.DataType) inserter.Func {
 		}
 		return record, nil
 	}
+}
+
+// countryParts returns the parts of p where first (the first layer, as a tree
+// of country codes) has the country code. They are the networks of the tree
+// inside p, or p itself when one tree network holds all of p.
+func countryParts(first *mmdbwriter.Tree, p netip.Prefix, code string) []netip.Prefix {
+	var parts []netip.Prefix
+	end := lastAddr(p)
+	for addr := p.Addr(); ; {
+		network, value := first.Get(addr.AsSlice())
+		q := treePrefix(network, addr)
+		if q.Bits() <= p.Bits() {
+			q = p // the network holds all of p
+		}
+		if have, ok := value.(mmdbtype.String); ok && string(have) == code {
+			parts = append(parts, q)
+		}
+		addr = lastAddr(q).Next()
+		if !addr.IsValid() || addr.Compare(end) > 0 {
+			return parts
+		}
+	}
+}
+
+// treePrefix converts a network that Tree.Get returns. For an IPv4 address it
+// is the IPv4-mapped form, with the prefix length counted in 128 bits.
+func treePrefix(n *net.IPNet, addr netip.Addr) netip.Prefix {
+	ones, _ := n.Mask.Size()
+	if addr.Is4() {
+		if ones < 96 {
+			return netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+		}
+		ones -= 96
+	}
+	a, _ := netip.AddrFromSlice(n.IP)
+	return netip.PrefixFrom(a.Unmap(), ones).Masked()
+}
+
+// lastAddr is the last address of p.
+func lastAddr(p netip.Prefix) netip.Addr {
+	b := p.Addr().AsSlice()
+	for i := p.Bits(); i < len(b)*8; i++ {
+		b[i/8] |= 0x80 >> (i % 8)
+	}
+	a, _ := netip.AddrFromSlice(b)
+	return a
 }
 
 const maxCityLen = 100 // bytes

@@ -51,7 +51,7 @@ func TestEvaluate(t *testing.T) {
 	cities := writeFile(t, filepath.Join(dir, "cities.csv"), "prefix,country,city\n"+
 		"45.0.0.0/25,US,Dallas\n45.0.1.0/24,DE,Berlin\n45.0.2.0/25,FR,Paris\n47.0.0.0/24,US,Elsewhere\n")
 	ours := filepath.Join(dir, "ours.mmdb")
-	if _, err := buildGeo([]string{rir, cities}, "", ours, false, nil, nil); err != nil {
+	if _, err := buildGeo([]string{rir, cities}, "", ours, false, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	dbip := refDB(t, filepath.Join(dir, "dbip.mmdb"), "dbip", [][3]string{
@@ -71,7 +71,7 @@ func TestEvaluate(t *testing.T) {
 	holdoutRIR := writeFile(t, filepath.Join(dir, "holdout-cities.csv"), "prefix,country,city\n"+
 		"45.0.0.0/24,US,Dallas\n45.0.1.0/24,DE,\n45.0.2.0/24,NL,\n")
 	holdout := filepath.Join(dir, "holdout.mmdb")
-	if _, err := buildGeo([]string{holdoutRIR}, "", holdout, false, nil, nil); err != nil {
+	if _, err := buildGeo([]string{holdoutRIR}, "", holdout, false, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	truth := writeFile(t, filepath.Join(dir, "truth.csv"), "prefix,country,city\n"+
@@ -109,7 +109,7 @@ func TestEvaluateOmitsMissingReferences(t *testing.T) {
 	dir := t.TempDir()
 	rir := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n45.0.0.0/24,US,\n")
 	ours := filepath.Join(dir, "ours.mmdb")
-	if _, err := buildGeo([]string{rir}, "", ours, false, nil, nil); err != nil {
+	if _, err := buildGeo([]string{rir}, "", ours, false, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	m, err := evaluate(evalInputs{db: ours, rir: rir})

@@ -78,7 +78,12 @@ Per ASN, every facility and exchange link is one presence point:
 - `dominance`: that city's share of all located points
 - `domain`: host of the network's website, else the org's website
 - `info_scope`, `info_type`: the network's own "scope" (`Global`, `Europe`, ...) and "type" in PeeringDB,
-  as given; NULL when empty. `build-geo-data` uses `info_scope`.
+  as given; NULL when empty. `build-geo-data` uses both for the hosting layer.
+- `fac_count`, `fac_city`, `fac_country`: facilities only (`netfac`; exchanges do not count here).
+  `fac_count` is the number of distinct facilities (0 for none). `fac_city` and `fac_country` are set only
+  if ALL of them are in the same city (city names compared case-insensitively after trimming, and together
+  with the country); NULL when the facilities are in several cities, when there are none, or when one has
+  no city or no 2-letter country. NULL in all three until `sync-peeringdb` has run with these columns.
 
 `public.geo_ix_pdb` (`prefix` primary key, `ix_id`, `country`, `city`) has one row per internet
 exchange peering LAN prefix (`ixpfx` → `ixlan` → `ix`), as masked CIDR text with the exchange's
@@ -266,15 +271,30 @@ unpublished `public.geo_eval` row of the same date.
      its rows apply where layers 1 and 2 gave the same country or none, so an ASN's city does
      not replace more specific networks registered in another country. Global-scope networks
      are kept: leaving them out (tried on 2026-11-10) halved the holdout city score;
-  4. PeeringDB internet exchange peering LAN prefixes (`public.geo_ix_pdb`): the exchange's country
-     and city. A plain layer: it replaces what layers 1 to 3 put under those prefixes. An exchange
+  4. hosting networks (`hosting.csv`): every announced prefix (same `seen_at` rule as layer 3) of an
+     ASN with PeeringDB type `Content` (PeeringDB's type for hosting, cloud and content networks),
+     a scope other than `Global`, and facilities that are all in one city (`public.asn_geo_pdb.fac_city`
+     and `fac_country`) gets that facility city and country. It may change the country (it is not a
+     `-same-country` layer), because a hoster's small blocks are often registered to a customer's country
+     (an OVH /24 registered in IT whose servers are in FR), but only back to the delegated one
+     (`-first-country`): a row applies only to the addresses where layer 1 gives the facility's country
+     (a broader row is split), because PeeringDB facility lists can be incomplete and the layer must not
+     move a network to a country its RIR did not delegate it to. It is narrow on purpose: measured, the
+     registration country is still right in most cases, so only networks that sit in a single place
+     qualify, and the dominant-city rule of layer 3 (which also counts exchanges) is not used here.
+     While the facility columns do not exist or no network matches (before `sync-peeringdb` has run
+     with them), `download` skips this layer like the exchange layer; there is no minimum otherwise;
+  5. PeeringDB internet exchange peering LAN prefixes (`public.geo_ix_pdb`): the exchange's country
+     and city. A plain layer: it replaces what layers 1 to 4 put under those prefixes. An exchange
      without a city is left out of the layer (a country-only row would erase a city set below it).
      While the table does not exist or has no rows (before `sync-peeringdb` has run once with the
-     exchange prefixes), `download` logs a warning and skips this layer: `ix.csv` is removed and both
-     the real build and the holdout build run without it (`ix_layer_skipped` in the task output);
-  5. the geofeed rows that `sync-geofeeds` left in R2. A row broader than one RIR block (layer 1)
+     exchange prefixes), `download` logs a warning and skips this layer;
+  6. the geofeed rows that `sync-geofeeds` left in R2. A row broader than one RIR block (layer 1)
      is skipped (`-within-first`), so a feed cannot change the country of networks that belong
      to someone else; a row inside a block, or equal to it, is used.
+- A skipped optional layer (`hosting.csv`, `ix.csv`) has its file removed, is listed in
+  `skipped_layers` in the task output, and is left out of both the real build and the holdout build,
+  because `mmdbbuilder` rejects an empty layer.
 - The RIR stats' `ZZ`, `EU` and `AP` are not countries: those blocks give no country, but they
   still count as delegated blocks for the `-within-first` rule.
 - Within a layer a more specific prefix wins, and for a repeated prefix the last row wins.
@@ -287,8 +307,8 @@ unpublished `public.geo_eval` row of the same date.
   a server fails, a copy it gave or confirmed in the last 3 days is used; otherwise the task
   fails. A source that is too small (under 1,000 blocks per RIR, 200 countries, 100 PeeringDB
   ASNs, 200 exchange prefixes written to the layer) also fails the task; an exchange table with no
-  rows at all is the one exception (skipped, see layer 4). `build-geo-data` only reads
-  `public.geo_ix_pdb`; it only creates `public.geo_eval` (its own table) and changes no other table.
+  rows at all is an exception (skipped, see layers 4 and 5). `build-geo-data` only reads
+  `public.asn_geo_pdb` and `public.geo_ix_pdb`; it only creates `public.geo_eval` (its own table) and changes no other table.
 - Geofeed rows older than 3 days are still used, with a warning, but `publish` then skips the
   `HC_PING_GEO` ping, so the health check reports that `sync-geofeeds` has stopped delivering.
 - Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB
@@ -357,7 +377,7 @@ openipdata-worker run-geo              # run build-geo-data once locally, withou
 openipdata-worker run-geo -skip-publish  # same, without uploading
 openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
-mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] <layer.csv[.gz]>...
+mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv[.gz]>...
 mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <f>] [-ipinfo <f>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
