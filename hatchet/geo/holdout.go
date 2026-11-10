@@ -228,7 +228,7 @@ func cmpU32(a, b uint32) int {
 // kept feeds with the same arguments as the real build. It returns the paths
 // of the MMDB and the truth CSV, or empty paths and a status when there is
 // nothing to score.
-func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, truthPath, status string, err error) {
+func (p *Pipeline) prepareHoldout(ctx context.Context, src Source, dir string) (mmdbPath, truthPath, status string, err error) {
 	// The layer's file name matters to mmdbbuilder's -within-first flag.
 	keptDir := filepath.Join(dir, "holdout")
 	if err := os.MkdirAll(keptDir, 0o750); err != nil {
@@ -245,7 +245,7 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 		return "", "", "skipped: " + summary, nil
 	}
 	mmdbPath = filepath.Join(dir, "holdout.mmdb")
-	if _, err := p.runBuilder(ctx, p.geoArgs(mmdbPath, kept)); err != nil {
+	if _, err := p.runBuilder(ctx, p.geoArgs(mmdbPath, kept, src)); err != nil {
 		return "", "", "", fmt.Errorf("holdout build: %w", err)
 	}
 	return mmdbPath, truthPath, summary, nil

@@ -1,5 +1,6 @@
 // Package pdb is the sync-peeringdb workflow: it downloads PeeringDB datasets
-// and derives per-ASN country, city, dominance, and domain into public.asn_geo_pdb.
+// and derives per-ASN country, city, dominance, and domain into public.asn_geo_pdb,
+// and the internet-exchange peering LAN prefixes into public.geo_ix_pdb.
 package pdb
 
 import (
@@ -30,11 +31,13 @@ const (
 // datasets lists each PeeringDB object and the fields the computation needs.
 var datasets = []struct{ name, fields string }{
 	{"org", "id,city,country,website"},
-	{"net", "id,asn,org_id,website"},
+	{"net", "id,asn,org_id,website,info_scope,info_type"},
 	{"fac", "id,city,country"},
 	{"ix", "id,city,country"},
 	{"netfac", "id,net_id,fac_id"},
 	{"netixlan", "id,net_id,ix_id"},
+	{"ixlan", "id,ix_id"},
+	{"ixpfx", "id,ixlan_id,prefix,protocol"},
 }
 
 type client struct {

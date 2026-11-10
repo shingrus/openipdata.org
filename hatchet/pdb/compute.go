@@ -21,6 +21,9 @@ type GeoRow struct {
 	City      *string
 	Dominance float64
 	Domain    *string
+	// InfoScope and InfoType are the network's own "scope" and "type" in PeeringDB.
+	InfoScope *string
+	InfoType  *string
 }
 
 type orgRow struct {
@@ -35,6 +38,9 @@ type netRow struct {
 	ASN     int64  `json:"asn"`
 	OrgID   int64  `json:"org_id"`
 	Website string `json:"website"`
+
+	InfoScope string `json:"info_scope"`
+	InfoType  string `json:"info_type"`
 }
 
 type placeRow struct {
@@ -121,6 +127,8 @@ func Compute(dir string) ([]GeoRow, error) {
 			City:      optional(city),
 			Dominance: dominance,
 			Domain:    optional(domain),
+			InfoScope: optional(strings.TrimSpace(n.InfoScope)),
+			InfoType:  optional(strings.TrimSpace(n.InfoType)),
 		})
 	}
 	return rows, nil

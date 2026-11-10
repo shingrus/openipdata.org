@@ -60,7 +60,8 @@ func (p *Pipeline) Download(ctx context.Context) (DownloadOutput, error) {
 	return out, nil
 }
 
-// ComputeAndStore derives the per-ASN rows and replaces public.asn_geo_pdb.
+// ComputeAndStore derives the per-ASN rows and the exchange prefix rows and
+// replaces public.asn_geo_pdb and public.geo_ix_pdb in one transaction.
 func (p *Pipeline) ComputeAndStore(ctx context.Context) (StoreStats, error) {
 	if p.PGSQL == "" {
 		return StoreStats{}, fmt.Errorf("PGSQL is not set")
@@ -79,11 +80,22 @@ func (p *Pipeline) ComputeAndStore(ctx context.Context) (StoreStats, error) {
 		}
 	}
 	p.log("compute: %d ASNs (%d with city, %d with domain)", len(rows), withCity, withDomain)
-	stats, err := Replace(ctx, p.PGSQL, rows)
+	ixRows, err := ComputeIX(p.dir())
+	if err != nil {
+		return StoreStats{}, err
+	}
+	p.log("compute: %d exchange prefixes", len(ixRows))
+	stats, err := Replace(ctx, p.PGSQL, rows, ixRows)
 	stats.WithCity, stats.WithDomain = withCity, withDomain
 	if err != nil {
 		return stats, err
 	}
-	p.log("store: replaced asn_geo_pdb (%d rows before, %d now)", stats.Previous, stats.Rows)
+	if stats.IXKept != "" {
+		p.log("store: replaced asn_geo_pdb (%d rows before, %d now); WARNING kept the old geo_ix_pdb (%d rows): %s",
+			stats.Previous, stats.Rows, stats.IXPrevious, stats.IXKept)
+		return stats, nil
+	}
+	p.log("store: replaced asn_geo_pdb (%d rows before, %d now) and geo_ix_pdb (%d before, %d now)",
+		stats.Previous, stats.Rows, stats.IXPrevious, stats.IXRows)
 	return stats, nil
 }

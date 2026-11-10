@@ -71,3 +71,20 @@ func TestDownloadDatasetFailsOnAuthError(t *testing.T) {
 		t.Errorf("output file written despite the error")
 	}
 }
+
+func TestDatasetFields(t *testing.T) {
+	fields := map[string]string{}
+	for _, ds := range datasets {
+		fields[ds.name] = ds.fields
+	}
+	for name, want := range map[string]string{
+		"net":   "id,asn,org_id,website,info_scope,info_type",
+		"ixlan": "id,ix_id",
+		"ixpfx": "id,ixlan_id,prefix,protocol",
+		"ix":    "id,city,country",
+	} {
+		if fields[name] != want {
+			t.Errorf("%s fields = %q, want %q", name, fields[name], want)
+		}
+	}
+}

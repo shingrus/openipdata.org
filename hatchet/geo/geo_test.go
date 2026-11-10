@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -159,7 +160,7 @@ func TestBuildMMDBArgs(t *testing.T) {
 	layers := filepath.Join(dir, "geo", "layers")
 	want := strings.Join([]string{"geo", "-out", filepath.Join(dir, "out", "geo", "20261109", "ip2geo-openipdata-20261109.mmdb"),
 		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer, filepath.Join(layers, RIRLayer), filepath.Join(layers, BlocksLayer),
-		filepath.Join(layers, PDBLayer), filepath.Join(layers, FeedsLayer)}, " ")
+		filepath.Join(layers, PDBLayer), filepath.Join(layers, IXLayer), filepath.Join(layers, FeedsLayer)}, " ")
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
 	}
@@ -174,5 +175,96 @@ func TestPDBQueryChecksSeenAt(t *testing.T) {
 	if !strings.Contains(pdbQuery, "a.seen_at > now() - interval '7 days'") ||
 		!strings.Contains(pdbQuery, "NOT EXISTS (SELECT 1 FROM public.asn WHERE seen_at IS NOT NULL)") {
 		t.Error("pdbQuery does not filter on seen_at")
+	}
+}
+
+// Global or anycast networks are in many places: their dominant city is left out.
+func TestPDBQueryLeavesOutGlobalScope(t *testing.T) {
+	if !strings.Contains(pdbQuery, "upper(btrim(coalesce(g.info_scope, ''))) <> 'GLOBAL'") {
+		t.Error("pdbQuery does not leave out info_scope Global")
+	}
+}
+
+// The exchange prefixes are read, never written, and only with a country.
+func TestIXQuery(t *testing.T) {
+	if !strings.Contains(ixQuery, "FROM public.geo_ix_pdb") || !strings.Contains(ixQuery, "length(btrim(country)) = 2") ||
+		!strings.Contains(ixQuery, "btrim(coalesce(city, '')) <> ''") {
+		t.Errorf("ixQuery = %s", ixQuery)
+	}
+}
+
+// The exchange layer sits after the PeeringDB layer and before the geofeeds, and is no
+// -same-country layer.
+func TestLayerOrder(t *testing.T) {
+	want := []string{RIRLayer, BlocksLayer, PDBLayer, IXLayer, FeedsLayer}
+	if !reflect.DeepEqual(layerOrder, want) {
+		t.Errorf("layerOrder = %v, want %v", layerOrder, want)
+	}
+	p := &Pipeline{DataDir: "/data"}
+	args := strings.Join(p.geoArgs("out.mmdb", "/kept/feeds", Source{}), " ")
+	if !strings.Contains(args, "-same-country "+PDBLayer+" ") || !strings.Contains(args, IXLayer) {
+		t.Errorf("args = %s", args)
+	}
+	// A skipped exchange layer is left out; the others keep their order.
+	args = strings.Join(p.geoArgs("out.mmdb", "/kept/feeds", Source{IXSkipped: true}), " ")
+	if strings.Contains(args, IXLayer) || !strings.HasSuffix(args, "/data/geo/layers/"+PDBLayer+" /kept/feeds") {
+		t.Errorf("skipped args = %s", args)
+	}
+}
+
+// While public.geo_ix_pdb has no rows the layer is skipped, a stale file is removed, and a partial
+// table still fails.
+func TestDownloadIX(t *testing.T) {
+	layers := t.TempDir()
+	path := filepath.Join(layers, IXLayer)
+	rowsOf := func(n int, err error) func(context.Context, *csv.Writer) (int, error) {
+		return func(_ context.Context, w *csv.Writer) (int, error) {
+			for i := 0; i < n; i++ {
+				w.Write([]string{fmt.Sprintf("10.%d.0.0/24", i), "DE", "Berlin"})
+			}
+			return n, err
+		}
+	}
+	run := func(write func(context.Context, *csv.Writer) (int, error)) (Source, []string, error) {
+		var logs []string
+		p := &Pipeline{writeIX: write, Progress: func(s string) { logs = append(logs, s) }}
+		src := Source{Rows: map[string]int{}}
+		err := p.downloadIX(context.Background(), layers, &src)
+		return src, logs, err
+	}
+
+	src, _, err := run(rowsOf(minIXPrefixes, nil))
+	if err != nil || src.IXSkipped || src.Rows[IXLayer] != minIXPrefixes {
+		t.Fatalf("full table: %+v %v", src, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// No rows: skipped with a warning, and the file from the run above is gone.
+	src, logs, err := run(rowsOf(0, ErrNoIXRows))
+	if err != nil || !src.IXSkipped || len(src.Rows) != 0 {
+		t.Fatalf("empty table: %+v %v", src, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("stale ix.csv kept: %v", err)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "WARNING") {
+		t.Errorf("logs = %v", logs)
+	}
+	// Skipping again with no file is fine.
+	if src, _, err = run(rowsOf(0, ErrNoIXRows)); err != nil || !src.IXSkipped {
+		t.Errorf("second skip: %+v %v", src, err)
+	}
+
+	// A partial table (or one whose rows all lack a city) fails.
+	for _, n := range []int{1, minIXPrefixes - 1, 0} {
+		if src, _, err = run(rowsOf(n, nil)); err == nil || src.IXSkipped || !strings.Contains(err.Error(), "fewer than") {
+			t.Errorf("%d rows: %+v %v", n, src, err)
+		}
+	}
+	// Other errors fail too.
+	if _, _, err = run(rowsOf(0, errors.New("boom"))); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("error: %v", err)
 	}
 }

@@ -1,5 +1,5 @@
 // Package schema creates and upgrades the Postgres tables the workflows share:
-// public.asn, public.asn_domain, public.asn_geo_pdb, and public.geo_eval. Each table has one
+// public.asn, public.asn_domain, public.asn_geo_pdb, public.geo_ix_pdb, and public.geo_eval. Each table has one
 // writer (see AGENTS.md); every workflow runs Ensure before it touches them.
 package schema
 
@@ -51,6 +51,18 @@ var statements = []string{
 		city TEXT,
 		dominance DOUBLE PRECISION,
 		domain TEXT
+	)`,
+	// The network's own "scope" and "type" in PeeringDB; NULL for rows written
+	// before the columns were added, until the next sync-peeringdb run.
+	`ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS info_scope TEXT`,
+	`ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS info_type TEXT`,
+	// Peering LAN prefixes of internet exchanges with the exchange's country and
+	// city; sync-peeringdb replaces them together with asn_geo_pdb.
+	`CREATE TABLE IF NOT EXISTS public.geo_ix_pdb (
+		prefix TEXT PRIMARY KEY,
+		ix_id BIGINT,
+		country TEXT,
+		city TEXT
 	)`,
 	// One row per build-geo-data run: the scores of the MMDB it built. published
 	// is set once that MMDB has been published; the latest such row is the

@@ -144,7 +144,7 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 
 	eval := p.evalDir()
 	os.MkdirAll(eval, 0o750)
-	mmdb, truth, status, err := p.prepareHoldout(context.Background(), eval)
+	mmdb, truth, status, err := p.prepareHoldout(context.Background(), Source{}, eval)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 	kept := filepath.Join(eval, "holdout", FeedsLayer)
 	want := strings.Join([]string{"geo", "-out", filepath.Join(eval, "holdout.mmdb"),
 		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer,
-		filepath.Join(layers, RIRLayer), filepath.Join(layers, BlocksLayer), filepath.Join(layers, PDBLayer), kept}, " ")
+		filepath.Join(layers, RIRLayer), filepath.Join(layers, BlocksLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, IXLayer), kept}, " ")
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
 	}
@@ -161,10 +161,19 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 		t.Errorf("%s %s %q", mmdb, truth, status)
 	}
 
+	// A skipped exchange layer is left out of the holdout build as well.
+	if _, _, _, err = p.prepareHoldout(context.Background(), Source{IXSkipped: true}, eval); err != nil {
+		t.Fatal(err)
+	}
+	args, _ = os.ReadFile(argsFile)
+	if strings.Contains(string(args), IXLayer) || !strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, PDBLayer)+" "+kept) {
+		t.Errorf("skipped args = %s", args)
+	}
+
 	// Nothing held out outside the kept feeds: nothing to score, no build.
 	os.Remove(argsFile)
 	writeGzip(t, filepath.Join(layers, FeedsLayer), "prefix,country,region,city,feed_url\n45.0.0.0/16,US,,,https://feed0.example/geo.csv\n")
-	if mmdb, _, status, err = p.prepareHoldout(context.Background(), eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
+	if mmdb, _, status, err = p.prepareHoldout(context.Background(), Source{}, eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
 		t.Errorf("no held-out rows: %q %q %v", mmdb, status, err)
 	}
 	if _, err := os.Stat(argsFile); err == nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -17,6 +18,11 @@ import (
 // it only when it holds at least 30% of the ASN's presence) and whose
 // PeeringDB country matches the whois country of public.asn. Read only.
 //
+// ASNs whose PeeringDB info_scope is Global are left out: a global or anycast
+// network is in many places, so its one dominant city is misleading. Every
+// other scope, and a missing one (rows written before sync-peeringdb stored
+// it), is kept.
+//
 // public.asn never loses rows, so an ASN that left the source is left out
 // after 7 days without a build-asn-data run seeing it. A NULL seen_at counts
 // only until the first run has stamped some row: after that, NULL means the
@@ -25,6 +31,7 @@ const pdbQuery = `SELECT a.json, upper(btrim(g.country)), btrim(g.city)
 	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
 	WHERE btrim(coalesce(g.city, '')) <> ''
 	  AND upper(btrim(a.country)) = upper(btrim(g.country))
+	  AND upper(btrim(coalesce(g.info_scope, ''))) <> 'GLOBAL'
 	  AND (a.seen_at > now() - interval '7 days'
 	       OR (a.seen_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.asn WHERE seen_at IS NOT NULL)))
 	ORDER BY a.asn`
@@ -86,4 +93,71 @@ func asnPrefixes(raw string) []netip.Prefix {
 		}
 	}
 	return out
+}
+
+// ixQuery lists the internet exchange peering LAN prefixes with a 2-letter
+// country (sync-peeringdb already drops the rest) and a city. An exchange
+// without a city stays in the table but not in the layer: as a later layer, a
+// country-only row would erase a city that the lower layers set. Read only.
+const ixQuery = `SELECT prefix, upper(btrim(country)), btrim(city)
+	FROM public.geo_ix_pdb
+	WHERE length(btrim(country)) = 2
+	  AND btrim(coalesce(city, '')) <> ''
+	ORDER BY prefix`
+
+// ErrNoIXRows means public.geo_ix_pdb does not exist yet or has no rows, which
+// is the state before sync-peeringdb has run once with the exchange prefixes.
+var ErrNoIXRows = errors.New("public.geo_ix_pdb has no rows")
+
+// writeIXRows writes every exchange prefix that has a city as a layer row and
+// returns how many. It only reads: no DDL, as ALTER TABLE would take a lock
+// that can block on sync-peeringdb's replace. It returns ErrNoIXRows when the
+// table is missing or empty.
+func writeIXRows(ctx context.Context, dsn string, w *csv.Writer) (int, error) {
+	if dsn == "" {
+		return 0, fmt.Errorf("PGSQL is not set")
+	}
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return 0, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
+	}
+	defer conn.Close(ctx)
+	// to_regclass is NULL for a table that does not exist yet.
+	var table *string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.geo_ix_pdb')::text`).Scan(&table); err != nil {
+		return 0, err
+	}
+	if table == nil {
+		return 0, ErrNoIXRows
+	}
+	rows, err := conn.Query(ctx, ixQuery)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var prefix, code, city string
+		if err := rows.Scan(&prefix, &code, &city); err != nil {
+			return 0, err
+		}
+		w.Write([]string{prefix, code, city})
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		return n, nil
+	}
+	// Nothing written: an empty table is the rollout state, but a table
+	// with rows that all lack a city or country is a data problem.
+	var total int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.geo_ix_pdb`).Scan(&total); err != nil {
+		return 0, err
+	}
+	if total == 0 {
+		return 0, ErrNoIXRows
+	}
+	return 0, nil
 }

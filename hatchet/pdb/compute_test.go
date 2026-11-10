@@ -170,8 +170,32 @@ func TestCheckShrink(t *testing.T) {
 		{1000, 899, false},
 	}
 	for _, c := range cases {
-		if err := checkShrink(c.previous, c.rows); (err == nil) != c.ok {
+		if err := checkShrink("asn_geo_pdb", c.previous, c.rows); (err == nil) != c.ok {
 			t.Errorf("checkShrink(%d, %d) = %v, want ok=%v", c.previous, c.rows, err, c.ok)
 		}
+	}
+}
+
+// A failed exchange check keeps the old geo_ix_pdb rows with a reason; it never refuses asn_geo_pdb.
+func TestIXKeepReason(t *testing.T) {
+	cases := []struct {
+		previous, rows int
+		keep           bool
+	}{
+		{0, 0, true},
+		{500, 0, true},
+		{1000, 899, true},
+		{1000, 900, false},
+		{0, 300, false},
+	}
+	for _, c := range cases {
+		reason := ixKeepReason(c.previous, c.rows)
+		if (reason != "") != c.keep || (c.keep && !strings.Contains(reason, "geo_ix_pdb")) {
+			t.Errorf("ixKeepReason(%d, %d) = %q, want keep=%v", c.previous, c.rows, reason, c.keep)
+		}
+	}
+	// The asn_geo_pdb check is unchanged.
+	if checkShrink("asn_geo_pdb", 1000, 899) == nil {
+		t.Error("asn_geo_pdb shrink accepted")
 	}
 }

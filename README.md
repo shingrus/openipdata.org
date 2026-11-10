@@ -31,6 +31,7 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 |---|---|
 | `public.asn` | `build-asn-data` |
 | `public.asn_geo_pdb` | `sync-peeringdb` |
+| `public.geo_ix_pdb` | `sync-peeringdb` |
 | `public.asn_domain` | `update-asn-domains` |
 | `public.geo_eval` | `build-geo-data` |
 
@@ -67,8 +68,8 @@ asn-ip data plus the latest PeeringDB data and domains. `update-asn-domains` and
 
 | Task | Runs after | Does |
 |---|---|---|
-| `download` | | fetches PeeringDB `org`, `net`, `fac`, `ix`, `netfac`, `netixlan` fresh into `/var/lib/openipdata/pdb/*.jsonl` |
-| `compute-and-store` | `download` | derives one row per ASN and replaces `public.asn_geo_pdb` in one transaction |
+| `download` | | fetches PeeringDB `org`, `net`, `fac`, `ix`, `netfac`, `netixlan`, `ixlan`, `ixpfx` fresh into `/var/lib/openipdata/pdb/*.jsonl` |
+| `compute-and-store` | `download` | derives one row per ASN and one row per exchange prefix, and replaces `public.asn_geo_pdb` and `public.geo_ix_pdb` in one transaction |
 
 Per ASN, every facility and exchange link is one presence point:
 
@@ -76,8 +77,19 @@ Per ASN, every facility and exchange link is one presence point:
 - `city`: most common city within that country, if it holds at least 30% of all located points
 - `dominance`: that city's share of all located points
 - `domain`: host of the network's website, else the org's website
+- `info_scope`, `info_type`: the network's own "scope" (`Global`, `Europe`, ...) and "type" in PeeringDB,
+  as given; NULL when empty. `build-geo-data` uses `info_scope`.
 
-The replace is refused if it would shrink the table by more than 10%. Needs `PDB_KEY`.
+`public.geo_ix_pdb` (`prefix` primary key, `ix_id`, `country`, `city`) has one row per internet
+exchange peering LAN prefix (`ixpfx` → `ixlan` → `ix`), as masked CIDR text with the exchange's
+country and city. Prefixes that are not global unicast (RFC 1918, ULA, link-local, documentation,
+shared address space), IPv4 prefixes shorter than /16, IPv6 shorter than /32, rows whose exchange has no
+2-letter country, and repeated prefixes (first wins) are left out.
+
+Both tables are replaced in the same transaction. A replace of `public.asn_geo_pdb` is refused (and
+nothing changes) if it would shrink the table by more than 10% or leave it empty. If `public.geo_ix_pdb`
+would shrink by more than 10% or be empty, it keeps its old rows instead: `asn_geo_pdb` is still replaced,
+the task output has `ix_kept` with the reason, and the log has a warning. Needs `PDB_KEY`.
 
 ### `update-asn-domains` (`hatchet/domains/`, cron `0 4,16 * * *` UTC)
 
@@ -201,7 +213,7 @@ layers before it put under its prefixes.
 
 | Task | Runs after | Does |
 |---|---|---|
-| `download` | | rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows from Postgres, geofeed rows from R2 |
+| `download` | | rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, geofeed rows from R2 |
 | `build-mmdb` | `download` | runs `mmdbbuilder geo` on the layer files → `ip2geo-openipdata-<date>.mmdb` |
 | `evaluate` | `download`, `build-mmdb` | scores the MMDB against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
@@ -219,8 +231,16 @@ unpublished `public.geo_eval` row of the same date.
      `build-asn-data` has not seen in its source for 7 days (`public.asn.seen_at`) is left out;
      a NULL `seen_at` counts only until the first run has stamped some row. This layer only refines:
      its rows apply where layers 1 and 2 gave the same country or none, so an ASN's city does
-     not replace more specific networks registered in another country;
-  4. the geofeed rows that `sync-geofeeds` left in R2. A row broader than one RIR block (layer 1)
+     not replace more specific networks registered in another country. An ASN whose PeeringDB
+     `info_scope` is `Global` is left out: a global or anycast network is in many places, so one
+     dominant city is misleading for it (other scopes, and a missing one, are kept);
+  4. PeeringDB internet exchange peering LAN prefixes (`public.geo_ix_pdb`): the exchange's country
+     and city. A plain layer: it replaces what layers 1 to 3 put under those prefixes. An exchange
+     without a city is left out of the layer (a country-only row would erase a city set below it).
+     While the table does not exist or has no rows (before `sync-peeringdb` has run once with the
+     exchange prefixes), `download` logs a warning and skips this layer: `ix.csv` is removed and both
+     the real build and the holdout build run without it (`ix_layer_skipped` in the task output);
+  5. the geofeed rows that `sync-geofeeds` left in R2. A row broader than one RIR block (layer 1)
      is skipped (`-within-first`), so a feed cannot change the country of networks that belong
      to someone else; a row inside a block, or equal to it, is used.
 - The RIR stats' `ZZ`, `EU` and `AP` are not countries: those blocks give no country, but they
@@ -234,7 +254,9 @@ unpublished `public.geo_eval` row of the same date.
 - Downloads are cached in `/var/lib/openipdata/geo/downloads/` (`Last-Modified` and ETag). When
   a server fails, a copy it gave or confirmed in the last 3 days is used; otherwise the task
   fails. A source that is too small (under 1,000 blocks per RIR, 200 countries, 100 PeeringDB
-  ASNs) also fails the task.
+  ASNs, 200 exchange prefixes written to the layer) also fails the task; an exchange table with no
+  rows at all is the one exception (skipped, see layer 4). `build-geo-data` only reads
+  `public.geo_ix_pdb`; it runs no schema changes.
 - Geofeed rows older than 3 days are still used, with a warning, but `publish` then skips the
   `HC_PING_GEO` ping, so the health check reports that `sync-geofeeds` has stopped delivering.
 - Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB

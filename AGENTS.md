@@ -34,12 +34,18 @@
 - Output files (MMDB, SQLite) are rebuilt from scratch each run and written via a `.tmp` file plus rename.
 - One writer per table; every other workflow only reads it:
   `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`,
-  `public.geo_eval` ← `build-geo-data`.
+  `public.geo_ix_pdb` ← `sync-peeringdb`, `public.geo_eval` ← `build-geo-data`.
 - Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand.
 - Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
   `build-asn-data` sets `public.asn.seen_at` for every ASN in the source each run; readers use it to ignore old rows
   (NULL = not yet seen since the column was added).
-- `public.asn_geo_pdb` mirrors PeeringDB: `sync-peeringdb` replaces it in one transaction each run.
+- `public.asn_geo_pdb` mirrors PeeringDB: `sync-peeringdb` replaces it in one transaction each run, together with
+  `public.geo_ix_pdb` (global unicast internet exchange peering LAN prefixes with the exchange's country and city).
+  An asn_geo_pdb shrink refuses the whole replace; a geo_ix_pdb shrink or empty result only keeps the old
+  geo_ix_pdb rows (`StoreStats.IXKept`) and asn_geo_pdb is still replaced.
+- `build-geo-data` only reads these tables and runs no DDL (no `schema.Ensure`). A missing or empty `public.geo_ix_pdb`
+  skips the `ix.csv` layer for that run (`Source.IXSkipped`, used by `build-mmdb` and the holdout build alike); a
+  table with 1 to 199 usable rows fails. Exchanges without a city are never written to `ix.csv`.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
 - Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` touches no ASN table and has
