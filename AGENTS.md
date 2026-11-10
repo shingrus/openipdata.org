@@ -34,7 +34,7 @@
 - Output files (MMDB, SQLite) are rebuilt from scratch each run and written via a `.tmp` file plus rename.
 - One writer per table; every other workflow only reads it:
   `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`,
-  `public.geo_ix_pdb` ← `sync-peeringdb`, `public.geo_eval` ← `build-geo-data`.
+  `public.geo_ix_pdb` ← `sync-peeringdb`, `public.geo_eval` ← `build-geo-data`, `public.geofeed_urls` ← `sync-geofeeds`.
 - Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand. A workflow runs DDL only
   for tables it writes: `ALTER TABLE` takes an ACCESS EXCLUSIVE lock even when the column exists.
 - Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
@@ -51,8 +51,16 @@
   `asn_geo_pdb.fac_count`/`fac_city`/`fac_country` (facilities only, city set only if all are in one city) feed `hosting.csv`.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
-- Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes no table (its `probe-domains`
-  task only reads `public.asn_domain` and `public.asn`, with no `schema.Ensure`) and has its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.
+- Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes only `public.geofeed_urls`
+  (DDL only through `schema.EnsureGeofeedURLs`, never `schema.Ensure`; its `probe-domains` task only reads
+  `public.asn_domain` and `public.asn`) and has its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.
+- `public.geofeed_urls` is the one list of every geofeed URL ever found (the table pre-dates this repo and its definition
+  must not change). `discover` upserts into it (new URL: insert; known URL: `last_seen_at = now()` and `sources` = sorted
+  distinct union, never a removed source) and never deletes rows. `check-feeds` writes only `last_checked_at`,
+  `last_success_at`, `last_fetch_status` (our status names) and `result_text` (`HTTP 200, 3412 rows`, `HTTP 404`, or a short
+  error), in batches. Its backoff and the 30-day working window depend only on the timestamps (failing since
+  `last_success_at`, or `first_seen_at` if it never worked), never on the status text, so rows written by an older tool
+  just come due. The stored feed copies on the VM are only caches.
 - Data between workflows goes through Postgres tables, except the geofeed rows (millions of rows):
   `sync-geofeeds` uploads them to one fixed key in the private R2 bucket and `build-geo-data` reads them from there.
   A workflow's own caches and state on the VM (e.g. `/var/lib/openipdata/geofeeds/`) are never read by another workflow.
@@ -60,7 +68,7 @@
   whois records anyone can write). Nothing it builds is published. Its RDAP results live in `rdap.jsonl` on the VM,
   not in Postgres. `probe-domains` looks for feeds on the websites in `public.asn_domain` (source `domain`); its results
   live in `domains.jsonl`, and the announced prefixes of the ASNs of found domains in `domain-prefixes.csv`, so
-  `export-rows` never queries Postgres. A feed that only this source found adds no whois blocks and keeps only rows
+  `export-rows` reads no ASN table. A feed that only this source found adds no whois blocks and keeps only rows
   inside those prefixes (drop reason `outside_asn`).
 - `build-geo-data` scores each MMDB it builds (`evaluate` task, results in `public.geo_eval`) and `publish` refuses a
   clear drop against the last published row (`geo.ErrGate`). All MMDB reading is done by `mmdbbuilder eval`.

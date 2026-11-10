@@ -8,8 +8,9 @@
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //
-// Environment: PGSQL (Postgres DSN; sync-geofeeds' probe-domains task reads
-// public.asn_domain and public.asn with it), PDB_KEY (PeeringDB API key),
+// Environment: PGSQL (Postgres DSN; sync-geofeeds keeps its URL list in
+// public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn),
+// PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
 // HC_PING_GEO (optional), IPINFO_TOKEN (optional, a secret: the IPinfo Lite
@@ -357,8 +358,8 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	return wf
 }
 
-// syncGeofeedsWorkflow runs daily, ahead of build-geo-data. The URL lists stay
-// on the VM; the checked rows go to the private R2 bucket for build-geo-data.
+// syncGeofeedsWorkflow runs daily, ahead of build-geo-data. The URL list is
+// public.geofeed_urls; the URL lists written for people stay on the VM; the checked rows go to the private R2 bucket for build-geo-data.
 // Nothing is published.
 func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-geofeeds",
@@ -386,11 +387,11 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	}, taskRetry(hatchet.WithExecutionTimeout(3*time.Hour))...)
 
 	// Looks for feeds that whois does not point to, on the websites of the ASNs
-	// (public.asn_domain, read only). It is the only task that needs PGSQL.
+	// (public.asn_domain, read only).
 	wf.NewTask("probe-domains", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DomainsOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
 		// Only an env change fixes either setting: no retries.
-		if err := p.CheckDomains(); err != nil {
+		if err := p.CheckPGSQL(); err != nil {
 			return geofeeds.DomainsOutput{}, hatchet.NewNonRetryableError(err)
 		}
 		if !input.SkipUpload {
@@ -403,9 +404,12 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 	discover := wf.NewTask("discover", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
+		// Start of the chain that ends in the upload: fail early, and
+		// without retries, since only an env change fixes it.
+		if err := p.CheckPGSQL(); err != nil {
+			return geofeeds.DiscoverOutput{}, hatchet.NewNonRetryableError(err)
+		}
 		if !input.SkipUpload {
-			// Start of the chain that ends in the upload: fail early, and
-			// without retries, since only an env change fixes it.
 			if err := p.CheckUpload(); err != nil {
 				return geofeeds.DiscoverOutput{}, hatchet.NewNonRetryableError(err)
 			}
@@ -415,11 +419,18 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 	// Each feed's result is saved as it comes in, so a retry resumes where it stopped.
 	check := wf.NewTask("check-feeds", func(ctx hatchet.Context, _ SyncGeofeedsInput) (geofeeds.CheckOutput, error) {
-		return newGeofeedsPipeline(taskLog(ctx)).CheckFeeds(ctx)
+		p := newGeofeedsPipeline(taskLog(ctx))
+		if err := p.CheckPGSQL(); err != nil {
+			return geofeeds.CheckOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		return p.CheckFeeds(ctx)
 	}, taskRetry(hatchet.WithParents(discover), hatchet.WithExecutionTimeout(2*time.Hour))...)
 
 	wf.NewTask("export-rows", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.ExportOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
+		if err := p.CheckPGSQL(); err != nil {
+			return geofeeds.ExportOutput{}, hatchet.NewNonRetryableError(err)
+		}
 		if !input.SkipUpload {
 			if err := p.CheckUpload(); err != nil {
 				return geofeeds.ExportOutput{}, hatchet.NewNonRetryableError(err)
@@ -590,7 +601,7 @@ func runGeofeeds(ctx context.Context, args []string) error {
 	}
 
 	p := newGeofeedsPipeline(cliLog)
-	if err := p.CheckDomains(); err != nil {
+	if err := p.CheckPGSQL(); err != nil {
 		return err
 	}
 	if !*skipUpload {

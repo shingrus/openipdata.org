@@ -129,31 +129,6 @@ func TestFetchFeed(t *testing.T) {
 	}
 }
 
-func TestDue(t *testing.T) {
-	now := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
-	ago := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
-	day := 24 * time.Hour
-	tests := []struct {
-		name  string
-		state feedState
-		want  bool
-	}{
-		{"new", feedState{}, true},
-		{"working, checked yesterday", feedState{Checked: ago(day)}, true},
-		{"checked minutes ago", feedState{Checked: ago(10 * time.Minute)}, false},
-		{"failing 1 day", feedState{Checked: ago(day), FailingSince: ago(day)}, true},
-		{"failing 10 days, checked 2 days ago", feedState{Checked: ago(2 * day), FailingSince: ago(10 * day)}, false},
-		{"failing 10 days, checked 7 days ago", feedState{Checked: ago(7 * day), FailingSince: ago(10 * day)}, true},
-		{"failing 90 days, checked 7 days ago", feedState{Checked: ago(7 * day), FailingSince: ago(90 * day)}, false},
-		{"failing 90 days, checked 30 days ago", feedState{Checked: ago(30 * day), FailingSince: ago(90 * day)}, true},
-	}
-	for _, tt := range tests {
-		if got := tt.state.due(now); got != tt.want {
-			t.Errorf("%s: due = %v", tt.name, got)
-		}
-	}
-}
-
 func TestInterleaveByHost(t *testing.T) {
 	got := interleaveByHost([]string{"https://a/1", "https://a/2", "https://a/3", "https://b/1", "https://c/1"})
 	want := []string{"https://a/1", "https://b/1", "https://c/1", "https://a/2", "https://a/3"}
@@ -174,10 +149,11 @@ func TestCheckFeeds(t *testing.T) {
 	}))
 	defer server.Close()
 	now := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
-	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }, allowPrivate: true}
-	os.MkdirAll(p.dir(), 0o750)
-	urls := "url,sources,blocks\n" + server.URL + "/good.csv,ripe,3\n" + server.URL + "/gone.csv,caida,0\n"
-	os.WriteFile(filepath.Join(p.dir(), URLsFile), []byte(urls), 0o640)
+	store := newFakeStore(
+		urlRow{URL: server.URL + "/good.csv", Sources: []string{"ripe"}, FirstSeen: now},
+		urlRow{URL: server.URL + "/gone.csv", Sources: []string{"caida"}, FirstSeen: now},
+	)
+	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }, allowPrivate: true, store: store}
 
 	out, err := p.CheckFeeds(context.Background())
 	if err != nil {
@@ -186,14 +162,23 @@ func TestCheckFeeds(t *testing.T) {
 	if out.Feeds != 2 || out.Working != 1 || out.Rows != 2 || out.Statuses[feedOK] != 1 || out.Statuses[feedHTTPError] != 1 {
 		t.Errorf("out = %+v", out)
 	}
+	good, gone := store.row(server.URL+"/good.csv"), store.row(server.URL+"/gone.csv")
+	if good.Status != feedOK || good.Result != "HTTP 200, 2 rows" || !good.LastChecked.Equal(now) || !good.LastSuccess.Equal(now) {
+		t.Errorf("good = %+v", good)
+	}
+	if gone.Status != feedHTTPError || gone.Result != "HTTP 404" || !gone.LastChecked.Equal(now) || !gone.LastSuccess.IsZero() {
+		t.Errorf("gone = %+v", gone)
+	}
 	txt, _ := os.ReadFile(filepath.Join(p.dir(), OutDir, ListTXT))
-	if !strings.HasSuffix(string(txt), "\n"+server.URL+"/good.csv\n") || strings.Contains(string(txt), "gone") {
+	if !strings.HasSuffix(string(txt), "\n"+server.URL+"/good.csv\n") || strings.Contains(string(txt), "gone") ||
+		!strings.Contains(string(txt), "worked in the 30 days before 2026-11-09") {
 		t.Errorf("txt:\n%s", txt)
 	}
 	csvText, _ := os.ReadFile(filepath.Join(p.dir(), OutDir, ListCSV))
 	for _, want := range []string{
-		server.URL + "/good.csv,ripe,3,ok,200,2,2026-11-09\n",
-		server.URL + "/gone.csv,caida,0,http_error,404,0,\n",
+		"url,sources,status,result,last_ok\n",
+		server.URL + "/good.csv,ripe,ok,\"HTTP 200, 2 rows\",2026-11-09\n",
+		server.URL + "/gone.csv,caida,http_error,HTTP 404,\n",
 	} {
 		if !strings.Contains(string(csvText), want) {
 			t.Errorf("csv lacks %q:\n%s", want, csvText)
@@ -202,15 +187,17 @@ func TestCheckFeeds(t *testing.T) {
 
 	// A retry within the hour fetches nothing again.
 	requests.Store(0)
-	if out, err := p.CheckFeeds(context.Background()); err != nil || requests.Load() != 0 || out.Skipped != 2 || out.Working != 1 {
+	if out, err := p.CheckFeeds(context.Background()); err != nil || requests.Load() != 0 || out.Skipped != 2 || out.Working != 1 || out.Rows != 2 {
 		t.Errorf("retry: %+v %v, %d requests", out, err, requests.Load())
 	}
 
-	// After 30 days without discovery listing them, feeds are dropped.
+	// Rows are never deleted, whatever discovery lists: a month on, both are checked again.
 	now = now.Add(31 * 24 * time.Hour)
-	os.WriteFile(filepath.Join(p.dir(), URLsFile), []byte("url,sources,blocks\n"), 0o640)
-	if out, err := p.CheckFeeds(context.Background()); err != nil || out.Dropped != 2 || out.Feeds != 0 {
-		t.Errorf("drop: %+v %v", out, err)
+	if out, err := p.CheckFeeds(context.Background()); err != nil || out.Feeds != 2 || out.Requests != 2 || out.Working != 1 {
+		t.Errorf("a month later: %+v %v", out, err)
+	}
+	if rows, _ := store.Load(context.Background()); len(rows) != 2 {
+		t.Errorf("rows = %+v", rows)
 	}
 }
 
@@ -271,15 +258,6 @@ func TestPublicAddr(t *testing.T) {
 	}
 }
 
-func checkedState(t *testing.T, p *Pipeline) map[string]*feedState {
-	t.Helper()
-	state, err := loadState(filepath.Join(p.dir(), StateFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return state
-}
-
 // A cancelled run must not record the feeds it cut off as failing.
 func TestCheckFeedsCancelled(t *testing.T) {
 	started := make(chan struct{})
@@ -288,9 +266,8 @@ func TestCheckFeedsCancelled(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true}
-	os.MkdirAll(p.dir(), 0o750)
-	os.WriteFile(filepath.Join(p.dir(), URLsFile), []byte("url,sources,blocks\n"+server.URL+"/slow.csv,ripe,1\n"), 0o640)
+	store := newFakeStore(urlRow{URL: server.URL + "/slow.csv", Sources: []string{"ripe"}, FirstSeen: time.Now()})
+	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true, store: store}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -300,20 +277,20 @@ func TestCheckFeedsCancelled(t *testing.T) {
 	if _, err := p.CheckFeeds(ctx); err != context.Canceled {
 		t.Fatalf("err = %v", err)
 	}
-	if s := checkedState(t, p)[server.URL+"/slow.csv"]; s == nil || s.Checked != "" || s.FailingSince != "" {
-		t.Errorf("state = %+v", s)
+	if r := store.row(server.URL + "/slow.csv"); r == nil || !r.LastChecked.IsZero() || r.Status != "" || r.Result != "" {
+		t.Errorf("row = %+v", r)
 	}
 }
 
 // Once a host stops answering, its other feeds wait for the next run.
 func TestCheckFeedsUnreachableHost(t *testing.T) {
-	p := &Pipeline{DataDir: t.TempDir()} // 127.0.0.1 is blocked, which counts as unreachable
-	os.MkdirAll(p.dir(), 0o750)
-	urls := "url,sources,blocks\n"
+	now := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
+	var rows []urlRow
 	for i := range 20 {
-		urls += "http://127.0.0.1:9/" + strconv.Itoa(i) + ".csv,ripe,1\n"
+		rows = append(rows, urlRow{URL: "http://127.0.0.1:9/" + strconv.Itoa(i) + ".csv", Sources: []string{"ripe"}, FirstSeen: now})
 	}
-	os.WriteFile(filepath.Join(p.dir(), URLsFile), []byte(urls), 0o640)
+	store := newFakeStore(rows...)
+	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }, store: store} // 127.0.0.1 is blocked, which counts as unreachable
 	out, err := p.CheckFeeds(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -321,17 +298,20 @@ func TestCheckFeedsUnreachableHost(t *testing.T) {
 	if out.Requests+out.Skipped != 20 || out.Requests < hostFailLimit || out.Requests > hostFailLimit+perHostLimit {
 		t.Errorf("out = %+v", out)
 	}
-	unchecked := 0
-	for _, s := range checkedState(t, p) {
-		if s.Checked == "" {
-			unchecked++
-			if s.Status != feedHostDown || s.FailingSince == "" {
-				t.Errorf("skipped feed state = %+v", s)
+	hostDown := 0
+	for _, r := range store.rows {
+		// Recorded as a failure: checked, never worked, so backoff applies.
+		if r.Status == feedHostDown {
+			hostDown++
+			if !r.LastChecked.Equal(now) || !r.LastSuccess.IsZero() || r.Result == "" {
+				t.Errorf("skipped feed row = %+v", r)
 			}
+		} else if r.Status != feedBlocked {
+			t.Errorf("row = %+v", r)
 		}
 	}
-	if unchecked != out.Skipped {
-		t.Errorf("%d unchecked feeds, %d skipped", unchecked, out.Skipped)
+	if hostDown != out.Skipped {
+		t.Errorf("%d host_down feeds, %d skipped", hostDown, out.Skipped)
 	}
 }
 
@@ -347,21 +327,20 @@ func TestCheckFeedsRemovesStaleCopy(t *testing.T) {
 		w.Write([]byte("45.10.2.0/24,US,,\n"))
 	}))
 	defer server.Close()
-	now := time.Now().UTC() // Checked and LastOK are wall-clock times
-	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }, allowPrivate: true}
-	os.MkdirAll(p.dir(), 0o750)
-	os.WriteFile(filepath.Join(p.dir(), URLsFile), []byte("url,sources,blocks\n"+server.URL+"/f.csv,ripe,1\n"), 0o640)
+	now := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
+	store := newFakeStore(urlRow{URL: server.URL + "/f.csv", Sources: []string{"ripe"}, FirstSeen: now})
+	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }, allowPrivate: true, store: store}
 	path := feedPath(filepath.Join(p.dir(), FeedsDir), server.URL+"/f.csv")
 	for _, tt := range []struct {
 		after  time.Duration
 		stored bool
-	}{{0, true}, {2 * 24 * time.Hour, true}, {8 * 24 * time.Hour, false}} {
+	}{{0, true}, {2 * 24 * time.Hour, true}, {8 * 24 * time.Hour, true}, {19 * 24 * time.Hour, true}, {7 * 24 * time.Hour, false}} {
 		now = now.Add(tt.after)
 		if _, err := p.CheckFeeds(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(path); (err == nil) != tt.stored {
-			t.Errorf("after %s: stored = %v, want %v", tt.after, err == nil, tt.stored)
+			t.Errorf("after %s (%s since the last success): stored = %v, want %v", tt.after, now.Sub(store.row(server.URL+"/f.csv").LastSuccess), err == nil, tt.stored)
 		}
 		gone = true
 	}

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -45,7 +46,9 @@ func TestDiscover(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
+	store := newFakeStore()
 	p := &Pipeline{
+		store:   store,
 		DataDir: t.TempDir(),
 		dumps: []dump{
 			{"ripe", "ripe", server.URL + "/ripe.gz"},
@@ -73,19 +76,18 @@ func TestDiscover(t *testing.T) {
 		t.Errorf("blocks = %d", out.Blocks)
 	}
 
-	urls, err := os.ReadFile(filepath.Join(p.dir(), URLsFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"https://arin.example/g.csv,caida,0",
-		"https://isp.example/geofeed.csv,caida|ripe,2",
-		"https://other.example/feed.csv,irr,1",
-		"https://mask-api.icloud.com/egress-ip-ranges.csv,list,0",
+	for u, want := range map[string][]string{
+		"https://arin.example/g.csv":                       {"caida"},
+		"https://isp.example/geofeed.csv":                  {"caida", "ripe"},
+		"https://other.example/feed.csv":                   {"irr"},
+		"https://mask-api.icloud.com/egress-ip-ranges.csv": {"list"},
 	} {
-		if !strings.Contains(string(urls), want+"\n") {
-			t.Errorf("urls.csv lacks %q:\n%s", want, urls)
+		if r := store.row(u); r == nil || !reflect.DeepEqual(r.Sources, want) || !r.FirstSeen.Equal(day) || !store.lastSeen[u].Equal(day) {
+			t.Errorf("%s: row %+v, want sources %v first seen %v", u, r, want, day)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(p.dir(), "urls.csv")); err == nil {
+		t.Error("urls.csv was written")
 	}
 	blocks, err := os.ReadFile(filepath.Join(p.dir(), BlocksFile))
 	if err != nil {
@@ -99,14 +101,33 @@ func TestDiscover(t *testing.T) {
 		t.Errorf("blocks.csv:\n%s\nwant:\n%s", blocks, wantBlocks)
 	}
 
+	// A later run that finds less changes nothing about the rows the table already holds:
+	// sources are never removed, and a URL nobody lists any more stays.
+	later := day.Add(24 * time.Hour)
+	p.now = func() time.Time { return later }
+	caida := p.caidaBase
+	p.dumps, p.caidaBase = []dump{{"irr", "irr", server.URL + "/irr.gz"}}, server.URL+"/no-caida"
+	if _, err := p.Discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r := store.row("https://isp.example/geofeed.csv"); r == nil || !reflect.DeepEqual(r.Sources, []string{"caida", "ripe"}) || !store.lastSeen[r.URL].Equal(day) {
+		t.Errorf("a URL nobody listed: %+v", r)
+	}
+	if r := store.row("https://other.example/feed.csv"); !reflect.DeepEqual(r.Sources, []string{"irr"}) || !store.lastSeen[r.URL].Equal(later) {
+		t.Errorf("a URL listed again: %+v, last seen %v", r, store.lastSeen[r.URL])
+	}
+	p.now, p.caidaBase = func() time.Time { return day }, caida
+
 	// One whois dump missing fails the run and keeps the previous outputs.
-	before, _ := os.ReadFile(filepath.Join(p.dir(), URLsFile))
+	before, _ := os.ReadFile(filepath.Join(p.dir(), BlocksFile))
+	upserts := store.upserts
+	// Not stored yet: a failed run must not touch the table.
 	p.dumps = []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}, {"lacnic", "lacnic", server.URL + "/broken.gz"}}
 	if _, err := p.Discover(context.Background()); err == nil || !strings.Contains(err.Error(), "lacnic") {
 		t.Errorf("want an error naming the missing dump, got %v", err)
 	}
-	if after, _ := os.ReadFile(filepath.Join(p.dir(), URLsFile)); string(after) != string(before) {
-		t.Error("a failed run replaced urls.csv")
+	if after, _ := os.ReadFile(filepath.Join(p.dir(), BlocksFile)); string(after) != string(before) || store.upserts != upserts {
+		t.Error("a failed run replaced blocks.csv or updated the table")
 	}
 
 	// A corrupt cached dump is removed, so the next run downloads it again.
@@ -151,6 +172,7 @@ func TestDiscoverWhileRDAPIsWritten(t *testing.T) {
 	day := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
 	p := &Pipeline{
 		DataDir:      t.TempDir(),
+		store:        newFakeStore(),
 		dumps:        []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}},
 		caidaBase:    server.URL + "/caida", // 404: the CAIDA lists are optional
 		now:          func() time.Time { return day },

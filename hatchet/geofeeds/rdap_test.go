@@ -82,7 +82,7 @@ func TestLookupRDAP(t *testing.T) {
 	}))
 	defer server.Close()
 	now := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
-	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true, now: func() time.Time { return now },
+	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true, store: newFakeStore(), now: func() time.Time { return now },
 		rdap: []rdapRegistry{{"arin", server.URL + "/stats", nil, server.URL, time.Millisecond, 100, time.Millisecond}}}
 
 	out, err := p.LookupRDAP(context.Background(), 0)
@@ -266,7 +266,7 @@ func TestLookupRDAPFailureKeepsLastAnswer(t *testing.T) {
 	}))
 	defer server.Close()
 	now := time.Now().UTC() // lookup times are wall-clock times
-	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true, now: func() time.Time { return now },
+	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true, store: newFakeStore(), now: func() time.Time { return now },
 		rdap:  []rdapRegistry{{"arin", server.URL + "/stats", nil, server.URL, time.Millisecond, 100, time.Millisecond}},
 		dumps: []dump{}, caidaBase: server.URL + "/caida"}
 	if _, err := p.LookupRDAP(context.Background(), 0); err != nil {

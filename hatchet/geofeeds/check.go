@@ -8,7 +8,6 @@ import (
 	"crypto/x509"
 	"encoding/csv"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +28,11 @@ const (
 	feedRequestTimeout = 3 * time.Minute
 	maxFeedBytes       = 256 << 20
 
-	freshFor      = time.Hour           // a feed checked this recently is skipped, so a retried task resumes
-	workingWindow = 7 * 24 * time.Hour  // the lists and the export keep feeds that worked this recently
-	keepUnseenFor = 30 * 24 * time.Hour // feeds no source points to any more are checked this long
-	saveEvery     = 200                 // feeds between state saves
-	hostFailLimit = 5                   // unreachable fetches in a row before a host's other feeds wait for the next run
+	freshFor      = time.Hour // a feed checked this recently is skipped, so a retried task resumes
+	workingDays   = 30        // the lists and the export keep feeds that worked this recently
+	workingWindow = workingDays * 24 * time.Hour
+	saveEvery     = 200 // feeds between saves to Postgres
+	hostFailLimit = 5   // unreachable fetches in a row before a host's other feeds wait for the next run
 )
 
 // Feed statuses.
@@ -53,27 +51,14 @@ const (
 	feedHostDown   = "host_down" // not fetched: other feeds on its host could not be reached this run
 )
 
-// Files the check task writes to <data>/geofeeds/.
+// Files the check task writes to <data>/geofeeds/. The URLs and what the
+// checks found live in public.geofeed_urls, not in a file.
 const (
-	StateFile = "feeds.json" // per-URL state, saved during the run
-	FeedsDir  = "feeds"      // one checked copy of each working feed
-	OutDir    = "out"        // the URL lists
-	ListTXT   = "geofeeds-openipdata.txt"
-	ListCSV   = "geofeeds-openipdata.csv"
+	FeedsDir = "feeds" // one checked copy of each working feed
+	OutDir   = "out"   // the URL lists
+	ListTXT  = "geofeeds-openipdata.txt"
+	ListCSV  = "geofeeds-openipdata.csv"
 )
-
-// feedState is what the check task remembers about one URL.
-type feedState struct {
-	Sources      string `json:"sources"`
-	Blocks       int    `json:"blocks"`
-	LastSeen     string `json:"last_seen"` // RFC 3339: last run whose discovery listed the URL
-	Checked      string `json:"checked,omitempty"`
-	Status       string `json:"status,omitempty"`
-	HTTPStatus   int    `json:"http_status,omitempty"`
-	Rows         int    `json:"rows"`              // valid rows the last time it worked
-	LastOK       string `json:"last_ok,omitempty"` // RFC 3339
-	FailingSince string `json:"failing_since,omitempty"`
-}
 
 // CheckOutput is the check task's result.
 type CheckOutput struct {
@@ -84,8 +69,7 @@ type CheckOutput struct {
 	Statuses        map[string]int `json:"statuses"`
 	Rejected        map[string]int `json:"rejected,omitempty"` // rows, by reason, in feeds fetched this run
 	Working         int            `json:"working"`            // URLs in the working list
-	Rows            int            `json:"rows"`               // valid rows in working feeds
-	Dropped         int            `json:"dropped"`            // URLs no source listed for 30 days
+	Rows            int            `json:"rows"`               // valid rows in the working feeds whose last check worked
 	DurationSeconds float64        `json:"duration_seconds"`
 }
 
@@ -94,20 +78,39 @@ func parseTime(s string) time.Time {
 	return t
 }
 
+// failingSince is when the feed started failing, if its last check did not
+// find a working feed: the last success, or the first time the URL was seen if
+// it never worked.
+func (r *urlRow) failingSince() (time.Time, bool) {
+	if r.LastChecked.IsZero() || !r.LastSuccess.IsZero() && !r.LastSuccess.Before(r.LastChecked) {
+		return time.Time{}, false
+	}
+	if r.LastSuccess.IsZero() {
+		return r.FirstSeen, true
+	}
+	return r.LastSuccess, true
+}
+
 // due reports whether a feed should be fetched now. Failing feeds are retried
-// every run for 3 days, then weekly, and monthly after 60 days.
-func (s *feedState) due(now time.Time) bool {
-	if s.Checked != "" && now.Sub(parseTime(s.Checked)) < freshFor {
+// every run for 3 days, then weekly, and monthly after 60 days. It looks only
+// at the timestamps, never at the status text: rows written by an older tool
+// carry other statuses and simply come due.
+func (r *urlRow) due(now time.Time) bool {
+	if r.LastChecked.IsZero() {
+		return true
+	}
+	sinceCheck := now.Sub(r.LastChecked)
+	if sinceCheck < freshFor {
 		return false
 	}
-	if s.FailingSince == "" {
+	since, failing := r.failingSince()
+	if !failing {
 		return true
 	}
-	failing, sinceCheck := now.Sub(parseTime(s.FailingSince)), now.Sub(parseTime(s.Checked))
-	switch {
-	case failing < 3*24*time.Hour:
+	switch failed := now.Sub(since); {
+	case failed < 3*24*time.Hour:
 		return true
-	case failing < 60*24*time.Hour:
+	case failed < 60*24*time.Hour:
 		return sinceCheck >= 7*24*time.Hour-freshFor
 	default:
 		return sinceCheck >= 30*24*time.Hour-freshFor
@@ -124,6 +127,7 @@ type fetchResult struct {
 	status      string
 	httpStatus  int
 	rows        int
+	detail      string // what was wrong, for result_text
 	notModified bool
 	rejected    map[string]int
 	err         error // a local file error: it says nothing about the feed
@@ -150,7 +154,7 @@ func fetchFeed(ctx context.Context, client *http.Client, rawURL, path string, no
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fetchResult{status: classifyError(err)}
+		return fetchResult{status: classifyError(err), detail: errDetail(err)}
 	}
 	defer resp.Body.Close()
 	res := fetchResult{httpStatus: resp.StatusCode}
@@ -166,7 +170,7 @@ func fetchFeed(ctx context.Context, client *http.Client, rawURL, path string, no
 	body := &countingReader{r: io.LimitReader(resp.Body, maxFeedBytes+1)}
 	buffered := bufio.NewReaderSize(body, 64*1024)
 	if looksLikeHTML(buffered) {
-		res.status = feedHTML
+		res.status, res.detail = feedHTML, "web page"
 		os.Remove(path)
 		return res
 	}
@@ -181,20 +185,20 @@ func fetchFeed(ctx context.Context, client *http.Client, rawURL, path string, no
 	switch {
 	case errors.As(err, &readErr):
 		// The transfer broke: the stored copy is untouched and still the last good one.
-		res.status = classifyError(err)
+		res.status, res.detail = classifyError(err), errDetail(err)
 		return res
 	case err != nil:
 		res.err = err
 		return res
 	case body.n > maxFeedBytes:
-		res.status = feedTooLarge
+		res.status, res.detail = feedTooLarge, "over 256 MB"
 	case header.Rows > 0:
 		res.status, res.rows = feedOK, header.Rows
 		return res
 	case len(header.Rejected) == 0:
-		res.status = feedEmpty
+		res.status, res.detail = feedEmpty, "no data lines"
 	default:
-		res.status = feedInvalid
+		res.status, res.detail = feedInvalid, "no valid rows"
 	}
 	os.Remove(path) // the server answered with something that is not a feed
 	return res
@@ -291,8 +295,8 @@ func interleaveByHost(urls []string) []string {
 	return out
 }
 
-// CheckFeeds fetches every discovered URL that is due, stores the working
-// feeds, and writes the URL lists.
+// CheckFeeds fetches every feed in public.geofeed_urls that is due, stores the
+// working feeds, writes the results back to the table, and writes the URL lists.
 func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 	started := time.Now()
 	now := p.clock().UTC()
@@ -301,35 +305,24 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 	if err := os.MkdirAll(feedsDir, 0o750); err != nil {
 		return out, err
 	}
-	statePath := filepath.Join(p.dir(), StateFile)
-	state, err := loadState(statePath)
+	store, err := p.openStore()
 	if err != nil {
 		return out, err
 	}
-	discovered, err := readURLs(filepath.Join(p.dir(), URLsFile))
+	loaded, err := store.Load(ctx)
 	if err != nil {
-		return out, fmt.Errorf("read discovered URLs (run discover first): %w", err)
+		return out, fmt.Errorf("read public.geofeed_urls: %w", err)
 	}
-	for u, d := range discovered {
-		s := state[u]
-		if s == nil {
-			s = &feedState{}
-			state[u] = s
-		}
-		s.Sources, s.Blocks, s.LastSeen = d.Sources, d.Blocks, now.Format(time.RFC3339)
+	if len(loaded) == 0 {
+		return out, errors.New("public.geofeed_urls is empty (run discover first)")
 	}
-	for u, s := range state {
-		if now.Sub(parseTime(s.LastSeen)) > keepUnseenFor {
-			delete(state, u)
-			os.Remove(feedPath(feedsDir, u))
-			out.Dropped++
-		}
-	}
-
+	state := make(map[string]*urlRow, len(loaded))
 	var due []string
-	for u, s := range state {
-		if s.due(now) {
-			due = append(due, u)
+	for i := range loaded {
+		r := &loaded[i]
+		state[r.URL] = r
+		if r.due(now) {
+			due = append(due, r.URL)
 		} else {
 			out.Skipped++
 		}
@@ -343,8 +336,9 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 	ctx, stop := context.WithCancel(parent)
 	defer stop()
 	var (
-		mu       sync.Mutex // state, out, gates, done, localErr
-		saveMu   sync.Mutex // one state save at a time, in order
+		mu       sync.Mutex // state, dirty, out, gates, done, localErr
+		saveMu   sync.Mutex // one save at a time, in order
+		dirty    = map[string]bool{}
 		done     int
 		localErr error
 		gates    = map[string]*hostGate{}
@@ -360,16 +354,32 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 		}
 		return gates[host]
 	}
+	// save writes the results that are not stored yet. It keeps going after a
+	// cancelled run, so the feeds that were checked are not checked again.
 	save := func() error {
 		saveMu.Lock()
 		defer saveMu.Unlock()
 		mu.Lock()
-		data, err := json.Marshal(state)
+		batch := make([]urlRow, 0, len(dirty))
+		for u := range dirty {
+			batch = append(batch, *state[u])
+		}
+		clear(dirty)
 		mu.Unlock()
-		if err != nil {
+		if len(batch) == 0 {
+			return nil
+		}
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), time.Minute)
+		defer cancel()
+		if err := store.SaveChecks(saveCtx, batch); err != nil {
+			mu.Lock()
+			for _, r := range batch {
+				dirty[r.URL] = true // the next save tries again
+			}
+			mu.Unlock()
 			return err
 		}
-		return writeFileAtomic(statePath, data)
+		return nil
 	}
 	// check fetches one feed and records the result. A feed that was not
 	// fetched, or whose fetch was cut off, keeps its state for the next run.
@@ -386,10 +396,9 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 		if skip {
 			// Recorded like a failure, so backoff and cleanup apply to it too.
 			s := state[u]
-			s.Status, s.HTTPStatus = feedHostDown, 0
-			if s.FailingSince == "" {
-				s.FailingSince = now.Format(time.RFC3339)
-			}
+			s.LastChecked, s.Status = now, feedHostDown
+			s.Result = "not fetched: other feeds on the host could not be reached"
+			dirty[u] = true
 			stale = !s.working(now)
 			out.Skipped++
 		}
@@ -424,12 +433,12 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 			gate.fails = 0
 		}
 		s := state[u]
-		s.Checked, s.Status, s.HTTPStatus = now.Format(time.RFC3339), res.status, res.httpStatus
+		s.LastChecked, s.Status = now, res.status
+		s.Result = resultText(res.status, res.httpStatus, res.rows, res.detail)
 		if res.status == feedOK {
-			s.Rows, s.LastOK, s.FailingSince = res.rows, s.Checked, ""
-		} else if s.FailingSince == "" {
-			s.FailingSince = s.Checked
+			s.LastSuccess = now
 		}
+		dirty[u] = true
 		stale = res.status != feedOK && !s.working(now)
 		out.Requests++
 		if res.notModified {
@@ -447,7 +456,7 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 		}
 		if n%saveEvery == 0 {
 			if err := save(); err != nil {
-				p.log("check: save state: %v", err)
+				p.log("check: save results: %v", err)
 			}
 			p.log("check: %d/%d checked", n, len(due))
 		}
@@ -478,7 +487,7 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 		return out, err
 	}
 	if err := save(); err != nil {
-		return out, err
+		return out, fmt.Errorf("save results: %w", err)
 	}
 
 	out.Feeds = len(state)
@@ -498,14 +507,15 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 	return out, nil
 }
 
-// working reports whether a feed belongs in the working list and the export.
-func (s *feedState) working(now time.Time) bool {
-	return s.LastOK != "" && now.Sub(parseTime(s.LastOK)) <= workingWindow
+// working reports whether a feed belongs in the working list and the export:
+// it worked in the last workingDays days.
+func (r *urlRow) working(now time.Time) bool {
+	return !r.LastSuccess.IsZero() && now.Sub(r.LastSuccess) <= workingWindow
 }
 
 // writeLists writes the URL lists: the working URLs as plain text, and
 // every URL with its details as CSV.
-func writeLists(dir string, state map[string]*feedState, now time.Time) (working, rows int, err error) {
+func writeLists(dir string, state map[string]*urlRow, now time.Time) (working, rows int, err error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return 0, 0, err
 	}
@@ -516,27 +526,24 @@ func writeLists(dir string, state map[string]*feedState, now time.Time) (working
 	sort.Strings(urls)
 
 	var txt strings.Builder
-	fmt.Fprintf(&txt, "# Geofeed (RFC 8805) URLs that worked in the 7 days before %s, from openipdata.org.\n", now.Format("2006-01-02"))
+	fmt.Fprintf(&txt, "# Geofeed (RFC 8805) URLs that worked in the %d days before %s, from openipdata.org.\n", workingDays, now.Format("2006-01-02"))
 	txt.WriteString("# Sources: RIR whois and IRR dumps, a hand-kept list, probes of ASN websites, and The CAIDA UCSD Geofeed WHOIS dataset\n")
 	txt.WriteString("# (https://catalog.caida.org/dataset/geofeed_whois).\n")
 	var csvText strings.Builder
 	w := csv.NewWriter(&csvText)
-	w.Write([]string{"url", "sources", "blocks", "status", "http_status", "rows", "last_ok"})
+	w.Write([]string{"url", "sources", "status", "result", "last_ok"})
 	for _, u := range urls {
-		s := state[u]
-		if s.working(now) {
+		r := state[u]
+		if r.working(now) {
 			working++
-			rows += s.Rows
+			rows += resultRows(r.Result)
 			txt.WriteString(u + "\n")
 		}
-		httpStatus, lastOK := "", ""
-		if s.HTTPStatus != 0 {
-			httpStatus = strconv.Itoa(s.HTTPStatus)
+		lastOK := ""
+		if !r.LastSuccess.IsZero() {
+			lastOK = r.LastSuccess.UTC().Format("2006-01-02")
 		}
-		if s.LastOK != "" {
-			lastOK = parseTime(s.LastOK).Format("2006-01-02")
-		}
-		w.Write([]string{u, s.Sources, strconv.Itoa(s.Blocks), s.Status, httpStatus, strconv.Itoa(s.Rows), lastOK})
+		w.Write([]string{u, strings.Join(r.Sources, "|"), r.Status, r.Result, lastOK})
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
@@ -556,46 +563,4 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
-}
-
-func loadState(path string) (map[string]*feedState, error) {
-	state := map[string]*feedState{}
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return state, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
-	}
-	return state, nil
-}
-
-// discoveredURL is one row of URLsFile.
-type discoveredURL struct {
-	Sources string
-	Blocks  int
-}
-
-func readURLs(path string) (map[string]discoveredURL, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	records, err := csv.NewReader(file).ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	out := map[string]discoveredURL{}
-	for i, rec := range records {
-		if i == 0 || len(rec) != 3 {
-			continue
-		}
-		blocks, _ := strconv.Atoi(rec[2])
-		out[rec[0]] = discoveredURL{Sources: rec[1], Blocks: blocks}
-	}
-	return out, nil
 }

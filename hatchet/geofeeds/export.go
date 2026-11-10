@@ -242,7 +242,8 @@ func (p *Pipeline) CheckUpload() error {
 	return err
 }
 
-// ExportRows writes RowsFile from the stored working feeds and, if upload is
+// ExportRows writes RowsFile from the stored copies of the working feeds (the
+// feeds that public.geofeed_urls says worked in the last 30 days) and, if upload is
 // set, puts it at RowsKey in R2. An upload with more than 10% fewer rows than
 // the last one is refused with ErrGate, unless force is set (for a manual run
 // that accepts a real drop).
@@ -260,9 +261,13 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 	if err != nil {
 		return out, fmt.Errorf("read blocks (run discover first): %w", err)
 	}
-	state, err := loadState(filepath.Join(p.dir(), StateFile))
+	store, err := p.openStore()
 	if err != nil {
 		return out, err
+	}
+	urlRows, err := store.Load(ctx)
+	if err != nil {
+		return out, fmt.Errorf("read public.geofeed_urls: %w", err)
 	}
 	// The announced prefixes probe-domains saved; export-rows never queries Postgres.
 	asnPrefixes, err := loadDomainPrefixes(filepath.Join(p.dir(), DomainPrefixesFile))
@@ -271,9 +276,12 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 	}
 	now := p.clock().UTC()
 	var urls []string
-	for u, s := range state {
-		if s.working(now) {
-			urls = append(urls, u)
+	domainOnly := map[string]bool{} // feeds that only a domain probe found
+	for i := range urlRows {
+		r := &urlRows[i]
+		if r.working(now) {
+			urls = append(urls, r.URL)
+			domainOnly[r.URL] = len(r.Sources) == 1 && r.Sources[0] == sourceDomain
 		}
 	}
 	sort.Strings(urls)
@@ -332,7 +340,7 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 		// A feed that only a domain probe found keeps just the rows inside its
 		// ASNs' announced prefixes; with none on record, it keeps none.
 		var inside *prefixSet
-		if state[u].Sources == sourceDomain {
+		if domainOnly[u] {
 			if inside = asnPrefixes[u]; inside == nil {
 				inside = &prefixSet{}
 			}

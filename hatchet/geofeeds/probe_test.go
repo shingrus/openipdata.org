@@ -366,13 +366,13 @@ func TestProbeDomainsBudget(t *testing.T) {
 
 func TestProbeDomainsNeedsPostgres(t *testing.T) {
 	p := &Pipeline{DataDir: t.TempDir()}
-	if err := p.CheckDomains(); err == nil {
+	if err := p.CheckPGSQL(); err == nil {
 		t.Error("want an error without PGSQL")
 	}
 	if _, err := p.ProbeDomains(context.Background(), 0); err == nil {
 		t.Error("ProbeDomains ran without PGSQL")
 	}
-	if err := (&Pipeline{PGSQL: "postgres://x"}).CheckDomains(); err != nil {
+	if err := (&Pipeline{PGSQL: "postgres://x"}).CheckPGSQL(); err != nil {
 		t.Error(err)
 	}
 	// An empty table must not wipe the stored results.
@@ -393,12 +393,14 @@ func TestDiscoverAddsDomainFeeds(t *testing.T) {
 	}))
 	defer server.Close()
 	day := time.Date(2026, 11, 10, 5, 0, 0, 0, time.UTC)
+	store := newFakeStore()
 	p := &Pipeline{
 		DataDir:      t.TempDir(),
 		dumps:        []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}},
 		caidaBase:    server.URL + "/caida",
 		now:          func() time.Time { return day },
 		allowPrivate: true,
+		store:        store,
 	}
 	os.MkdirAll(p.dir(), 0o750)
 	stamp := func(d time.Duration) string { return day.Add(d).Format(time.RFC3339) }
@@ -427,17 +429,20 @@ func TestDiscoverAddsDomainFeeds(t *testing.T) {
 	if s := out.Sources[sourceDomain]; s.URLs != 2 {
 		t.Errorf("domain stats = %+v", s)
 	}
-	urls, _ := os.ReadFile(filepath.Join(p.dir(), URLsFile))
-	for _, want := range []string{
-		"https://found.example/geofeed.csv,domain,0",
-		"https://isp.example/geofeed.csv,domain|ripe,1", // another source as well: handled as before
+	sources := map[string][]string{}
+	for u, r := range store.rows {
+		sources[u] = r.Sources
+	}
+	for u, want := range map[string][]string{
+		"https://found.example/geofeed.csv": {"domain"},
+		"https://isp.example/geofeed.csv":   {"domain", "ripe"}, // another source as well: handled as before
 	} {
-		if !strings.Contains(string(urls), want+"\n") {
-			t.Errorf("urls.csv lacks %q:\n%s", want, urls)
+		if !reflect.DeepEqual(sources[u], want) {
+			t.Errorf("%s: sources %v, want %v", u, sources[u], want)
 		}
 	}
-	if strings.Contains(string(urls), "new.example") || strings.Contains(string(urls), "none.example") {
-		t.Errorf("urls.csv lists a feed that is not in domain-prefixes.csv:\n%s", urls)
+	if sources["https://new.example/geofeed.csv"] != nil || sources["https://none.example/geofeed.csv"] != nil {
+		t.Errorf("a feed that is not in domain-prefixes.csv is listed: %v", sources)
 	}
 	// No ownership block comes from a domain probe.
 	blocks, _ := os.ReadFile(filepath.Join(p.dir(), BlocksFile))
@@ -452,7 +457,8 @@ func TestDiscoverAddsDomainFeeds(t *testing.T) {
 
 func TestExportDomainOnlyFeeds(t *testing.T) {
 	now := time.Date(2026, 11, 10, 5, 0, 0, 0, time.UTC)
-	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }}
+	store := newFakeStore()
+	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }, store: store}
 	feedsDir := filepath.Join(p.dir(), FeedsDir)
 	os.MkdirAll(feedsDir, 0o750)
 	writeTestBlocks(t, p.dir())
@@ -463,20 +469,15 @@ func TestExportDomainOnlyFeeds(t *testing.T) {
 		withWhois  = "https://other.example/geofeed.csv"
 		unknown    = "https://nobody.example/geofeed.csv"
 	)
-	state := map[string]*feedState{
-		domainOnly: {Sources: "domain"},
-		withWhois:  {Sources: "domain|list"},
-		unknown:    {Sources: "domain"}, // no prefixes on record
-	}
-	for u, s := range state {
-		s.LastOK = now.Format(time.RFC3339)
+	for u, sources := range map[string][]string{
+		domainOnly: {"domain"},
+		withWhois:  {"domain", "list"},
+		unknown:    {"domain"}, // no prefixes on record
+	} {
+		store.rows[u] = &urlRow{URL: u, Sources: sources, LastSuccess: now}
 		if _, err := writeFeed(strings.NewReader(rows), feedPath(feedsDir, u), feedHeader{URL: u}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	data, _ := json.Marshal(state)
-	if err := writeFileAtomic(filepath.Join(p.dir(), StateFile), data); err != nil {
-		t.Fatal(err)
 	}
 	side := "url,prefix\n" +
 		domainOnly + ",45.20.0.0/22\n" + domainOnly + ",2a00:1450::/32\n" +

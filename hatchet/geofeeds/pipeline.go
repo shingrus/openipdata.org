@@ -3,7 +3,6 @@
 package geofeeds
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/csv"
@@ -13,8 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,7 +24,7 @@ type Pipeline struct {
 	DataDir  string
 	Progress func(string)
 	R2       string // private bucket for the rows file (see RowsKey)
-	PGSQL    string // Postgres DSN; probe-domains only reads public.asn_domain and public.asn
+	PGSQL    string // Postgres DSN: public.geofeed_urls (written here), public.asn_domain and public.asn (read by probe-domains)
 
 	// Overridden in tests.
 	dumps        []dump
@@ -35,7 +32,8 @@ type Pipeline struct {
 	caidaBase    string
 	now          func() time.Time
 	allowPrivate bool // let the HTTP clients reach test servers on 127.0.0.1
-	// Replace Postgres and the candidate URLs in probe-domains tests.
+	// Replace Postgres and the candidate URLs in tests.
+	store       urlStore // public.geofeed_urls
 	domainRows  func(ctx context.Context) ([]asnDomain, error)
 	asnPrefixes func(ctx context.Context, asns []int64) (map[int64][]netip.Prefix, error)
 	candidates  func(domain string) []string
@@ -56,11 +54,10 @@ func (p *Pipeline) log(format string, args ...any) {
 	}
 }
 
-// Files Discover writes to <data>/geofeeds/, each replaced via a .tmp file.
-const (
-	BlocksFile = "blocks.csv" // source,prefix,url: one row per block that points to a feed
-	URLsFile   = "urls.csv"   // url,sources,blocks: one row per feed URL
-)
+// BlocksFile is what Discover writes to <data>/geofeeds/, replaced via a .tmp
+// file: source,prefix,url, one row per block that points to a feed. The URLs
+// themselves go to public.geofeed_urls.
+const BlocksFile = "blocks.csv"
 
 // SourceStats describes one dump or list in a run.
 type SourceStats struct {
@@ -107,12 +104,16 @@ func (c *collector) add(source, u string, prefix netip.Prefix) {
 }
 
 // Discover downloads the dumps and lists, adds the stored RDAP results, and
-// writes BlocksFile and URLsFile. A source that fails is skipped (its previous
+// writes BlocksFile and adds the URLs to public.geofeed_urls. A source that fails is skipped (its previous
 // download is used if there is one), except a whois dump: without one, its
 // registry's space would look unowned, so the run fails.
 func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 	started := time.Now()
 	out := DiscoverOutput{Sources: map[string]SourceStats{}}
+	store, err := p.openStore()
+	if err != nil {
+		return out, err
+	}
 	dumpDir := filepath.Join(p.dir(), "dumps")
 	if err := os.MkdirAll(dumpDir, 0o750); err != nil {
 		return out, err
@@ -239,8 +240,9 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 	if err := blocksFile.Close(); err != nil {
 		return out, err
 	}
-	if err := writeURLs(filepath.Join(p.dir(), URLsFile), c.urls); err != nil {
-		return out, err
+	// The table first: if it fails, the previous blocks.csv stays too.
+	if err := store.Upsert(ctx, c.discovered(), p.clock().UTC()); err != nil {
+		return out, fmt.Errorf("update public.geofeed_urls: %w", err)
 	}
 	if err := os.Rename(blocksPath+".tmp", blocksPath); err != nil {
 		return out, err
@@ -321,30 +323,19 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 	return stats
 }
 
-// writeURLs writes one row per URL, sorted, via a .tmp file.
-func writeURLs(path string, urls map[string]*found) error {
-	var text bytes.Buffer
-	w := csv.NewWriter(&text)
-	w.Write([]string{"url", "sources", "blocks"})
-	keys := make([]string, 0, len(urls))
-	for u := range urls {
-		keys = append(keys, u)
-	}
-	sort.Strings(keys)
-	for _, u := range keys {
-		f := urls[u]
+// discovered lists the URLs found, sorted, each with its sorted sources.
+func (c *collector) discovered() []discoveredURL {
+	out := make([]discoveredURL, 0, len(c.urls))
+	for u, f := range c.urls {
 		sources := make([]string, 0, len(f.sources))
 		for s := range f.sources {
 			sources = append(sources, s)
 		}
 		slices.Sort(sources)
-		w.Write([]string{u, strings.Join(sources, "|"), strconv.Itoa(f.blocks)})
+		out = append(out, discoveredURL{URL: u, Sources: sources})
 	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return err
-	}
-	return writeFileAtomic(path, text.Bytes())
+	slices.SortFunc(out, func(a, b discoveredURL) int { return strings.Compare(a.URL, b.URL) })
+	return out
 }
 
 func errSuffix(msg string) string {

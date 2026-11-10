@@ -3,7 +3,6 @@ package geofeeds
 import (
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/netip"
@@ -81,7 +80,8 @@ func TestOwnersClassify(t *testing.T) {
 
 func TestExportRows(t *testing.T) {
 	now := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
-	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }}
+	store := newFakeStore()
+	p := &Pipeline{DataDir: t.TempDir(), now: func() time.Time { return now }, store: store}
 	feedsDir := filepath.Join(p.dir(), FeedsDir)
 	os.MkdirAll(feedsDir, 0o750)
 	writeTestBlocks(t, p.dir())
@@ -90,23 +90,18 @@ func TestExportRows(t *testing.T) {
 		"https://isp.example/feed.csv":  "45.10.112.0/24,DE,DE-BE,Berlin\n45.10.113.0/24,DE,,\n45.10.2.0/24,DE,,\n45.10.112.0/21,DE,,\n",
 		"https://list.example/feed.csv": "45.10.100.0/24,US,US-CA,San Jose\n",
 	}
-	state := map[string]*feedState{
-		"https://old.example/feed.csv": {LastOK: now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)},
-	}
+	// A feed that last worked 31 days ago is out of the window.
+	store.rows["https://old.example/feed.csv"] = &urlRow{URL: "https://old.example/feed.csv", LastSuccess: now.Add(-31 * 24 * time.Hour)}
 	for u, body := range feeds {
 		if _, err := writeFeed(strings.NewReader(body), feedPath(feedsDir, u), feedHeader{URL: u}); err != nil {
 			t.Fatal(err)
 		}
-		state[u] = &feedState{LastOK: now.Format(time.RFC3339)}
+		store.rows[u] = &urlRow{URL: u, LastSuccess: now}
 	}
 	// A damaged stored copy is skipped, not fatal.
 	damaged := "https://damaged.example/feed.csv"
 	os.WriteFile(feedPath(feedsDir, damaged), []byte("# {}\nnot-a-prefix,DE,,\n"), 0o640)
-	state[damaged] = &feedState{LastOK: now.Format(time.RFC3339)}
-	data, _ := json.Marshal(state)
-	if err := writeFileAtomic(filepath.Join(p.dir(), StateFile), data); err != nil {
-		t.Fatal(err)
-	}
+	store.rows[damaged] = &urlRow{URL: damaged, LastSuccess: now}
 
 	out, err := p.ExportRows(context.Background(), false, false)
 	if err != nil {
@@ -125,7 +120,7 @@ func TestExportRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ = io.ReadAll(gz)
+	data, _ := io.ReadAll(gz)
 	// The row a whois block backs comes last, so it wins a repeated prefix.
 	want := "prefix,country,region,city,feed_url\n" +
 		"45.10.2.0/24,DE,,,https://isp.example/feed.csv\n" +

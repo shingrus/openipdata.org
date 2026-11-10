@@ -111,14 +111,6 @@ type DomainsOutput struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 }
 
-// CheckDomains fails when PGSQL is missing, so a run can stop before it starts.
-func (p *Pipeline) CheckDomains() error {
-	if p.PGSQL == "" && p.domainRows == nil {
-		return errors.New("PGSQL is not set")
-	}
-	return nil
-}
-
 // candidateURLs lists where a domain's geofeed is tried, in order.
 func candidateURLs(domain string) []string {
 	return []string{
@@ -298,7 +290,7 @@ func hasFeedRow(r *bufio.Reader) bool {
 func (p *Pipeline) ProbeDomains(ctx context.Context, budget int) (DomainsOutput, error) {
 	started := time.Now()
 	out := DomainsOutput{}
-	if err := p.CheckDomains(); err != nil {
+	if err := p.CheckPGSQL(); err != nil {
 		return out, err
 	}
 	if err := os.MkdirAll(p.dir(), 0o750); err != nil {

@@ -121,9 +121,9 @@ geo database build through the private R2 bucket. Nothing is published.
 |---|---|---|
 | `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
 | `probe-domains` | | needs `PGSQL` (and checks the R2 settings, unless `skip_upload`); reads the ASN website domains from `public.asn_domain` and probes the due ones for a geofeed at the usual paths, within a budget per run; runs beside the other tasks |
-| `discover` | | reads the whois and IRR dumps, the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them (also checks the R2 settings first, unless `skip_upload`) |
-| `check-feeds` | `discover` | fetches every due feed, keeps a checked copy of each working one, and writes the lists |
-| `export-rows` | `check-feeds` | writes the rows of all working feeds that pass the ownership check, and uploads them to R2 |
+| `discover` | | needs `PGSQL`; reads the whois and IRR dumps, the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list, and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them (also checks the R2 settings first, unless `skip_upload`) |
+| `check-feeds` | `discover` | needs `PGSQL`; fetches every due feed in `public.geofeed_urls`, keeps a checked copy of each working one, stores the results in the table, and writes the lists |
+| `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them to R2 |
 
 `rdap-lookups` and `probe-domains` have no child task: they run at the same time as `discover` → `check-feeds` →
 `export-rows` (about 40 minutes), so the rows reach R2 without waiting for the RDAP pass (up to
@@ -174,7 +174,7 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
 - At the end of the run, `probe-domains` reads `public.asn.json` for the ASNs of the domains that have a
   feed (not for all ASNs: that keeps the database egress small; ASNs not seen by `build-asn-data` for
   7 days are left out) and replaces `domain-prefixes.csv` (`url,prefix`) with their announced prefixes.
-  `export-rows` reads that file and never queries Postgres.
+  `export-rows` reads that file and queries no ASN table.
 - `discover` adds each URL in `domain-prefixes.csv` (not `domains.jsonl`, which `probe-domains` appends to
   while the other tasks run) with source `domain`, and no whois blocks. A found feed therefore reaches the
   rows after the `probe-domains` run that found it has finished, usually the next `sync-geofeeds` run. The ownership check
@@ -191,8 +191,14 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   dump can be read neither way, `discover` fails and the previous outputs stay: without a
   registry's blocks, its space would pass the ownership check unchecked. A missing IRR dump is
   only reported.
-- Outputs, replaced each run: `/var/lib/openipdata/geofeeds/urls.csv` (`url,sources,blocks`) and
-  `blocks.csv` (`source,prefix,url`). IRR rows have source `irr`: route objects show who announces
+- `discover` adds every URL it finds to `public.geofeed_urls`, the one list of every geofeed URL ever
+  found (written only by `sync-geofeeds`; the table already existed, made by an older tool, and
+  `schema.EnsureGeofeedURLs` creates it only on a fresh database). A new URL is inserted with its sources;
+  a known one gets `last_seen_at = now()` and its `sources` become the sorted distinct union of the old and new
+  ones (a source is never removed). Rows are never deleted. Source labels: `ripe`, `apnic`, `afrinic`,
+  `lacnic` (whois dumps), `irr` (all IRR dumps), `arin`, `registro.br` and `lacnic-mx` (RDAP), `domain`, `list` and `caida`.
+  Written again each run, replaced via a `.tmp` file: `/var/lib/openipdata/geofeeds/blocks.csv`
+  (`source,prefix,url`). IRR rows have source `irr`: route objects show who announces
   a prefix, not who holds it.
 - Feeds are fetched 16 at a time, at most 2 per host, with a 3-minute limit and 256 MB cap each.
   Requests use IPv4 only (on the VM, IPv6 egress stalls for many hosts) and never reach a
@@ -206,16 +212,23 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   valid row do not count.
 - Each working feed's valid rows are kept in `/var/lib/openipdata/geofeeds/feeds/`, with its
   ETag and Last-Modified in the first line, so the next run asks for changes only. A feed that
-  cannot be fetched keeps its copy for 7 days; one that answers with something else loses it
-  at once.
+  cannot be fetched keeps its copy for 30 days; one that answers with something else loses it
+  at once. The copies are caches: the table is the record.
 - A dump that cannot be read to its end adds nothing. A local file error (such as a full disk)
   fails the task instead of counting against the feeds.
-- `feeds.json` holds each URL's state and is saved every 200 feeds: a retried task skips feeds
-  checked in the last hour. Failing feeds are retried every run for 3 days, then weekly, then
-  monthly after 60 days. URLs no source has listed for 30 days are dropped.
+- `check-feeds` reads every row of `public.geofeed_urls` and writes back, every 200 feeds (a retried task
+  skips feeds checked in the last hour), `last_checked_at`, `last_success_at`, `last_fetch_status` and
+  `result_text`. The status is one of ours (`ok`, `http_error`, `timeout`, `host_down`, ...);
+  `result_text` is `HTTP 200, 3412 rows` for a working feed (`HTTP 304, ...` when the stored copy
+  was still current), `HTTP 404` for another answer, `HTTP 200, web page` (or `no data lines`, `no valid rows`,
+  `over 256 MB`) for something that is not a feed, and the cut-short error for no answer (`host_down`:
+  `not fetched: ...`). Failing feeds are retried every run for 3 days, then weekly, then monthly after
+  60 days; a feed counts as failing since its `last_success_at` (its `first_seen_at` if it never worked).
+  Only the timestamps decide, never the status text: rows from the older tool, with other statuses and old
+  times, come due and are overwritten. A feed works while its last success is at most 30 days old.
 - Lists in `/var/lib/openipdata/geofeeds/out/`, replaced each run:
-  - `geofeeds-openipdata.txt`: URLs that worked in the last 7 days, one per line
-  - `geofeeds-openipdata.csv`: every URL with `sources,blocks,status,http_status,rows,last_ok`
+  - `geofeeds-openipdata.txt`: URLs that worked in the last 30 days, one per line
+  - `geofeeds-openipdata.csv`: every URL with `sources,status,result,last_ok` (`result` is `result_text`)
 - Ownership check: a row is dropped only if the most specific whois block covering it links
   feeds on other sites only. Operators link their feed from a few whois records but describe all
   their space in it, so rows outside every block stay. A site is the registered domain of the
@@ -240,7 +253,7 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   drop is real, a manual run with `{"force_upload": true}` (or `run-geofeeds -force-upload`)
   uploads anyway and resets the baseline. Manual runs can pass `{"skip_upload": true}` (or
   `run-geofeeds -skip-upload`) to write the file without uploading it.
-- No Postgres tables written (`probe-domains` only reads two). Dumps and feeds are streamed, never held whole in memory; local full runs
+- One Postgres table written, `public.geofeed_urls` (`probe-domains` only reads two others). Dumps and feeds are streamed, never held whole in memory; local full runs
   peaked at 240–360 MB, took about 5–10 minutes, kept about 240 MB of checked feeds on disk,
   and exported about 6.4 million rows (36 MB gzipped).
 
@@ -393,7 +406,7 @@ cd hatchet && CGO_ENABLED=0 go build -trimpath -o ../bin/openipdata-worker .
 cd mmdbbuilder && CGO_ENABLED=0 go build -trimpath -o ../bin/mmdbbuilder .
 ```
 
-The `run-*` commands need `PGSQL` (`run-geofeeds` for its `probe-domains` task), and `run-geofeeds`
+The `run-*` commands need `PGSQL` (`run-geofeeds` for `public.geofeed_urls` and its `probe-domains` task), and `run-geofeeds`
 also needs `R2` unless `-skip-upload` is given; `run-pdb` also needs `PDB_KEY`, and `run-geo` also needs `R2`. Set `OPENIPDATA_DATA_DIR`
 to a local folder when running off the VM.
 

@@ -32,7 +32,7 @@ const RDAPFile = "rdap.jsonl"
 // ARIN has no public dump, and LACNIC's dump leaves out the blocks Brazil's
 // and Mexico's registries manage.
 type rdapRegistry struct {
-	Name      string          // source label in blocks.csv and urls.csv
+	Name      string          // source label in blocks.csv and public.geofeed_urls.sources
 	StatsURL  string          // RIR delegated-extended stats file listing the blocks
 	Countries map[string]bool // only blocks of these countries; nil for all
 	BaseURL   string          // lookups go to <BaseURL>/ip/<prefix>

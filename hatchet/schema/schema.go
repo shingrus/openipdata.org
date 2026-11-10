@@ -1,7 +1,8 @@
 // Package schema creates and upgrades the Postgres tables the workflows share:
-// public.asn, public.asn_domain, public.asn_geo_pdb, public.geo_ix_pdb, and public.geo_eval. Each table has one
-// writer (see AGENTS.md); a workflow runs DDL only for tables it writes (Ensure, or
-// EnsureGeoEval for the read-only build-geo-data).
+// public.asn, public.asn_domain, public.asn_geo_pdb, public.geo_ix_pdb, public.geo_eval, and
+// public.geofeed_urls. Each table has one writer (see AGENTS.md); a workflow runs DDL only for
+// tables it writes (Ensure, EnsureGeoEval for the read-only build-geo-data, or EnsureGeofeedURLs
+// for sync-geofeeds).
 package schema
 
 import (
@@ -29,6 +30,31 @@ const geoEvalStatement = `CREATE TABLE IF NOT EXISTS public.geo_eval (
 		published BOOLEAN NOT NULL DEFAULT false
 	)`
 
+// geofeedURLsStatements create public.geofeed_urls: every geofeed URL ever found, with
+// when it was seen and checked. sync-geofeeds is its only writer and runs only these
+// statements (EnsureGeofeedURLs), never Ensure. The table already exists in production
+// (made by an older tool), so the definition must stay exactly as it is there.
+var geofeedURLsStatements = []string{
+	`CREATE TABLE IF NOT EXISTS public.geofeed_urls (
+		id BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,
+		url TEXT NOT NULL,
+		first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		last_checked_at TIMESTAMPTZ NULL,
+		last_success_at TIMESTAMPTZ NULL,
+		last_fetch_status TEXT NULL,
+		sources TEXT[] NOT NULL DEFAULT '{}'::text[],
+		result_text TEXT NULL,
+		CONSTRAINT geofeed_urls_pkey PRIMARY KEY (id),
+		CONSTRAINT geofeed_urls_url_key UNIQUE (url)
+	)`,
+	`CREATE INDEX IF NOT EXISTS geofeed_urls_last_seen_at_idx ON public.geofeed_urls USING btree (last_seen_at)`,
+	`CREATE INDEX IF NOT EXISTS geofeed_urls_last_checked_at_idx ON public.geofeed_urls USING btree (last_checked_at)`,
+}
+
+// statements are the tables the ASN workflows write (Ensure). geo_eval and
+// geofeed_urls are not here: only their own writers create them
+// (EnsureGeoEval, EnsureGeofeedURLs), so no other workflow takes locks on them.
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS public.asn (
 		asn BIGINT PRIMARY KEY,
@@ -84,7 +110,6 @@ var statements = []string{
 		country TEXT,
 		city TEXT
 	)`,
-	geoEvalStatement,
 }
 
 // EnsureGeoEval creates public.geo_eval only. build-geo-data uses it instead of
@@ -98,7 +123,19 @@ func EnsureGeoEval(ctx context.Context, db Execer) error {
 	return nil
 }
 
-// Ensure creates missing tables, indexes, and columns. It is safe to run every time.
+// EnsureGeofeedURLs creates public.geofeed_urls only. sync-geofeeds uses it
+// instead of Ensure: it writes no other table.
+func EnsureGeofeedURLs(ctx context.Context, db Execer) error {
+	for _, stmt := range geofeedURLsStatements {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure schema: %w", err)
+		}
+	}
+	return nil
+}
+
+// Ensure creates the missing tables, indexes, and columns of the ASN tables
+// (asn, asn_domain, asn_geo_pdb, geo_ix_pdb). It is safe to run every time.
 // Workflows call it only when they write one of these tables.
 func Ensure(ctx context.Context, db Execer) error {
 	for _, stmt := range statements {

@@ -29,13 +29,14 @@ func TestEnsureGeoEvalRunsOnlyGeoEval(t *testing.T) {
 	}
 }
 
-func TestEnsureIncludesGeoEval(t *testing.T) {
+// Ensure is run by the ASN workflows: it must not touch tables they don't write.
+func TestEnsureLeavesOutGeoEval(t *testing.T) {
 	r := &recorder{}
 	if err := Ensure(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(r.sqls, geoEvalStatement) {
-		t.Fatal("Ensure does not run the geo_eval statement")
+	if slices.Contains(r.sqls, geoEvalStatement) {
+		t.Fatal("Ensure runs the geo_eval statement")
 	}
 }
 
@@ -48,6 +49,33 @@ func TestEnsureAddsFacilityColumns(t *testing.T) {
 		want := "ALTER TABLE public.asn_geo_pdb ADD COLUMN IF NOT EXISTS " + col
 		if !slices.Contains(r.sqls, want) {
 			t.Errorf("Ensure does not run %q", want)
+		}
+	}
+}
+
+func TestEnsureGeofeedURLsRunsOnlyItsStatements(t *testing.T) {
+	r := &recorder{}
+	if err := EnsureGeofeedURLs(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.sqls, geofeedURLsStatements) || len(r.sqls) != 3 {
+		t.Fatalf("want the three geofeed_urls statements, got %q", r.sqls)
+	}
+	for _, sql := range r.sqls {
+		if !strings.Contains(sql, "IF NOT EXISTS") || !strings.Contains(sql, "public.geofeed_urls") || strings.Contains(sql, "ALTER") {
+			t.Errorf("unexpected statement: %s", sql)
+		}
+	}
+}
+
+func TestEnsureLeavesOutGeofeedURLs(t *testing.T) {
+	r := &recorder{}
+	if err := Ensure(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range geofeedURLsStatements {
+		if slices.Contains(r.sqls, stmt) {
+			t.Errorf("Ensure runs %q", stmt)
 		}
 	}
 }
