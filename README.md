@@ -231,9 +231,8 @@ unpublished `public.geo_eval` row of the same date.
      `build-asn-data` has not seen in its source for 7 days (`public.asn.seen_at`) is left out;
      a NULL `seen_at` counts only until the first run has stamped some row. This layer only refines:
      its rows apply where layers 1 and 2 gave the same country or none, so an ASN's city does
-     not replace more specific networks registered in another country. An ASN whose PeeringDB
-     `info_scope` is `Global` is left out: a global or anycast network is in many places, so one
-     dominant city is misleading for it (other scopes, and a missing one, are kept);
+     not replace more specific networks registered in another country. Global-scope networks
+     are kept: leaving them out (tried on 2026-11-10) halved the holdout city score;
   4. PeeringDB internet exchange peering LAN prefixes (`public.geo_ix_pdb`): the exchange's country
      and city. A plain layer: it replaces what layers 1 to 3 put under those prefixes. An exchange
      without a city is left out of the layer (a country-only row would erase a city set below it).

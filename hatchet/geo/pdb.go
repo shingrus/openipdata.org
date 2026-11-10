@@ -18,10 +18,8 @@ import (
 // it only when it holds at least 30% of the ASN's presence) and whose
 // PeeringDB country matches the whois country of public.asn. Read only.
 //
-// ASNs whose PeeringDB info_scope is Global are left out: a global or anycast
-// network is in many places, so its one dominant city is misleading. Every
-// other scope, and a missing one (rows written before sync-peeringdb stored
-// it), is kept.
+// Global-scope networks are kept: leaving them out (2026-11-10) halved the
+// holdout city score (6.48% to 3.41%), so their dominant city is mostly right.
 //
 // public.asn never loses rows, so an ASN that left the source is left out
 // after 7 days without a build-asn-data run seeing it. A NULL seen_at counts
@@ -31,7 +29,6 @@ const pdbQuery = `SELECT a.json, upper(btrim(g.country)), btrim(g.city)
 	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
 	WHERE btrim(coalesce(g.city, '')) <> ''
 	  AND upper(btrim(a.country)) = upper(btrim(g.country))
-	  AND upper(btrim(coalesce(g.info_scope, ''))) <> 'GLOBAL'
 	  AND (a.seen_at > now() - interval '7 days'
 	       OR (a.seen_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.asn WHERE seen_at IS NOT NULL)))
 	ORDER BY a.asn`

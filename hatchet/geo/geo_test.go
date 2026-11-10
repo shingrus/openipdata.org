@@ -178,10 +178,11 @@ func TestPDBQueryChecksSeenAt(t *testing.T) {
 	}
 }
 
-// Global or anycast networks are in many places: their dominant city is left out.
-func TestPDBQueryLeavesOutGlobalScope(t *testing.T) {
-	if !strings.Contains(pdbQuery, "upper(btrim(coalesce(g.info_scope, ''))) <> 'GLOBAL'") {
-		t.Error("pdbQuery does not leave out info_scope Global")
+// Global-scope networks keep their dominant city: leaving them out halved the
+// holdout city score.
+func TestPDBQueryKeepsGlobalScope(t *testing.T) {
+	if strings.Contains(pdbQuery, "info_scope") {
+		t.Error("pdbQuery filters on info_scope")
 	}
 }
 

@@ -8,8 +8,7 @@
 //  1. RIR delegated stats: the country every block was delegated to (IPv4, IPv6)
 //  2. ipverse/geo-ip-blocks: the country in registration records (IPv4 only)
 //  3. PeeringDB: country and city of ASNs with one dominant city (Postgres);
-//     applied only where layers 1 and 2 gave the same country or none; ASNs
-//     whose PeeringDB scope is Global are left out
+//     applied only where layers 1 and 2 gave the same country or none
 //  4. PeeringDB internet exchange peering LAN prefixes: the exchange's country
 //     and city (Postgres); exchanges without a city are left out, and the
 //     whole layer is skipped while the table has no rows
