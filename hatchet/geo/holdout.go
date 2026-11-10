@@ -3,7 +3,6 @@ package geo
 import (
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/csv"
 	"errors"
@@ -16,20 +15,49 @@ import (
 	"strings"
 )
 
-// The holdout test: a fixed tenth of the geofeeds (chosen by a hash of the
-// feed URL, so the same feeds every run) is left out of a second build. The
-// feeds are the best data we have, so how well that build, which only has the
-// lower layers and the other feeds, guesses the held-out rows measures how
-// good those layers are where nobody told us the answer.
+// The holdout test: a frozen tenth of the geofeeds is left out of a second
+// build. The feeds are the best data we have, so how well that build, which
+// only has the lower layers and the other feeds, guesses the held-out rows
+// measures how good those layers are where nobody told us the answer.
+//
+// The sample must not move when the feed list changes, or the score swings
+// without a real change and trips the publish gate. public.geofeed_urls only
+// gets upserts and its ids never change, so the feeds with id % 10 = 0 that
+// were first seen before the freeze date are the same every run (dead feeds
+// just drop out). Feeds found later are never held out. Moving the date on
+// purpose picks a new sample and moves the score once.
 const (
-	holdoutBuckets = 10
-	holdoutBucket  = 0 // feeds whose hash falls in this bucket are held out
+	holdoutBuckets  = 10
+	holdoutBucket   = 0
+	holdoutFrozenAt = "2026-11-11 00:00:00+00"
 )
 
-// heldOut reports whether the feed is in the holdout bucket.
-func heldOut(feedURL string) bool {
-	sum := sha256.Sum256([]byte(feedURL))
-	return binary.BigEndian.Uint64(sum[:8])%holdoutBuckets == holdoutBucket
+// loadHeldOut returns the URLs of the held-out feeds from public.geofeed_urls
+// (read only; sync-geofeeds owns the table).
+func (p *Pipeline) loadHeldOut(ctx context.Context) (map[string]bool, error) {
+	if p.heldOutURLs != nil {
+		return p.heldOutURLs(ctx)
+	}
+	conn, err := connect(ctx, p.PGSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+	rows, err := conn.Query(ctx, `SELECT url FROM public.geofeed_urls WHERE id % $1 = $2 AND first_seen_at < $3::timestamptz`,
+		holdoutBuckets, holdoutBucket, holdoutFrozenAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	urls := map[string]bool{}
+	for rows.Next() {
+		var url string
+		if err := rows.Scan(&url); err != nil {
+			return nil, err
+		}
+		urls[url] = true
+	}
+	return urls, rows.Err()
 }
 
 // holdoutStats counts what splitFeeds did.
@@ -69,14 +97,15 @@ func prefixBlock(p netip.Prefix) block {
 // splitFeeds reads the geofeed rows layer (prefix,country,region,city,feed_url)
 // and writes
 //
-//   - keptPath: the same file without the rows of the held-out feeds
+//   - keptPath: the same file without the rows of the feeds in heldOut (a set
+//     of feed URLs)
 //   - truthPath: prefix,country,city of the held-out IPv4 rows that no kept
 //     row overlaps. Where a kept row covers or lies inside a held-out prefix,
 //     the holdout build still knows its answer, and the score would measure
 //     the overlap of two feeds, not our lower layers.
 //
 // Both are written through temporary files.
-func splitFeeds(feedsPath, keptPath, truthPath string) (holdoutStats, error) {
+func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]bool) (holdoutStats, error) {
 	var stats holdoutStats
 	in, err := os.Open(feedsPath)
 	if err != nil {
@@ -145,11 +174,8 @@ func splitFeeds(feedsPath, keptPath, truthPath string) (holdoutStats, error) {
 			return ""
 		}
 		feedURL := field(urlCol)
-		isHeld, seen := feeds[feedURL]
-		if !seen {
-			isHeld = heldOut(feedURL)
-			feeds[feedURL] = isHeld
-		}
+		isHeld := heldOut[feedURL]
+		feeds[feedURL] = isHeld
 		p, isV4 := parseV4(field(prefixCol))
 		if !isHeld {
 			keptCSV.Write(rec)
@@ -229,6 +255,13 @@ func cmpU32(a, b uint32) int {
 // of the MMDB and the truth CSV, or empty paths and a status when there is
 // nothing to score.
 func (p *Pipeline) prepareHoldout(ctx context.Context, src Source, dir string) (mmdbPath, truthPath, status string, err error) {
+	heldOut, err := p.loadHeldOut(ctx)
+	if err != nil {
+		return "", "", "", fmt.Errorf("holdout feeds: %w", err)
+	}
+	if len(heldOut) == 0 {
+		return "", "", "skipped: no held-out feeds in public.geofeed_urls", nil
+	}
 	// The layer's file name matters to mmdbbuilder's -within-first flag.
 	keptDir := filepath.Join(dir, "holdout")
 	if err := os.MkdirAll(keptDir, 0o750); err != nil {
@@ -236,7 +269,7 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, src Source, dir string) (
 	}
 	kept := filepath.Join(keptDir, FeedsLayer)
 	truthPath = filepath.Join(dir, "holdout-truth.csv")
-	stats, err := splitFeeds(filepath.Join(p.layersDir(), FeedsLayer), kept, truthPath)
+	stats, err := splitFeeds(filepath.Join(p.layersDir(), FeedsLayer), kept, truthPath, heldOut)
 	if err != nil {
 		return "", "", "", fmt.Errorf("holdout split: %w", err)
 	}

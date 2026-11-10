@@ -92,6 +92,7 @@ type Pipeline struct {
 	refURLs      *evalURLs
 	writeIX      func(ctx context.Context, w *csv.Writer) (int, error)
 	writeHosting func(ctx context.Context, w *csv.Writer) (int, error)
+	heldOutURLs  func(ctx context.Context) (map[string]bool, error)
 }
 
 // Source is what Download prepared for the run.

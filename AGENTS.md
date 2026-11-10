@@ -72,6 +72,8 @@
   inside those prefixes (drop reason `outside_asn`).
 - `build-geo-data` scores each MMDB it builds (`evaluate` task, results in `public.geo_eval`) and `publish` refuses a
   clear drop against the last published row (`geo.ErrGate`). All MMDB reading is done by `mmdbbuilder eval`.
+  The holdout leaves out a frozen sample of feeds, read from `public.geofeed_urls` (`id % 10 = 0`, `first_seen_at` before the
+  freeze date in `hatchet/geo/holdout.go`); a failed read is an evaluation error, never a different sample. Moving the date moves the score once.
   The IPinfo URL holds `IPINFO_TOKEN`: any error from that request is replaced by a fixed message, never passed on.
 - Secrets live only in the env file. Never put secrets or visitor IPs in Hatchet task inputs, outputs, log lines, or returned errors.
 - Pass every error from `pgx.Connect` / `ParseConfig` through `schema.HideDSN`: pgx parse errors can echo the whole `PGSQL` value.

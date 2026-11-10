@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -48,27 +47,11 @@ func readGzip(t *testing.T, path string) string {
 	return string(data)
 }
 
-func TestHeldOut(t *testing.T) {
-	// Fixed: the same feeds are held out in every run, on every machine.
-	for url, want := range map[string]bool{
-		"https://feed0.example/geo.csv": false,
-		"https://feed1.example/geo.csv": true,
-		"https://feed7.example/geo.csv": true,
-		"https://feed2.example/geo.csv": false,
-	} {
-		if heldOut(url) != want {
-			t.Errorf("heldOut(%s) = %v", url, !want)
-		}
-	}
-	held := 0
-	for i := 0; i < 10000; i++ {
-		if heldOut(fmt.Sprintf("https://feed%d.example/geo.csv", i)) {
-			held++
-		}
-	}
-	if held < 900 || held > 1100 {
-		t.Errorf("%d of 10000 feeds held out, want about 10%%", held)
-	}
+// feed1 and feed7 are held out; any other URL is kept.
+var testHeldOut = map[string]bool{"https://feed1.example/geo.csv": true, "https://feed7.example/geo.csv": true}
+
+func heldOutSet(urls map[string]bool) func(context.Context) (map[string]bool, error) {
+	return func(context.Context) (map[string]bool, error) { return urls, nil }
 }
 
 func TestSplitFeeds(t *testing.T) {
@@ -90,7 +73,7 @@ func TestSplitFeeds(t *testing.T) {
 		"49.0.0.0/24,ES,,Madrid,https://feed7.example/geo.csv\n") // next to a kept row, not over it
 
 	kept, truth := filepath.Join(dir, "kept.csv.gz"), filepath.Join(dir, "truth.csv")
-	stats, err := splitFeeds(feeds, kept, truth)
+	stats, err := splitFeeds(feeds, kept, truth, testHeldOut)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +95,7 @@ func TestSplitFeeds(t *testing.T) {
 
 	// Deterministic: the same input gives the same files.
 	firstKept := readGzip(t, kept)
-	if _, err := splitFeeds(feeds, kept, truth); err != nil {
+	if _, err := splitFeeds(feeds, kept, truth, testHeldOut); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := os.ReadFile(truth)
@@ -120,11 +103,11 @@ func TestSplitFeeds(t *testing.T) {
 		t.Error("a second split gave different files")
 	}
 
-	if _, err := splitFeeds(feeds, kept, filepath.Join(dir, "missing", "truth.csv")); err == nil {
+	if _, err := splitFeeds(feeds, kept, filepath.Join(dir, "missing", "truth.csv"), testHeldOut); err == nil {
 		t.Error("no error for an unwritable truth file")
 	}
 	writeGzip(t, feeds, "prefix,country\n45.0.0.0/8,US\n")
-	if _, err := splitFeeds(feeds, kept, truth); err == nil {
+	if _, err := splitFeeds(feeds, kept, truth, testHeldOut); err == nil {
 		t.Error("no error for a file without feed_url")
 	}
 }
@@ -136,7 +119,7 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 	argsFile := filepath.Join(dir, "args")
 	script := filepath.Join(dir, "mmdbbuilder")
 	os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" > "+argsFile+"\n"), 0o755)
-	p := &Pipeline{DataDir: dir, MMDBBuilder: script}
+	p := &Pipeline{DataDir: dir, MMDBBuilder: script, heldOutURLs: heldOutSet(testHeldOut)}
 	layers := p.layersDir()
 	os.MkdirAll(layers, 0o750)
 	writeGzip(t, filepath.Join(layers, FeedsLayer), "prefix,country,region,city,feed_url\n"+
@@ -176,6 +159,22 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 	args, _ = os.ReadFile(argsFile)
 	if strings.Contains(string(args), HostingLayer) || strings.Contains(string(args), "-first-country") || !strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, IXLayer)+" "+kept) {
 		t.Errorf("hosting skipped args = %s", args)
+	}
+
+	// Without held-out feeds there is nothing to score and no build.
+	os.Remove(argsFile)
+	p.heldOutURLs = heldOutSet(map[string]bool{})
+	if mmdb, _, status, err = p.prepareHoldout(context.Background(), Source{}, eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
+		t.Errorf("empty set: %q %q %v", mmdb, status, err)
+	}
+	// A failed lookup is an error, never another sample.
+	p.heldOutURLs = func(context.Context) (map[string]bool, error) { return nil, errors.New("boom") }
+	if _, _, _, err = p.prepareHoldout(context.Background(), Source{}, eval); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("lookup error = %v", err)
+	}
+	p.heldOutURLs = heldOutSet(testHeldOut)
+	if _, err := os.Stat(argsFile); err == nil {
+		t.Error("mmdbbuilder ran without held-out feeds")
 	}
 
 	// Nothing held out outside the kept feeds: nothing to score, no build.
@@ -404,7 +403,8 @@ func evalPipeline(t *testing.T, script string) *Pipeline {
 	builder := filepath.Join(dir, "mmdbbuilder")
 	os.WriteFile(builder, []byte("#!/bin/sh\n"+script+"\n"), 0o755)
 	p := &Pipeline{DataDir: dir, MMDBBuilder: builder,
-		refURLs: &evalURLs{dbip: server.URL + "/dbip-%s", atlas: server.URL + "/atlas"}}
+		refURLs:     &evalURLs{dbip: server.URL + "/dbip-%s", atlas: server.URL + "/atlas"},
+		heldOutURLs: heldOutSet(testHeldOut)}
 	os.MkdirAll(p.layersDir(), 0o750)
 	writeGzip(t, filepath.Join(p.layersDir(), FeedsLayer), "prefix,country,region,city,feed_url\n"+
 		"45.0.0.0/16,US,,,https://feed0.example/geo.csv\n46.0.0.0/24,FR,,Paris,https://feed1.example/geo.csv\n")

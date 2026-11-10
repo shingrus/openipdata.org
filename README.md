@@ -349,7 +349,7 @@ task output (its scores are then left out of `metrics`, never zero):
 | DB-IP Lite city (CC BY 4.0) | `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz`, this month's, last month's if not out yet | country and city agreement |
 | IPinfo Lite (country) | `https://ipinfo.io/data/ipinfo_lite.mmdb?token=...`, needs `IPINFO_TOKEN`; skipped without it | country agreement |
 | RIPE Atlas probes | `https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest` (daily JSON, bzip2): connected probes with a public IPv4 address and a country, kept as `atlas-probes.csv` (`ip,country,lat,lon`) | per-probe country accuracy |
-| Geofeed holdout | the feeds whose `sha256(feed_url)` falls in a fixed 10% bucket are left out of a second build, `holdout.mmdb`, with the real build's arguments | how well the lower layers guess what operators declared |
+| Geofeed holdout | a frozen 10% of the feeds (`public.geofeed_urls` rows with `id % 10 = 0` first seen before 2026-11-11, so the sample does not move when the feed list changes) are left out of a second build, `holdout.mmdb`, with the real build's arguments | how well the lower layers guess what operators declared |
 
 The IPinfo token is a secret and sits in the download URL: every error of that request is replaced
 by a fixed message, so it never reaches a log, a task output or a returned error.
