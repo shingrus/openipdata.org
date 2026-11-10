@@ -42,7 +42,9 @@ func gateDecision(previous, current map[string]float64) error {
 	return fmt.Errorf("%w: %s (more than %.1f points below the last published database); check the build, then run once with force_publish", ErrGate, strings.Join(drops, ", "), gateMaxDrop)
 }
 
-// connect opens a Postgres connection with the schema in place.
+// connect opens a Postgres connection with public.geo_eval in place. It runs
+// EnsureGeoEval, not Ensure: the other tables are only read here, and Ensure
+// would take the writers' table locks.
 func (p *Pipeline) connect(ctx context.Context) (*pgx.Conn, error) {
 	if p.PGSQL == "" {
 		return nil, errors.New("PGSQL is not set")
@@ -51,7 +53,7 @@ func (p *Pipeline) connect(ctx context.Context) (*pgx.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
 	}
-	if err := schema.Ensure(ctx, conn); err != nil {
+	if err := schema.EnsureGeoEval(ctx, conn); err != nil {
 		conn.Close(ctx)
 		return nil, err
 	}

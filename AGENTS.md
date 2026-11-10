@@ -35,7 +35,8 @@
 - One writer per table; every other workflow only reads it:
   `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`,
   `public.geo_ix_pdb` ← `sync-peeringdb`, `public.geo_eval` ← `build-geo-data`.
-- Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand.
+- Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand. A workflow runs DDL only
+  for tables it writes: `ALTER TABLE` takes an ACCESS EXCLUSIVE lock even when the column exists.
 - Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
   `build-asn-data` sets `public.asn.seen_at` for every ASN in the source each run; readers use it to ignore old rows
   (NULL = not yet seen since the column was added).
@@ -43,19 +44,22 @@
   `public.geo_ix_pdb` (global unicast internet exchange peering LAN prefixes with the exchange's country and city).
   An asn_geo_pdb shrink refuses the whole replace; a geo_ix_pdb shrink or empty result only keeps the old
   geo_ix_pdb rows (`StoreStats.IXKept`) and asn_geo_pdb is still replaced.
-- `build-geo-data` only reads these tables and runs no DDL (no `schema.Ensure`). A missing or empty `public.geo_ix_pdb`
+- `build-geo-data` only reads these tables and runs DDL only for `public.geo_eval` (`schema.EnsureGeoEval`), never `schema.Ensure`. A missing or empty `public.geo_ix_pdb`
   skips the `ix.csv` layer for that run (`Source.IXSkipped`, used by `build-mmdb` and the holdout build alike); a
   table with 1 to 199 usable rows fails. Exchanges without a city are never written to `ix.csv`.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
-- Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` touches no ASN table and has
-  its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.
+- Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes no table (its `probe-domains`
+  task only reads `public.asn_domain` and `public.asn`, with no `schema.Ensure`) and has its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.
 - Data between workflows goes through Postgres tables, except the geofeed rows (millions of rows):
   `sync-geofeeds` uploads them to one fixed key in the private R2 bucket and `build-geo-data` reads them from there.
   A workflow's own caches and state on the VM (e.g. `/var/lib/openipdata/geofeeds/`) are never read by another workflow.
 - `sync-geofeeds` HTTP and FTP requests use IPv4 only and must never reach non-public addresses (feed URLs come from
   whois records anyone can write). Nothing it builds is published. Its RDAP results live in `rdap.jsonl` on the VM,
-  not in Postgres.
+  not in Postgres. `probe-domains` looks for feeds on the websites in `public.asn_domain` (source `domain`); its results
+  live in `domains.jsonl`, and the announced prefixes of the ASNs of found domains in `domain-prefixes.csv`, so
+  `export-rows` never queries Postgres. A feed that only this source found adds no whois blocks and keeps only rows
+  inside those prefixes (drop reason `outside_asn`).
 - `build-geo-data` scores each MMDB it builds (`evaluate` task, results in `public.geo_eval`) and `publish` refuses a
   clear drop against the last published row (`geo.ErrGate`). All MMDB reading is done by `mmdbbuilder eval`.
   The IPinfo URL holds `IPINFO_TOKEN`: any error from that request is replaced by a fixed message, never passed on.

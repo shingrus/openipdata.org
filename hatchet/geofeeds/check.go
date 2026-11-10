@@ -517,7 +517,7 @@ func writeLists(dir string, state map[string]*feedState, now time.Time) (working
 
 	var txt strings.Builder
 	fmt.Fprintf(&txt, "# Geofeed (RFC 8805) URLs that worked in the 7 days before %s, from openipdata.org.\n", now.Format("2006-01-02"))
-	txt.WriteString("# Sources: RIR whois and IRR dumps, a hand-kept list, and The CAIDA UCSD Geofeed WHOIS dataset\n")
+	txt.WriteString("# Sources: RIR whois and IRR dumps, a hand-kept list, probes of ASN websites, and The CAIDA UCSD Geofeed WHOIS dataset\n")
 	txt.WriteString("# (https://catalog.caida.org/dataset/geofeed_whois).\n")
 	var csvText strings.Builder
 	w := csv.NewWriter(&csvText)

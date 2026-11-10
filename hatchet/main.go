@@ -5,10 +5,11 @@
 //	openipdata-worker run-asn [-skip-publish]    # build-asn-data
 //	openipdata-worker run-pdb                    # sync-peeringdb
 //	openipdata-worker run-domains                # update-asn-domains
-//	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] # sync-geofeeds
+//	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //
-// Environment: PGSQL (Postgres DSN), PDB_KEY (PeeringDB API key),
+// Environment: PGSQL (Postgres DSN; sync-geofeeds' probe-domains task reads
+// public.asn_domain and public.asn with it), PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
 // HC_PING_GEO (optional), IPINFO_TOKEN (optional, a secret: the IPinfo Lite
@@ -59,6 +60,9 @@ type SyncGeofeedsInput struct {
 	ForceUpload bool `json:"force_upload"`
 	// RDAPBudget, if positive, caps the RDAP lookups per registry (for test runs).
 	RDAPBudget int `json:"rdap_budget"`
+	// DomainBudget, if positive, sets how many ASN website domains probe-domains
+	// probes per run (default 5000).
+	DomainBudget int `json:"domain_budget"`
 }
 
 // BuildGeoInput is the build-geo-data input; cron runs use the zero value.
@@ -174,7 +178,7 @@ func newDomainsPipeline(progress func(string)) *domains.Pipeline {
 
 // newGeofeedsPipeline reads the environment; progress receives log lines.
 func newGeofeedsPipeline(progress func(string)) *geofeeds.Pipeline {
-	return &geofeeds.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2")}
+	return &geofeeds.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2"), PGSQL: pgsql()}
 }
 
 func pgsql() string { return env("PGSQL") }
@@ -358,7 +362,7 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 // Nothing is published.
 func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-geofeeds",
-		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists -> checked geofeed rows in private R2"),
+		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists + ASN website probes -> checked geofeed rows in private R2"),
 		hatchet.WithWorkflowCron("0 0 * * *"),
 		// Its own limit, not asn-db: it reads and writes no ASN table.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
@@ -369,6 +373,7 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	// discover reads whatever rdap.jsonl holds when it gets there; results found in
 	// this run reach the rows in the next one. The run ends when all tasks end.
 	// Each result is appended as it comes in, so a retry resumes where it stopped.
+	// probe-domains is the same: no parent, no child, results for the next run.
 	wf.NewTask("rdap-lookups", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.RDAPOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
 		if !input.SkipUpload {
@@ -378,6 +383,22 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			}
 		}
 		return p.LookupRDAP(ctx, input.RDAPBudget)
+	}, taskRetry(hatchet.WithExecutionTimeout(3*time.Hour))...)
+
+	// Looks for feeds that whois does not point to, on the websites of the ASNs
+	// (public.asn_domain, read only). It is the only task that needs PGSQL.
+	wf.NewTask("probe-domains", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DomainsOutput, error) {
+		p := newGeofeedsPipeline(taskLog(ctx))
+		// Only an env change fixes either setting: no retries.
+		if err := p.CheckDomains(); err != nil {
+			return geofeeds.DomainsOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		if !input.SkipUpload {
+			if err := p.CheckUpload(); err != nil {
+				return geofeeds.DomainsOutput{}, hatchet.NewNonRetryableError(err)
+			}
+		}
+		return p.ProbeDomains(ctx, input.DomainBudget)
 	}, taskRetry(hatchet.WithExecutionTimeout(3*time.Hour))...)
 
 	discover := wf.NewTask("discover", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
@@ -555,30 +576,39 @@ func runDomains(ctx context.Context) error {
 	return err
 }
 
-// runGeofeeds runs the sync-geofeeds tasks once, without Hatchet: rdap-lookups beside
-// the discover -> check-feeds -> export-rows chain.
+// runGeofeeds runs the sync-geofeeds tasks once, without Hatchet: rdap-lookups and
+// probe-domains beside the discover -> check-feeds -> export-rows chain.
 func runGeofeeds(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-geofeeds", flag.ExitOnError)
 	skipUpload := flags.Bool("skip-upload", false, "write the rows file but do not upload it")
 	forceUpload := flags.Bool("force-upload", false, "upload even if the row count dropped more than 10%")
 	rdapBudget := flags.Int("rdap-budget", 0, "cap the RDAP lookups per registry (0: the default budgets)")
+	domainBudget := flags.Int("domain-budget", 0, "cap the ASN website domains probed (0: the default budget)")
 	flags.Parse(args)
 	if flags.NArg() > 0 {
 		return fmt.Errorf("run-geofeeds: unexpected argument %q", flags.Arg(0))
 	}
 
 	p := newGeofeedsPipeline(cliLog)
+	if err := p.CheckDomains(); err != nil {
+		return err
+	}
 	if !*skipUpload {
 		if err := p.CheckUpload(); err != nil {
 			return err
 		}
 	}
-	// Like the workflow: the RDAP lookups run beside discover -> check-feeds -> export-rows,
-	// which use the results saved so far. Wait for both and report both errors.
-	rdapDone := make(chan error, 1)
+	// Like the workflow: the RDAP lookups and the domain probes run beside discover ->
+	// check-feeds -> export-rows, which use the results saved so far. Wait for all
+	// and report every error.
+	rdapDone, domainsDone := make(chan error, 1), make(chan error, 1)
 	go func() {
 		_, err := p.LookupRDAP(ctx, *rdapBudget)
 		rdapDone <- err
+	}()
+	go func() {
+		_, err := p.ProbeDomains(ctx, *domainBudget)
+		domainsDone <- err
 	}()
 	_, err := p.Discover(ctx)
 	if err == nil {
@@ -588,9 +618,9 @@ func runGeofeeds(ctx context.Context, args []string) error {
 		_, err = p.ExportRows(ctx, !*skipUpload, *forceUpload)
 	}
 	if err != nil {
-		cliLog(fmt.Sprintf("geofeeds: %v; waiting for the RDAP lookups to finish", err))
+		cliLog(fmt.Sprintf("geofeeds: %v; waiting for the RDAP lookups and domain probes to finish", err))
 	}
-	return errors.Join(err, <-rdapDone)
+	return errors.Join(err, <-rdapDone, <-domainsDone)
 }
 
 // runGeo runs the build-geo-data tasks once, in order, without Hatchet.

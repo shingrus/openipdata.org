@@ -27,6 +27,7 @@ type Pipeline struct {
 	DataDir  string
 	Progress func(string)
 	R2       string // private bucket for the rows file (see RowsKey)
+	PGSQL    string // Postgres DSN; probe-domains only reads public.asn_domain and public.asn
 
 	// Overridden in tests.
 	dumps        []dump
@@ -34,6 +35,10 @@ type Pipeline struct {
 	caidaBase    string
 	now          func() time.Time
 	allowPrivate bool // let the HTTP clients reach test servers on 127.0.0.1
+	// Replace Postgres and the candidate URLs in probe-domains tests.
+	domainRows  func(ctx context.Context) ([]asnDomain, error)
+	asnPrefixes func(ctx context.Context, asns []int64) (map[int64][]netip.Prefix, error)
+	candidates  func(domain string) []string
 }
 
 func (p *Pipeline) clock() time.Time {
@@ -182,6 +187,29 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 		out.Sources["rdap-"+name] = *stats
 		p.log("discover: rdap-%s: %d blocks, %d URLs", name, stats.Blocks, stats.URLs)
 	}
+
+	// Feeds that probe-domains found on ASN websites. They add no blocks:
+	// nothing in a registry says the ASN owns the feed's rows (export-rows
+	// holds such a feed to the ASN's announced prefixes instead). The URLs come
+	// from DomainPrefixesFile, the snapshot export-rows reads, not from
+	// DomainsFile: probe-domains appends to that one while this task runs, and
+	// a feed found only there would be exported with no prefixes on record and
+	// lose every row as outside_asn. A feed found in this run is listed by the
+	// next run, once probe-domains has replaced the sidecar. No file: none yet.
+	probed, err := loadDomainPrefixes(filepath.Join(p.dir(), DomainPrefixesFile))
+	if err != nil {
+		return out, err
+	}
+	domainURLs := make([]string, 0, len(probed))
+	for u := range probed {
+		domainURLs = append(domainURLs, u)
+	}
+	slices.Sort(domainURLs)
+	for _, u := range domainURLs {
+		c.add(sourceDomain, u, netip.Prefix{})
+	}
+	out.Sources[sourceDomain] = SourceStats{Status: "probed", URLs: len(domainURLs)}
+	p.log("discover: domain: %d URLs", len(domainURLs))
 
 	listed := parseFeedList(listedFeeds)
 	for _, u := range listed {

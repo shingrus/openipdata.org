@@ -44,10 +44,9 @@ func writePDBRows(ctx context.Context, dsn string, w *csv.Writer) (asns, prefixe
 		return 0, 0, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
 	}
 	defer conn.Close(ctx)
-	// The query needs seen_at, which may be newer than the last build-asn-data run.
-	if err := schema.Ensure(ctx, conn); err != nil {
-		return 0, 0, err
-	}
+	// No schema.Ensure here: this is a read-only workflow, and Ensure's ALTER TABLE
+	// statements take ACCESS EXCLUSIVE locks on tables the writers own. The writers
+	// create the columns the query uses (seen_at).
 	rows, err := conn.Query(ctx, pdbQuery)
 	if err != nil {
 		return 0, 0, err

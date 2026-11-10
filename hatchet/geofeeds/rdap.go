@@ -503,7 +503,11 @@ func loadRDAP(path string) (map[string]rdapRecord, error) {
 }
 
 // compactRDAP rewrites RDAPFile with one line per block, via a .tmp file.
-func compactRDAP(path string, known map[string]rdapRecord) error {
+func compactRDAP(path string, known map[string]rdapRecord) error { return compactJSONL(path, known) }
+
+// compactJSONL rewrites a JSON lines state file with one line per key, sorted
+// by key, via a .tmp file.
+func compactJSONL[T any](path string, known map[string]T) error {
 	keys := make([]string, 0, len(known))
 	for k := range known {
 		keys = append(keys, k)

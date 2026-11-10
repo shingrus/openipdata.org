@@ -1,6 +1,7 @@
 // Package schema creates and upgrades the Postgres tables the workflows share:
 // public.asn, public.asn_domain, public.asn_geo_pdb, public.geo_ix_pdb, and public.geo_eval. Each table has one
-// writer (see AGENTS.md); every workflow runs Ensure before it touches them.
+// writer (see AGENTS.md); a workflow runs DDL only for tables it writes (Ensure, or
+// EnsureGeoEval for the read-only build-geo-data).
 package schema
 
 import (
@@ -14,6 +15,19 @@ import (
 type Execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
+
+// geoEvalStatement creates public.geo_eval. build-geo-data runs it alone
+// (EnsureGeoEval), so it must stay a single self-contained statement.
+// One row per build-geo-data run: the scores of the MMDB it built. published
+// is set once that MMDB has been published; the latest such row is the
+// baseline the next publish is compared with.
+const geoEvalStatement = `CREATE TABLE IF NOT EXISTS public.geo_eval (
+		id BIGSERIAL PRIMARY KEY,
+		run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		date_tag TEXT,
+		metrics JSONB NOT NULL,
+		published BOOLEAN NOT NULL DEFAULT false
+	)`
 
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS public.asn (
@@ -64,19 +78,22 @@ var statements = []string{
 		country TEXT,
 		city TEXT
 	)`,
-	// One row per build-geo-data run: the scores of the MMDB it built. published
-	// is set once that MMDB has been published; the latest such row is the
-	// baseline the next publish is compared with.
-	`CREATE TABLE IF NOT EXISTS public.geo_eval (
-		id BIGSERIAL PRIMARY KEY,
-		run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-		date_tag TEXT,
-		metrics JSONB NOT NULL,
-		published BOOLEAN NOT NULL DEFAULT false
-	)`,
+	geoEvalStatement,
+}
+
+// EnsureGeoEval creates public.geo_eval only. build-geo-data uses it instead of
+// Ensure: it reads the other tables, and the ALTER TABLE statements in Ensure
+// take an ACCESS EXCLUSIVE lock on them even when the column exists, which
+// would make a reader block (or be blocked by) the writers.
+func EnsureGeoEval(ctx context.Context, db Execer) error {
+	if _, err := db.Exec(ctx, geoEvalStatement); err != nil {
+		return fmt.Errorf("ensure schema: %w", err)
+	}
+	return nil
 }
 
 // Ensure creates missing tables, indexes, and columns. It is safe to run every time.
+// Workflows call it only when they write one of these tables.
 func Ensure(ctx context.Context, db Execer) error {
 	for _, stmt := range statements {
 		if _, err := db.Exec(ctx, stmt); err != nil {

@@ -115,14 +115,16 @@ geo database build through the private R2 bucket. Nothing is published.
 | Task | Runs after | Does |
 |---|---|---|
 | `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
-| `discover` | | reads the whois and IRR dumps, the RDAP results saved so far, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them (also checks the R2 settings first, unless `skip_upload`) |
+| `probe-domains` | | needs `PGSQL` (and checks the R2 settings, unless `skip_upload`); reads the ASN website domains from `public.asn_domain` and probes the due ones for a geofeed at the usual paths, within a budget per run; runs beside the other tasks |
+| `discover` | | reads the whois and IRR dumps, the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list, and CAIDA's lists; writes the URLs and the blocks that point to them (also checks the R2 settings first, unless `skip_upload`) |
 | `check-feeds` | `discover` | fetches every due feed, keeps a checked copy of each working one, and writes the lists |
 | `export-rows` | `check-feeds` | writes the rows of all working feeds that pass the ownership check, and uploads them to R2 |
 
-`rdap-lookups` has no child task: it runs at the same time as `discover` → `check-feeds` →
+`rdap-lookups` and `probe-domains` have no child task: they run at the same time as `discover` → `check-feeds` →
 `export-rows` (about 40 minutes), so the rows reach R2 without waiting for the RDAP pass (up to
-2 hours). `discover` uses the results already in `rdap.jsonl`; what this run finds is picked up by
-the next one. The run ends when all tasks have ended. `run-geofeeds` does the same.
+2 hours). `discover` uses the results already in `rdap.jsonl` and the feeds in `domain-prefixes.csv`; what
+this run finds is picked up by the next one (a domain-found feed only after the `probe-domains` run that
+found it has finished). The run ends when all tasks have ended. `run-geofeeds` does the same.
 
 - Whois dumps: RIPE and APNIC (`inetnum`, `inet6num`), AFRINIC, LACNIC. IRR dumps: RIPE, APNIC
   (`route`, `route6`), ARIN, LACNIC, and over FTP from RADB: RADB itself plus its copies of ALTDB,
@@ -144,6 +146,37 @@ the next one. The run ends when all tasks have ended. `run-geofeeds` does the sa
   `discover` may read it at any time: it skips a line still being written. It is this workflow's own state: losing it
   costs a few days of lookups, while CAIDA's lists still cover ARIN. Manual runs can pass
   `{"rdap_budget": N}` (or `run-geofeeds -rdap-budget N`) to cap the lookups per registry.
+- `probe-domains` finds feeds that no whois record points to, on the websites of the ASNs. Once per
+  run it reads `SELECT asn, domain FROM public.asn_domain` (read only, no `schema.Ensure`; a missing
+  `PGSQL` fails the task without retries) and groups the ASNs by domain (an ASN's domain is already
+  a registered domain). For each domain it tries, in order, and stops at the first hit:
+  `https://<domain>/geofeed.csv`, `https://geofeed.<domain>/geofeed.csv`,
+  `https://www.<domain>/geofeed.csv`, `https://<domain>/.well-known/geofeed.csv`. A hit is HTTP 200,
+  a body that is not HTML, and at least one valid row (the geofeed row check below) among the first 50
+  data lines; at most 1 MB is read per request. Requests use the same IPv4-only, public-address-only
+  client as the feed checks, 15 s timeout, 8 domains at a time, one request at a time per domain; when
+  a host gives no HTTP response, the domain's other URLs on that host are skipped.
+  A domain is `found`, `none` (every host answered, or does not exist, or refused the connection, and
+  none had a feed) or `failed` (a timeout, 429 or 5xx, anything that says nothing about the site).
+  Found is checked again after 7 days, none after 30, failed after 1; a failed recheck keeps the last
+  feed, which counts for 45 days after its last good probe. Each run probes at most 5,000 domains
+  (never probed first, then the most overdue); manual runs can pass `{"domain_budget": N}` (or
+  `run-geofeeds -domain-budget N`). The run stops starting domains after 2 hours.
+  A line per probed domain is appended to `/var/lib/openipdata/geofeeds/domains.jsonl`
+  (`domain,asns,checked,next,ok,status,url`) and flushed at once, so a retried task resumes; the file is
+  compacted at the end, which also forgets domains that left `public.asn_domain`. A progress line comes
+  every 5 minutes, and a summary at the end.
+- At the end of the run, `probe-domains` reads `public.asn.json` for the ASNs of the domains that have a
+  feed (not for all ASNs: that keeps the database egress small; ASNs not seen by `build-asn-data` for
+  7 days are left out) and replaces `domain-prefixes.csv` (`url,prefix`) with their announced prefixes.
+  `export-rows` reads that file and never queries Postgres.
+- `discover` adds each URL in `domain-prefixes.csv` (not `domains.jsonl`, which `probe-domains` appends to
+  while the other tasks run) with source `domain`, and no whois blocks. A found feed therefore reaches the
+  rows after the `probe-domains` run that found it has finished, usually the next `sync-geofeeds` run. The ownership check
+  works exactly as for every other feed. A feed whose only source is `domain` keeps just the rows inside
+  the announced prefixes of its domain's ASNs; the other rows are dropped and counted as `outside_asn`
+  (a feed with no prefixes on record loses all its rows). A feed with another source (whois, RDAP,
+  IRR, list, CAIDA) is exported as before.
 - `hatchet/geofeeds/feeds.txt` lists operator feeds that no whois record points to (source `list`).
 - CAIDA's lists (union of the last 7 days) add ARIN and NIR feeds, which have no public dumps.
   Their use is governed by the CAIDA AUA for public datasets: publications must cite
@@ -202,7 +235,7 @@ the next one. The run ends when all tasks have ended. `run-geofeeds` does the sa
   drop is real, a manual run with `{"force_upload": true}` (or `run-geofeeds -force-upload`)
   uploads anyway and resets the baseline. Manual runs can pass `{"skip_upload": true}` (or
   `run-geofeeds -skip-upload`) to write the file without uploading it.
-- No Postgres tables. Dumps and feeds are streamed, never held whole in memory; local full runs
+- No Postgres tables written (`probe-domains` only reads two). Dumps and feeds are streamed, never held whole in memory; local full runs
   peaked at 240–360 MB, took about 5–10 minutes, kept about 240 MB of checked feeds on disk,
   and exported about 6.4 million rows (36 MB gzipped).
 
@@ -255,7 +288,7 @@ unpublished `public.geo_eval` row of the same date.
   fails. A source that is too small (under 1,000 blocks per RIR, 200 countries, 100 PeeringDB
   ASNs, 200 exchange prefixes written to the layer) also fails the task; an exchange table with no
   rows at all is the one exception (skipped, see layer 4). `build-geo-data` only reads
-  `public.geo_ix_pdb`; it runs no schema changes.
+  `public.geo_ix_pdb`; it only creates `public.geo_eval` (its own table) and changes no other table.
 - Geofeed rows older than 3 days are still used, with a warning, but `publish` then skips the
   `HC_PING_GEO` ping, so the health check reports that `sync-geofeeds` has stopped delivering.
 - Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB
@@ -319,7 +352,7 @@ openipdata-worker run-domains          # run update-asn-domains once locally, wi
 openipdata-worker run-geofeeds         # run sync-geofeeds once locally, without Hatchet
 openipdata-worker run-geofeeds -skip-upload  # same, without uploading the rows
 openipdata-worker run-geofeeds -force-upload # same, uploading even after a drop of over 10%
-openipdata-worker run-geofeeds -skip-upload -rdap-budget 100  # a quick local test run
+openipdata-worker run-geofeeds -skip-upload -rdap-budget 100 -domain-budget 100  # a quick local test run
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet
 openipdata-worker run-geo -skip-publish  # same, without uploading
 openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
@@ -340,8 +373,8 @@ cd hatchet && CGO_ENABLED=0 go build -trimpath -o ../bin/openipdata-worker .
 cd mmdbbuilder && CGO_ENABLED=0 go build -trimpath -o ../bin/mmdbbuilder .
 ```
 
-The `run-*` commands need `PGSQL`, except `run-geofeeds`, which needs `R2` unless `-skip-upload`
-is given; `run-pdb` also needs `PDB_KEY`, and `run-geo` also needs `R2`. Set `OPENIPDATA_DATA_DIR`
+The `run-*` commands need `PGSQL` (`run-geofeeds` for its `probe-domains` task), and `run-geofeeds`
+also needs `R2` unless `-skip-upload` is given; `run-pdb` also needs `PDB_KEY`, and `run-geo` also needs `R2`. Set `OPENIPDATA_DATA_DIR`
 to a local folder when running off the VM.
 
 ## VM setup

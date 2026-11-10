@@ -42,6 +42,10 @@ const (
 // covering them links a feed on another site.
 const dropOtherOwner = "other_owner"
 
+// dropOutsideASN counts rows dropped from a feed that only a domain probe found
+// (source "domain"): they lie outside the announced prefixes of the domain's ASNs.
+const dropOutsideASN = "outside_asn"
+
 // ErrGate means the rows file shrank too much to upload. Retrying cannot help.
 var ErrGate = errors.New("upload gate")
 
@@ -260,6 +264,11 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 	if err != nil {
 		return out, err
 	}
+	// The announced prefixes probe-domains saved; export-rows never queries Postgres.
+	asnPrefixes, err := loadDomainPrefixes(filepath.Join(p.dir(), DomainPrefixesFile))
+	if err != nil {
+		return out, err
+	}
 	now := p.clock().UTC()
 	var urls []string
 	for u, s := range state {
@@ -320,7 +329,15 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		rows, err := p.exportFeed(w, backedW, idx, u, feedPath(filepath.Join(p.dir(), FeedsDir), u), &out)
+		// A feed that only a domain probe found keeps just the rows inside its
+		// ASNs' announced prefixes; with none on record, it keeps none.
+		var inside *prefixSet
+		if state[u].Sources == sourceDomain {
+			if inside = asnPrefixes[u]; inside == nil {
+				inside = &prefixSet{}
+			}
+		}
+		rows, err := p.exportFeed(w, backedW, idx, inside, u, feedPath(filepath.Join(p.dir(), FeedsDir), u), &out)
 		if err != nil {
 			return out, err // it was readable a moment ago
 		}
@@ -369,10 +386,15 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 
 // exportFeed copies the rows of one stored feed that pass the ownership
 // check: rows a whois block backs go to backedW, the others to w. Drops and
-// broad rows are counted from the rows that are not backed.
-func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, feed, path string, out *ExportOutput) (int, error) {
-	site, rows, dropped := feedSite(feed), 0, 0
+// broad rows are counted from the rows that are not backed. If inside is not
+// nil, rows outside it are dropped first (dropOutsideASN).
+func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, inside *prefixSet, feed, path string, out *ExportOutput) (int, error) {
+	site, rows, dropped, outside := feedSite(feed), 0, 0, 0
 	err := readStoredFeed(path, func(rec []string, prefix netip.Prefix) {
+		if inside != nil && !inside.contains(prefix) {
+			outside++
+			return
+		}
 		backed, allowed := idx.classify(site, prefix)
 		row := []string{rec[0], rec[1], rec[2], rec[3], feed}
 		switch {
@@ -391,6 +413,9 @@ func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, feed, path st
 	})
 	if dropped > 0 {
 		out.Dropped[dropOtherOwner] += dropped
+	}
+	if outside > 0 {
+		out.Dropped[dropOutsideASN] += outside
 	}
 	return rows, err
 }
