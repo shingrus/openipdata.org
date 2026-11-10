@@ -359,6 +359,40 @@ func TestDownloadHosting(t *testing.T) {
 }
 
 // Skipped layers appear in the task output as a readable list of file names.
+func TestSkipLayers(t *testing.T) {
+	for _, bad := range [][]string{{"names.csv"}, {HostingLayer, "rir.csv"}, {""}} {
+		if err := ValidateSkipLayers(bad); err == nil || !strings.Contains(err.Error(), bad[len(bad)-1]) ||
+			!strings.Contains(err.Error(), HostingLayer) || !strings.Contains(err.Error(), IXLayer) {
+			t.Errorf("ValidateSkipLayers(%v) = %v", bad, err)
+		}
+	}
+	if err := ValidateSkipLayers([]string{HostingLayer, IXLayer}); err != nil {
+		t.Errorf("ValidateSkipLayers(optional layers) = %v", err)
+	}
+
+	var logs []string
+	p := &Pipeline{DataDir: "/data", Progress: func(s string) { logs = append(logs, s) }}
+	src := Source{Rows: map[string]int{HostingLayer: 5}}
+	p.SkipLayers(&src, []string{HostingLayer})
+	if !reflect.DeepEqual(src.SkippedLayers, []string{HostingLayer}) {
+		t.Fatalf("SkippedLayers = %v", src.SkippedLayers)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], HostingLayer) || !strings.Contains(logs[0], "skip_layers") {
+		t.Errorf("logs = %v", logs)
+	}
+	args := strings.Join(p.geoArgs("out.mmdb", "/kept/feeds", src), " ")
+	if strings.Contains(args, HostingLayer) || strings.Contains(args, "-first-country") || !strings.Contains(args, IXLayer) {
+		t.Errorf("args = %s", args)
+	}
+
+	// A layer that is already skipped (no rows) is not added twice.
+	src = Source{SkippedLayers: []string{IXLayer}}
+	p.SkipLayers(&src, []string{IXLayer, HostingLayer, HostingLayer})
+	if !reflect.DeepEqual(src.SkippedLayers, []string{IXLayer, HostingLayer}) {
+		t.Errorf("SkippedLayers = %v", src.SkippedLayers)
+	}
+}
+
 func TestSourceSkippedLayersJSON(t *testing.T) {
 	data, _ := json.Marshal(Source{SkippedLayers: []string{HostingLayer, IXLayer}})
 	if !strings.Contains(string(data), `"skipped_layers":["hosting.csv","ix.csv"]`) {

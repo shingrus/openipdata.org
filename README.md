@@ -328,7 +328,9 @@ unpublished `public.geo_eval` row of the same date.
   is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2geo-openipdata.mmdb`.
 - Needs `PGSQL` and `R2` always, and `GITHUB_TOKEN` to publish; a missing setting fails
   `download` without retries. `IPINFO_TOKEN` is optional (see below). Manual runs can pass
-  `{"skip_publish": true}` (or `run-geo -skip-publish`) to build and evaluate without uploading.
+  `{"skip_publish": true}` (or `run-geo -skip-publish`) to build and evaluate without uploading,
+  and `{"skip_layers": ["hosting.csv"]}` to leave an optional layer (`hosting.csv`, `ix.csv`) out of the build
+  and the holdout build; any other name fails `download` without retries.
 - It only reads the ASN tables, so it has its own `geo` concurrency limit.
 
 #### Evaluation and publish gate

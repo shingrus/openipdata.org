@@ -111,6 +111,28 @@ type Source struct {
 
 func (s Source) skipped(layer string) bool { return slices.Contains(s.SkippedLayers, layer) }
 
+// ValidateSkipLayers accepts only the optional layer files.
+func ValidateSkipLayers(layers []string) error {
+	for _, name := range layers {
+		if name != HostingLayer && name != IXLayer {
+			return fmt.Errorf("skip_layers: unknown layer %q (allowed: %s, %s)", name, HostingLayer, IXLayer)
+		}
+	}
+	return nil
+}
+
+// SkipLayers adds the named optional layers (see ValidateSkipLayers) to
+// src.SkippedLayers, as if they had no rows, for manual test runs. A layer
+// that is already skipped is not added twice.
+func (p *Pipeline) SkipLayers(src *Source, layers []string) {
+	for _, name := range layers {
+		if !src.skipped(name) {
+			src.SkippedLayers = append(src.SkippedLayers, name)
+			p.log("download: skipping %s (skip_layers)", name)
+		}
+	}
+}
+
 func (p *Pipeline) dir() string       { return filepath.Join(p.DataDir, "geo") }
 func (p *Pipeline) layersDir() string { return filepath.Join(p.dir(), "layers") }
 func (p *Pipeline) outDir(dateTag string) string {

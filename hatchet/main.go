@@ -73,6 +73,9 @@ type BuildGeoInput struct {
 	// ForcePublish publishes even if the scores dropped more than the gate allows
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
+	// SkipLayers leaves these optional layer files out of the build and the holdout build,
+	// e.g. ["hosting.csv"] (for manual test runs).
+	SkipLayers []string `json:"skip_layers"`
 }
 
 func main() {
@@ -464,7 +467,15 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		if err := p.CheckSettings(!input.SkipPublish); err != nil {
 			return geo.Source{}, hatchet.NewNonRetryableError(err)
 		}
-		return p.Download(ctx, time.Now())
+		if err := geo.ValidateSkipLayers(input.SkipLayers); err != nil {
+			return geo.Source{}, hatchet.NewNonRetryableError(err)
+		}
+		src, err := p.Download(ctx, time.Now())
+		if err != nil {
+			return src, err
+		}
+		p.SkipLayers(&src, input.SkipLayers)
+		return src, nil
 	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
 
 	// withSource returns the pipeline and what download prepared.
