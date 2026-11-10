@@ -9,6 +9,7 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 
 | Path | Purpose |
 |---|---|
+| `docs/pipeline.md` | the whole pipeline on one page: workflows, data sources, tables, layers |
 | `infra/` | VM provisioning script, systemd unit, env template |
 | `hatchet/` | `openipdata-worker`: the Hatchet worker; one folder per workflow |
 | `mmdbbuilder/` | `mmdbbuilder`: standalone MMDB build tool |
@@ -115,15 +116,16 @@ the task output has `ix_kept` with the reason, and the log has a warning. Needs 
 ### `sync-geofeeds` (`hatchet/geofeeds/`, cron `0 0 * * *` UTC)
 
 Finds every geofeed (RFC 8805) URL it can, checks each feed, and hands the checked rows to the
-geo database build through the private R2 bucket. Nothing is published.
+geo database build through the private R2 bucket. It also turns the `geoloc:` points of whois
+inetnums into city rows for the same build. Nothing is published.
 
 | Task | Runs after | Does |
 |---|---|---|
 | `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
 | `probe-domains` | | needs `PGSQL` (and checks the R2 settings, unless `skip_upload`); reads the ASN website domains from `public.asn_domain` and probes the due ones for a geofeed at the usual paths, within a budget per run; runs beside the other tasks |
-| `discover` | | needs `PGSQL`; reads the whois and IRR dumps, the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list, and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them (also checks the R2 settings first, unless `skip_upload`) |
+| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list, and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them and `out/60-whois.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
 | `check-feeds` | `discover` | needs `PGSQL`; fetches every due feed in `public.geofeed_urls`, keeps a checked copy of each working one, stores the results in the table, and writes the lists |
-| `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them to R2 |
+| `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them as `70-geofeeds.csv.gz` to R2; also uploads `60-whois.csv.gz` (a problem with that one never fails the task) |
 
 `rdap-lookups` and `probe-domains` have no child task: they run at the same time as `discover` → `check-feeds` →
 `export-rows` (about 40 minutes), so the rows reach R2 without waiting for the RDAP pass (up to
@@ -245,14 +247,41 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   rewrites it.
 - `export-rows` reads each stored feed twice (a check, then the data). Rows a whois block backs
   go to a temporary file and are copied after the others.
-- `export-rows` writes `/var/lib/openipdata/geofeeds/out/geofeed-rows.csv.gz`
-  (`prefix,country,region,city,feed_url`) and uploads it to the **private** R2 bucket at the
-  fixed key `internal/geofeeds/geofeed-rows.csv.gz`, replacing the last upload. `build-geo-data`
+- `export-rows` writes `/var/lib/openipdata/geofeeds/out/70-geofeeds.csv.gz` and uploads it to the
+  **private** R2 bucket at the fixed key `internal/layers/70-geofeeds.csv.gz`, replacing the last upload.
+  It is a layer file of `build-geo-data` (see there): gzipped, in the geofeed (RFC 8805) layout with the
+  header `prefix,country,region,city,source`, where `source` is the feed URL. `build-geo-data`
   reads it from there. An upload with 10% fewer rows than the last one (or under 1,000,000 on the
   first upload) is refused without retries, as is a damaged `upload.json`. After checking that a
   drop is real, a manual run with `{"force_upload": true}` (or `run-geofeeds -force-upload`)
   uploads anyway and resets the baseline. Manual runs can pass `{"skip_upload": true}` (or
   `run-geofeeds -skip-upload`) to write the file without uploading it.
+- Whois geoloc layer (`60-whois.csv.gz`, one of the layers of `build-geo-data`). While `discover` reads the
+  RIPE `inetnum`, APNIC `inetnum` and AFRINIC dumps (not LACNIC, not IRR, not `inet6num`), it also collects
+  every IPv4 `inetnum` with a `geoloc: <lat> <lon>` whose first two fields are a latitude in [-90, 90]
+  and a longitude in [-180, 180] (0 0 is skipped). After the dumps are read, `discover` drops blocks
+  with more than 65,536 addresses (`too_large`) and blocks whose `country:` is not a real country, which
+  includes `EU`, `ZZ`, `AP` and none (`bad_country`); names the city as the most populous GeoNames place of
+  that country within 25 km of the point (the GeoNames `name`; places that are a section of a populated place
+  or no longer exist are not used; no such place: `no_place`); and writes
+  `/var/lib/openipdata/geofeeds/out/60-whois.csv.gz` (via a `.tmp` file) in the same format as the geofeed rows:
+  region empty, `source` `whois:<registry>`, one row per CIDR prefix of the block; nested blocks are kept,
+  the more specific prefix wins in the build. A GeoNames problem (not downloadable with no earlier copy) or
+  no row at all never fails `discover` or touches the geofeed rows: the previous file is kept and the reason is
+  in the task output (`whois.skipped`), with the blocks with a geoloc, the dropped blocks by reason, and the
+  rows written. `export-rows` uploads the file to the private R2 key `internal/layers/60-whois.csv.gz`, only
+  if `discover` rewrote it since the last upload (a kept old file is not sent again: its new upload time
+  would hide that `discover` could not build it). The gate is the geofeed rows': more than 10% fewer rows than
+  the last upload (`whois-upload.json`), or fewer than 20,000 rows on the first upload, is refused;
+  `force_upload` skips it. A refusal or any other problem with this upload is a warning, not a failure: the
+  reason is in the task output (`whois.skipped`) and the geofeed rows are not affected.
+- GeoNames `cities1000.zip` (places with 1,000 or more people, CC BY) is downloaded by `discover` itself
+  into `/var/lib/openipdata/geofeeds/dumps/`, with the shared conditional download. GeoNames rebuilds the file
+  daily, so a copy younger than 7 days is used without contacting the server; an older one is refreshed, and
+  if that fails the existing copy is used, however old, with a warning. With no copy at all the whois layer is not built.
+- Deploy note: the layers moved from `internal/geofeeds/` to `internal/layers/` and `build-geo-data` has no
+  fallback to the old keys. After deploying, run `sync-geofeeds` once by hand before the next `build-geo-data`
+  run, or its `download` task fails on the missing `70-geofeeds.csv.gz`.
 - One Postgres table written, `public.geofeed_urls` (`probe-domains` only reads two others). Dumps and feeds are streamed, never held whole in memory; local full runs
   peaked at 240–360 MB, took about 5–10 minutes, kept about 240 MB of checked feeds on disk,
   and exported about 6.4 million rows (36 MB gzipped).
@@ -262,10 +291,21 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
 layers before it put under its prefixes.
 
+Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
+`prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
+The file name carries the order, in steps of 10: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `30-pdb.csv.gz`,
+`40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
+`/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
+`.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
+directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
+header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
+layer name (`layerRules`): `30-pdb` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+`70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
+
 | Task | Runs after | Does |
 |---|---|---|
-| `download` | | rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, geofeed rows from R2 |
-| `build-mmdb` | `download` | runs `mmdbbuilder geo` on the layer files → `ip2geo-openipdata-<date>.mmdb` |
+| `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2 |
+| `build-mmdb` | `download` | runs `mmdbbuilder geo` on all the layer files → `ip2geo-openipdata-<date>.mmdb` |
 | `evaluate` | `download`, `build-mmdb` | scores the MMDB against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
 
@@ -275,16 +315,16 @@ a non-retryable error until a run with `{"force_publish": true}`. A retry of `ev
 unpublished `public.geo_eval` row of the same date.
 
 - Layers, in order:
-  1. the five RIRs' delegated stats: the country each block was delegated to (IPv4 and IPv6);
-  2. ipverse/geo-ip-blocks (CC0): the country in registration records (IPv4 only);
-  3. PeeringDB: country and city for every announced prefix of an ASN that has one dominant
+  1. `10-rir`: the five RIRs' delegated stats: the country each block was delegated to (IPv4 and IPv6);
+  2. `20-ipverse`: ipverse/geo-ip-blocks (CC0): the country in registration records (IPv4 only);
+  3. `30-pdb`: PeeringDB: country and city for every announced prefix of an ASN that has one dominant
      city in `public.asn_geo_pdb` and the same country in `public.asn`. An ASN that
      `build-asn-data` has not seen in its source for 7 days (`public.asn.seen_at`) is left out;
      a NULL `seen_at` counts only until the first run has stamped some row. This layer only refines:
      its rows apply where layers 1 and 2 gave the same country or none, so an ASN's city does
      not replace more specific networks registered in another country. Global-scope networks
      are kept: leaving them out (tried on 2026-11-10) halved the holdout city score;
-  4. hosting networks (`hosting.csv`): every announced prefix (same `seen_at` rule as layer 3) of an
+  4. `40-hosting`: hosting networks: every announced prefix (same `seen_at` rule as layer 3) of an
      ASN with PeeringDB type `Content` (PeeringDB's type for hosting, cloud and content networks),
      a scope other than `Global`, and facilities that are all in one city (`public.asn_geo_pdb.fac_city`
      and `fac_country`) gets that facility city and country. It may change the country (it is not a
@@ -297,17 +337,30 @@ unpublished `public.geo_eval` row of the same date.
      qualify, and the dominant-city rule of layer 3 (which also counts exchanges) is not used here.
      While the facility columns do not exist or no network matches (before `sync-peeringdb` has run
      with them), `download` skips this layer like the exchange layer; there is no minimum otherwise;
-  5. PeeringDB internet exchange peering LAN prefixes (`public.geo_ix_pdb`): the exchange's country
+  5. `50-ix`: PeeringDB internet exchange peering LAN prefixes (`public.geo_ix_pdb`): the exchange's country
      and city. A plain layer: it replaces what layers 1 to 4 put under those prefixes. An exchange
      without a city is left out of the layer (a country-only row would erase a city set below it).
      While the table does not exist or has no rows (before `sync-peeringdb` has run once with the
      exchange prefixes), `download` logs a warning and skips this layer;
-  6. the geofeed rows that `sync-geofeeds` left in R2. A row broader than one RIR block (layer 1)
+  6. `60-whois`: whois geoloc rows that `sync-geofeeds` left in R2 at
+     `internal/layers/60-whois.csv.gz`: the most populous place within 25 km of the `geoloc:`
+     point of RIPE, APNIC and AFRINIC inetnums of at most 65,536 addresses. It is downloaded as it is.
+     A plain layer, below the geofeeds, with the same guard (`-within-first`): a row
+     broader than one RIR block is skipped. Like the geofeeds, it may change a network's country
+     (no `-first-country`): the inetnum's own country is usually right (measured: 4% of geoloc /24s
+     lie in another country than the geofeed truth). A missing object skips the layer like the
+     exchange layer; there is no minimum row count. A file without a usable row would fail the build
+     (`mmdbbuilder` rejects an empty layer), but `sync-geofeeds` never uploads one;
+  7. `70-geofeeds`: the geofeed rows that `sync-geofeeds` left in R2 at `internal/layers/70-geofeeds.csv.gz`.
+     A row broader than one RIR block (layer 1)
      is skipped (`-within-first`), so a feed cannot change the country of networks that belong
-     to someone else; a row inside a block, or equal to it, is used.
-- A skipped optional layer (`hosting.csv`, `ix.csv`) has its file removed, is listed in
-  `skipped_layers` in the task output, and is left out of both the real build and the holdout build,
-  because `mmdbbuilder` rejects an empty layer.
+     to someone else; a row inside a block, or equal to it, is used. Required.
+- The optional layers are `40-hosting`, `50-ix` and `60-whois`. One that is not in the build this run (no rows,
+  no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
+  warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
+  list the same directory). The rest of the sources are required and fail the run as before.
+  An R2 layer (`60-whois`, `70-geofeeds`) that is missing or older than 3 days (`stale_layers` in the output)
+  is still used, with a warning, but `publish` then skips the `HC_PING_GEO` ping.
 - The RIR stats' `ZZ`, `EU` and `AP` are not countries: those blocks give no country, but they
   still count as delegated blocks for the `-within-first` rule.
 - Within a layer a more specific prefix wins, and for a repeated prefix the last row wins.
@@ -320,16 +373,16 @@ unpublished `public.geo_eval` row of the same date.
   a server fails, a copy it gave or confirmed in the last 3 days is used; otherwise the task
   fails. A source that is too small (under 1,000 blocks per RIR, 200 countries, 100 PeeringDB
   ASNs, 200 exchange prefixes written to the layer) also fails the task; an exchange table with no
-  rows at all is an exception (skipped, see layers 4 and 5). `build-geo-data` only reads
+  rows at all is an exception (skipped, see layers 4 and 5), and so is a missing whois geoloc object (layer 6). `build-geo-data` only reads
   `public.asn_geo_pdb` and `public.geo_ix_pdb`; it only creates `public.geo_eval` (its own table) and changes no other table.
-- Geofeed rows older than 3 days are still used, with a warning, but `publish` then skips the
-  `HC_PING_GEO` ping, so the health check reports that `sync-geofeeds` has stopped delivering.
+- The health check ping skipped for a missing or old R2 layer (see above) makes the health check report
+  that `sync-geofeeds` has stopped delivering.
 - Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB
   is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2geo-openipdata.mmdb`.
 - Needs `PGSQL` and `R2` always, and `GITHUB_TOKEN` to publish; a missing setting fails
   `download` without retries. `IPINFO_TOKEN` is optional (see below). Manual runs can pass
   `{"skip_publish": true}` (or `run-geo -skip-publish`) to build and evaluate without uploading,
-  and `{"skip_layers": ["hosting.csv"]}` to leave an optional layer (`hosting.csv`, `ix.csv`) out of the build
+  and `{"skip_layers": ["40-hosting.csv.gz"]}` to leave an optional layer (`40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`) out of the build
   and the holdout build; any other name fails `download` without retries.
 - It only reads the ASN tables, so it has its own `geo` concurrency limit.
 
@@ -362,7 +415,7 @@ Metrics (percentages with 2 decimals; address-weighted unless said otherwise):
 
 | Metric | Meaning |
 |---|---|
-| `country_pct`, `city_pct` | share of the IPv4 space in the RIR layer (`rir.csv`) that has a country, a city |
+| `country_pct`, `city_pct` | share of the IPv4 space in the RIR layer (`10-rir.csv.gz`) that has a country, a city |
 | `dbip_country_agree_pct` | our country equals DB-IP's, over addresses both have a country for |
 | `dbip_city_agree_pct` | our city equals DB-IP's (case-insensitive, trimmed), over addresses where both have a city and the same country |
 | `ipinfo_country_agree_pct` | our country equals IPinfo's |
@@ -392,8 +445,8 @@ openipdata-worker run-geo              # run build-geo-data once locally, withou
 openipdata-worker run-geo -skip-publish  # same, without uploading
 openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
-mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv[.gz]>...
-mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <f>] [-ipinfo <f>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
+mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
+mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-ipinfo <f>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs

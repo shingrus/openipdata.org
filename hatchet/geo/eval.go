@@ -83,7 +83,7 @@ func (p *Pipeline) Evaluate(ctx context.Context, src Source, mmdbPath string) (E
 		}
 	}
 
-	holdoutDB, truth, status, err := p.prepareHoldout(ctx, src, dir)
+	holdoutDB, truth, status, err := p.prepareHoldout(ctx, dir)
 	if err != nil {
 		return failed(err)
 	}

@@ -23,13 +23,14 @@ import (
 type Pipeline struct {
 	DataDir  string
 	Progress func(string)
-	R2       string // private bucket for the rows file (see RowsKey)
+	R2       string // private bucket for the rows files (see RowsKey, WhoisRowsKey)
 	PGSQL    string // Postgres DSN: public.geofeed_urls (written here), public.asn_domain and public.asn (read by probe-domains)
 
 	// Overridden in tests.
 	dumps        []dump
 	rdap         []rdapRegistry
 	caidaBase    string
+	geonames     string // URL of cities1000.zip
 	now          func() time.Time
 	allowPrivate bool // let the HTTP clients reach test servers on 127.0.0.1
 	// Replace Postgres and the candidate URLs in tests.
@@ -64,6 +65,7 @@ type SourceStats struct {
 	Status      string `json:"status"`            // downloaded, cached, stale, failed
 	Objects     int    `json:"objects,omitempty"` // RPSL objects read
 	Blocks      int    `json:"blocks,omitempty"`  // prefixes that point to a feed
+	Geoloc      int    `json:"geoloc,omitempty"`  // inetnums with a valid geoloc (see whoisgeo.go)
 	URLs        int    `json:"urls"`              // distinct feed URLs
 	BadPrefixes int    `json:"bad_prefixes,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -74,6 +76,7 @@ type DiscoverOutput struct {
 	Sources         map[string]SourceStats `json:"sources"`
 	URLs            int                    `json:"urls"`
 	Blocks          int                    `json:"blocks"`
+	Whois           WhoisOutput            `json:"whois"` // the whois geoloc layer; a problem there never fails discover
 	DurationSeconds float64                `json:"duration_seconds"`
 }
 
@@ -87,6 +90,7 @@ type collector struct {
 	urls   map[string]*found
 	blocks *csv.Writer
 	nRows  int
+	geoloc []geolocBlock // inetnums with a geoloc, from the whois dumps
 }
 
 func (c *collector) add(source, u string, prefix netip.Prefix) {
@@ -104,7 +108,9 @@ func (c *collector) add(source, u string, prefix netip.Prefix) {
 }
 
 // Discover downloads the dumps and lists, adds the stored RDAP results, and
-// writes BlocksFile and adds the URLs to public.geofeed_urls. A source that fails is skipped (its previous
+// writes BlocksFile and adds the URLs to public.geofeed_urls. It also turns
+// the inetnums with a geoloc that the RIPE, APNIC and AFRINIC dumps hold into
+// WhoisRowsFile (see buildWhois). A source that fails is skipped (its previous
 // download is used if there is one), except a whois dump: without one, its
 // registry's space would look unowned, so the run fails.
 func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
@@ -147,13 +153,19 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 		if stats.Status == statusFailed && d.Source != "irr" {
 			missing = append(missing, d.Name)
 		}
-		p.log("discover: %s: %s, %d objects, %d blocks, %d URLs, %d bad prefixes%s", d.Name, stats.Status,
-			stats.Objects, stats.Blocks, stats.URLs, stats.BadPrefixes, errSuffix(stats.Error))
+		p.log("discover: %s: %s, %d objects, %d blocks, %d URLs, %d bad prefixes, %d with geoloc%s", d.Name, stats.Status,
+			stats.Objects, stats.Blocks, stats.URLs, stats.BadPrefixes, stats.Geoloc, errSuffix(stats.Error))
 		out.Sources[d.Name] = stats
 	}
 	if len(missing) > 0 {
 		// The previous outputs stay: export-rows must not run with a registry's blocks missing.
 		return out, fmt.Errorf("whois dumps could not be read: %s", strings.Join(missing, ", "))
+	}
+
+	// The whois dumps are read: name the cities of the geoloc blocks.
+	out.Whois = p.buildWhois(ctx, c.geoloc)
+	if err := ctx.Err(); err != nil {
+		return out, err
 	}
 
 	// Blocks found over RDAP (rdap-lookups), with the registry as source.
@@ -280,6 +292,8 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 		prefix netip.Prefix
 	}
 	var blocks []block
+	var geoloc []geolocBlock
+	readGeoloc := geolocDumps[d.Name]
 	seen := map[string]bool{}
 	file, err := os.Open(path)
 	if err != nil {
@@ -291,6 +305,11 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 	if err == nil {
 		err = scanObjects(gz, func(obj []attr) {
 			stats.Objects++
+			if readGeoloc {
+				if b, ok := geolocBlockOf(obj, d.Source); ok {
+					geoloc = append(geoloc, b)
+				}
+			}
 			urls := feedURLs(obj)
 			if len(urls) == 0 {
 				return
@@ -319,7 +338,8 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 	for _, b := range blocks {
 		c.add(d.Source, b.url, b.prefix)
 	}
-	stats.Blocks, stats.URLs = len(blocks), len(seen)
+	c.geoloc = append(c.geoloc, geoloc...)
+	stats.Blocks, stats.URLs, stats.Geoloc = len(blocks), len(seen), len(geoloc)
 	return stats
 }
 

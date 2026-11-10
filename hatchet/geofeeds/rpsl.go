@@ -105,11 +105,10 @@ func objectPrefixes(obj []attr) (prefixes []netip.Prefix, ok bool, err error) {
 	class, value := obj[0].key, obj[0].value
 	switch class {
 	case "inetnum":
-		if start, end, isRange := strings.Cut(value, "-"); isRange {
-			from, err1 := netip.ParseAddr(strings.TrimSpace(start))
-			to, err2 := netip.ParseAddr(strings.TrimSpace(end))
-			if err1 != nil || err2 != nil || !from.Is4() || !to.Is4() || to.Less(from) {
-				return nil, true, fmt.Errorf("bad inetnum %q", value)
+		if strings.Contains(value, "-") {
+			from, to, err := parseRange(value)
+			if err != nil {
+				return nil, true, err
 			}
 			return rirstats.RangeToPrefixes(from, to), true, nil
 		}
@@ -126,6 +125,17 @@ func objectPrefixes(obj []attr) (prefixes []netip.Prefix, ok bool, err error) {
 		return []netip.Prefix{p}, true, nil
 	}
 	return nil, false, nil
+}
+
+// parseRange reads the IPv4 range of an inetnum written as "first - last".
+func parseRange(value string) (from, to netip.Addr, err error) {
+	start, end, _ := strings.Cut(value, "-")
+	from, err1 := netip.ParseAddr(strings.TrimSpace(start))
+	to, err2 := netip.ParseAddr(strings.TrimSpace(end))
+	if err1 != nil || err2 != nil || !from.Is4() || !to.Is4() || to.Less(from) {
+		return netip.Addr{}, netip.Addr{}, fmt.Errorf("bad inetnum %q", value)
+	}
+	return from, to, nil
 }
 
 // parsePrefix accepts abbreviated IPv4 prefixes such as 200.3.12/22.

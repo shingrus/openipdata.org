@@ -89,6 +89,12 @@ func fetch(ctx context.Context, client *http.Client, rawURL, path string, now ti
 	return "", err
 }
 
+// layerRow writes one row of a layer file (prefix,country,region,city,source):
+// region and source are left empty.
+func layerRow(w *csv.Writer, prefix, country, city string) {
+	w.Write([]string{prefix, country, "", city, ""})
+}
+
 // writeStatsRows writes one layer row per allocated or assigned block of a
 // delegated-extended file and returns the number of blocks. A block without a
 // real country is written with an empty one: it gives no country, but it
@@ -108,7 +114,7 @@ func writeStatsRows(path string, w *csv.Writer) (int, error) {
 			code = ""
 		}
 		for _, p := range prefixes {
-			w.Write([]string{p.String(), code, ""})
+			layerRow(w, p.String(), code, "")
 		}
 		blocks++
 	})
@@ -173,7 +179,7 @@ func writeGeoIPBlocksRows(tarball string, w *csv.Writer) (names map[string]strin
 			if err != nil || !p.Addr().Is4() {
 				continue
 			}
-			w.Write([]string{p.Masked().String(), code, ""})
+			layerRow(w, p.Masked().String(), code, "")
 			prefixes++
 		}
 	}

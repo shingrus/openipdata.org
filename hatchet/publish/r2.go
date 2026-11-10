@@ -22,6 +22,9 @@ import (
 // secret key, so errors never repeat it (Hatchet stores returned errors).
 var ErrInvalidR2 = errors.New("invalid R2 configuration (want https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>)")
 
+// ErrNotFound means Download found no object at the key.
+var ErrNotFound = errors.New("object not found")
+
 // R2 uploads to and downloads from one Cloudflare R2 bucket through its S3-compatible API.
 type R2 struct {
 	client *minio.Client
@@ -90,6 +93,9 @@ func (r *R2) Upload(ctx context.Context, key, path string) (string, error) {
 func (r *R2) Download(ctx context.Context, key, path string) (time.Time, error) {
 	location := fmt.Sprintf("r2://%s/%s", r.bucket, key)
 	info, err := r.client.StatObject(ctx, r.bucket, key, minio.StatObjectOptions{})
+	if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+		return time.Time{}, fmt.Errorf("download %s: %w", location, ErrNotFound)
+	}
 	if err != nil {
 		return time.Time{}, fmt.Errorf("download %s: %w", location, err)
 	}

@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -22,12 +24,11 @@ import (
 
 func layerRows(t *testing.T, fill func(w *csv.Writer) error) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "layer.csv")
+	path := filepath.Join(t.TempDir(), "layer.csv.gz")
 	if _, err := writeLayer(path, fill); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(path)
-	return string(data)
+	return readGzip(t, path)
 }
 
 func TestWriteStatsRows(t *testing.T) {
@@ -49,8 +50,8 @@ func TestWriteStatsRows(t *testing.T) {
 		return err
 	})
 	// Blocks without a real country keep their row, with no country.
-	want := "prefix,country,city\n45.10.0.0/22,US,\n45.20.0.0/23,CA,\n45.20.2.0/24,CA,\n2600:1000::/28,US,\n" +
-		"45.40.0.0/24,,\n45.50.0.0/24,,\n45.60.0.0/24,,\n45.70.0.0/24,,\n"
+	want := "prefix,country,region,city,source\n45.10.0.0/22,US,,,\n45.20.0.0/23,CA,,,\n45.20.2.0/24,CA,,,\n2600:1000::/28,US,,,\n" +
+		"45.40.0.0/24,,,,\n45.50.0.0/24,,,,\n45.60.0.0/24,,,,\n45.70.0.0/24,,,,\n"
 	if got != want || blocks != 7 {
 		t.Errorf("%d blocks, layer:\n%s", blocks, got)
 	}
@@ -84,7 +85,7 @@ func TestWriteGeoIPBlocksRows(t *testing.T) {
 		names, _, err = writeGeoIPBlocksRows(path, w)
 		return err
 	})
-	if got != "prefix,country,city\n63.176.0.0/13,DE,\n45.10.0.0/24,DE,\n" || !reflect.DeepEqual(names, map[string]string{"DE": "Germany"}) {
+	if got != "prefix,country,region,city,source\n63.176.0.0/13,DE,,,\n45.10.0.0/24,DE,,,\n" || !reflect.DeepEqual(names, map[string]string{"DE": "Germany"}) {
 		t.Errorf("names %v, layer:\n%s", names, got)
 	}
 }
@@ -144,31 +145,47 @@ func TestFetch(t *testing.T) {
 	}
 }
 
+// touchLayers writes empty layer files into the layers directory of p.
+func touchLayers(t *testing.T, p *Pipeline, names ...string) {
+	t.Helper()
+	os.MkdirAll(p.layersDir(), 0o750)
+	for _, name := range names {
+		writeGzip(t, filepath.Join(p.layersDir(), name), "prefix,country,region,city,source\n")
+	}
+}
+
 func TestBuildMMDBArgs(t *testing.T) {
 	// A stand-in mmdbbuilder that records its arguments and prints a summary.
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "args")
 	script := filepath.Join(dir, "mmdbbuilder")
 	os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" > "+argsFile+"\n"+
-		"echo 'layer rir.csv: 10 rows, 9 prefixes, 1 skipped'\n"+
-		"echo 'layer geofeed-rows.csv.gz: 5 rows, 5 prefixes, 0 skipped'\n"+
+		"echo 'layer 10-rir.csv.gz: 10 rows, 9 prefixes, 1 skipped'\n"+
+		"echo 'layer 70-geofeeds.csv.gz: 5 rows, 5 prefixes, 0 skipped'\n"+
 		"echo 'wrote x (2 layers, 14 prefixes)'\n"), 0o755)
 	p := &Pipeline{DataDir: dir, MMDBBuilder: script}
+	touchLayers(t, p, FeedsLayer, RIRLayer, PDBLayer, IXLayer, NamesFile)
 	out, err := p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	args, _ := os.ReadFile(argsFile)
 	layers := filepath.Join(dir, "geo", "layers")
+	// Every layer file, by name, and no more; names.tsv is not a layer.
 	want := strings.Join([]string{"geo", "-out", filepath.Join(dir, "out", "geo", "20261109", "ip2geo-openipdata-20261109.mmdb"),
-		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer, "-first-country", HostingLayer, filepath.Join(layers, RIRLayer), filepath.Join(layers, BlocksLayer),
-		filepath.Join(layers, PDBLayer), filepath.Join(layers, HostingLayer), filepath.Join(layers, IXLayer), filepath.Join(layers, FeedsLayer)}, " ")
+		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer,
+		filepath.Join(layers, RIRLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, IXLayer), filepath.Join(layers, FeedsLayer)}, " ")
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
 	}
-	if !reflect.DeepEqual(out.Prefixes, map[string]int{"rir.csv": 9, "geofeed-rows.csv.gz": 5}) ||
-		!reflect.DeepEqual(out.Skipped, map[string]int{"rir.csv": 1}) {
+	if !reflect.DeepEqual(out.Prefixes, map[string]int{RIRLayer: 9, FeedsLayer: 5}) ||
+		!reflect.DeepEqual(out.Skipped, map[string]int{RIRLayer: 1}) {
 		t.Errorf("out = %+v", out)
+	}
+	// No layers directory: an error, no build.
+	os.RemoveAll(layers)
+	if _, err := p.BuildMMDB(context.Background(), Source{DateTag: "20261109"}); err == nil {
+		t.Error("no error without a layers directory")
 	}
 }
 
@@ -225,42 +242,100 @@ func TestHostingQuery(t *testing.T) {
 	}
 }
 
-// The hosting and exchange layers sit after the PeeringDB layer and before the geofeeds,
-// and are no -same-country layers. The hosting layer is a -first-country layer.
-func TestLayerOrder(t *testing.T) {
-	want := []string{RIRLayer, BlocksLayer, PDBLayer, HostingLayer, IXLayer, FeedsLayer}
-	if !reflect.DeepEqual(layerOrder, want) {
-		t.Errorf("layerOrder = %v, want %v", layerOrder, want)
+// The layer names carry the order, in steps of 10, and the R2 layers are named as
+// sync-geofeeds uploads them.
+func TestLayerNames(t *testing.T) {
+	names := []string{RIRLayer, IPverseLayer, PDBLayer, HostingLayer, IXLayer, WhoisLayer, FeedsLayer}
+	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "30-pdb.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "70-geofeeds.csv.gz"}
+	if !reflect.DeepEqual(names, want) || !sort.StringsAreSorted(names) {
+		t.Errorf("layer names = %v", names)
 	}
-	p := &Pipeline{DataDir: "/data"}
-	args := strings.Join(p.geoArgs("out.mmdb", "/kept/feeds", Source{}), " ")
-	layers := "/data/geo/layers/"
-	if !strings.Contains(args, "-same-country "+PDBLayer+" ") || !strings.Contains(args, "-within-first "+FeedsLayer+" ") ||
-		!strings.Contains(args, "-first-country "+HostingLayer+" ") ||
-		!strings.HasSuffix(args, layers+PDBLayer+" "+layers+HostingLayer+" "+layers+IXLayer+" /kept/feeds") {
-		t.Errorf("args = %s", args)
-	}
-	// Skipped optional layers are left out; the others keep their order.
-	for _, c := range []struct {
-		skipped []string
-		suffix  string
-	}{
-		{[]string{IXLayer}, layers + PDBLayer + " " + layers + HostingLayer + " /kept/feeds"},
-		{[]string{HostingLayer}, layers + PDBLayer + " " + layers + IXLayer + " /kept/feeds"},
-		{[]string{HostingLayer, IXLayer}, layers + PDBLayer + " /kept/feeds"},
-	} {
-		args = strings.Join(p.geoArgs("out.mmdb", "/kept/feeds", Source{SkippedLayers: c.skipped}), " ")
-		if !strings.HasSuffix(args, c.suffix) || strings.Contains(args, layers+c.skipped[0]) {
-			t.Errorf("skipped %v: args = %s", c.skipped, args)
+	for _, l := range r2Layers {
+		if path.Base(l.Key) != l.Name || !strings.HasPrefix(l.Key, "internal/layers/") {
+			t.Errorf("R2 layer %s has key %s", l.Name, l.Key)
 		}
-		// Without the hosting layer there is no flag for it.
-		if hostingSkipped := slices.Contains(c.skipped, HostingLayer); hostingSkipped == strings.Contains(args, "-first-country") {
-			t.Errorf("skipped %v: -first-country in args = %s", c.skipped, args)
+	}
+	for name := range layerRules {
+		if !slices.Contains(names, name) {
+			t.Errorf("rule for %q, which is no layer", name)
 		}
 	}
 }
 
-// While public.geo_ix_pdb has no rows the layer is skipped, a stale file is removed, and a partial
+// The build passes every layer file, sorted by name, whatever order the directory lists
+// them in; each rule names the layers of its flag that are there, and a rule for an
+// absent file is not passed; the flags come sorted. Files that are not layers are left out.
+func TestGeoArgs(t *testing.T) {
+	p := &Pipeline{DataDir: t.TempDir()}
+	layers := p.layersDir() + "/"
+	args := func(feeds string) string {
+		got, err := p.geoArgs("out.mmdb", feeds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(got, " ")
+	}
+	touchLayers(t, p, FeedsLayer, WhoisLayer, IXLayer, HostingLayer, PDBLayer, IPverseLayer, RIRLayer, NamesFile, "notes.txt", "55-extra.csv.gz")
+	os.WriteFile(filepath.Join(p.layersDir(), "60-whois.csv.gz.tmp"), nil, 0o640)
+	prefix := "geo -out out.mmdb -names " + layers + NamesFile
+	want := prefix + " -first-country " + HostingLayer + " -same-country " + PDBLayer + " -within-first " + WhoisLayer + "," + FeedsLayer + " " +
+		strings.Join([]string{layers + RIRLayer, layers + IPverseLayer, layers + PDBLayer, layers + HostingLayer, layers + IXLayer,
+			layers + "55-extra.csv.gz", layers + WhoisLayer, layers + FeedsLayer}, " ")
+	if got := args(""); got != want {
+		t.Errorf("all layers:\n%s\nwant:\n%s", got, want)
+	}
+	// The holdout build puts its own file in place of the geofeeds one.
+	if got := args("/kept/" + FeedsLayer); !strings.HasSuffix(got, layers+WhoisLayer+" /kept/"+FeedsLayer) || strings.Contains(got, layers+FeedsLayer) {
+		t.Errorf("with a kept feeds file: %s", got)
+	}
+
+	// Absent files: no flag for them, the others keep their order.
+	for _, c := range []struct {
+		absent []string
+		flags  string
+	}{
+		{[]string{IXLayer, "55-extra.csv.gz"}, "-first-country " + HostingLayer + " -same-country " + PDBLayer + " -within-first " + WhoisLayer + "," + FeedsLayer},
+		{[]string{HostingLayer}, "-same-country " + PDBLayer + " -within-first " + WhoisLayer + "," + FeedsLayer},
+		{[]string{WhoisLayer}, "-first-country " + HostingLayer + " -same-country " + PDBLayer + " -within-first " + FeedsLayer},
+		{[]string{PDBLayer, HostingLayer, WhoisLayer}, "-within-first " + FeedsLayer},
+		{[]string{PDBLayer, HostingLayer, WhoisLayer, FeedsLayer}, ""},
+	} {
+		touchLayers(t, p, FeedsLayer, WhoisLayer, IXLayer, HostingLayer, PDBLayer, IPverseLayer, RIRLayer, "55-extra.csv.gz")
+		for _, name := range c.absent {
+			os.Remove(filepath.Join(p.layersDir(), name))
+		}
+		got := args("")
+		var files []string
+		for _, name := range []string{RIRLayer, IPverseLayer, PDBLayer, HostingLayer, IXLayer, "55-extra.csv.gz", WhoisLayer, FeedsLayer} {
+			if _, err := os.Stat(filepath.Join(p.layersDir(), name)); err == nil {
+				files = append(files, layers+name)
+			}
+		}
+		wantArgs := prefix + " " + strings.TrimSpace(c.flags+" "+strings.Join(files, " "))
+		if got != wantArgs {
+			t.Errorf("without %v:\n%s\nwant:\n%s", c.absent, got, wantArgs)
+		}
+	}
+
+	// -within-first and -first-country judge rows against the first layer passed:
+	// a file that sorts before 10-rir would take its place, so it is an error.
+	touchLayers(t, p, FeedsLayer, RIRLayer, "05-first.csv.gz")
+	if _, err := p.geoArgs("out.mmdb", ""); err == nil || !strings.Contains(err.Error(), RIRLayer) {
+		t.Errorf("a layer before %s: %v", RIRLayer, err)
+	}
+	os.Remove(filepath.Join(p.layersDir(), RIRLayer))
+	os.Remove(filepath.Join(p.layersDir(), "05-first.csv.gz"))
+	if _, err := p.geoArgs("out.mmdb", ""); err == nil {
+		t.Error("no error without the RIR layer")
+	}
+
+	// No layers directory: an error.
+	if _, err := (&Pipeline{DataDir: t.TempDir()}).geoArgs("out.mmdb", ""); err == nil {
+		t.Error("no error without a layers directory")
+	}
+}
+
+// While public.geo_ix_pdb has no rows the layer is skipped (no file), and a partial
 // table still fails.
 func TestDownloadIX(t *testing.T) {
 	layers := t.TempDir()
@@ -268,7 +343,7 @@ func TestDownloadIX(t *testing.T) {
 	rowsOf := func(n int, err error) func(context.Context, *csv.Writer) (int, error) {
 		return func(_ context.Context, w *csv.Writer) (int, error) {
 			for i := 0; i < n; i++ {
-				w.Write([]string{fmt.Sprintf("10.%d.0.0/24", i), "DE", "Berlin"})
+				layerRow(w, fmt.Sprintf("10.%d.0.0/24", i), "DE", "Berlin")
 			}
 			return n, err
 		}
@@ -289,13 +364,14 @@ func TestDownloadIX(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No rows: skipped with a warning, and the file from the run above is gone.
+	// No rows: skipped with a warning (Download starts from an empty directory, so no file is left).
+	os.Remove(path)
 	src, logs, err := run(rowsOf(0, ErrNoRows))
 	if err != nil || !src.skipped(IXLayer) || len(src.Rows) != 0 {
 		t.Fatalf("empty table: %+v %v", src, err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("stale ix.csv kept: %v", err)
+		t.Errorf("a file for a skipped layer: %v", err)
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], "WARNING") {
 		t.Errorf("logs = %v", logs)
@@ -318,7 +394,7 @@ func TestDownloadIX(t *testing.T) {
 }
 
 // The hosting layer has no minimum: any number of rows is used, and none at all
-// (or a source that does not exist yet) skips it with a warning and removes a stale file.
+// (or a source that does not exist yet) skips it with a warning and writes no file.
 func TestDownloadHosting(t *testing.T) {
 	layers := t.TempDir()
 	path := filepath.Join(layers, HostingLayer)
@@ -329,7 +405,7 @@ func TestDownloadHosting(t *testing.T) {
 		err := p.downloadOptional(context.Background(), layers, &src, HostingLayer, 0, "PeeringDB hosting networks", "hint",
 			func(_ context.Context, w *csv.Writer) (int, error) {
 				for i := 0; i < n; i++ {
-					w.Write([]string{fmt.Sprintf("10.%d.0.0/24", i), "FR", "Roubaix"})
+					layerRow(w, fmt.Sprintf("10.%d.0.0/24", i), "FR", "Roubaix")
 				}
 				return n, werr
 			})
@@ -343,12 +419,13 @@ func TestDownloadHosting(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
 	}
+	os.Remove(path)
 	src, logs, err := run(0, ErrNoRows)
 	if err != nil || !reflect.DeepEqual(src.SkippedLayers, []string{HostingLayer}) || len(src.Rows) != 0 {
 		t.Fatalf("no rows: %+v %v", src, err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("stale hosting.csv kept: %v", err)
+		t.Errorf("a file for a skipped layer: %v", err)
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], "WARNING") || !strings.Contains(logs[0], HostingLayer) {
 		t.Errorf("logs = %v", logs)
@@ -358,36 +435,43 @@ func TestDownloadHosting(t *testing.T) {
 	}
 }
 
-// Skipped layers appear in the task output as a readable list of file names.
+// skip_layers names optional layers; they are removed from the layers directory
+// and listed in the task output.
 func TestSkipLayers(t *testing.T) {
-	for _, bad := range [][]string{{"names.csv"}, {HostingLayer, "rir.csv"}, {""}} {
+	for _, bad := range [][]string{{"names.csv"}, {HostingLayer, RIRLayer}, {""}, {FeedsLayer}} {
 		if err := ValidateSkipLayers(bad); err == nil || !strings.Contains(err.Error(), bad[len(bad)-1]) ||
-			!strings.Contains(err.Error(), HostingLayer) || !strings.Contains(err.Error(), IXLayer) {
+			!strings.Contains(err.Error(), HostingLayer) || !strings.Contains(err.Error(), IXLayer) || !strings.Contains(err.Error(), WhoisLayer) {
 			t.Errorf("ValidateSkipLayers(%v) = %v", bad, err)
 		}
 	}
-	if err := ValidateSkipLayers([]string{HostingLayer, IXLayer}); err != nil {
+	if err := ValidateSkipLayers([]string{HostingLayer, IXLayer, WhoisLayer}); err != nil {
 		t.Errorf("ValidateSkipLayers(optional layers) = %v", err)
 	}
 
 	var logs []string
-	p := &Pipeline{DataDir: "/data", Progress: func(s string) { logs = append(logs, s) }}
+	p := &Pipeline{DataDir: t.TempDir(), Progress: func(s string) { logs = append(logs, s) }}
+	touchLayers(t, p, RIRLayer, HostingLayer, IXLayer)
 	src := Source{Rows: map[string]int{HostingLayer: 5}}
-	p.SkipLayers(&src, []string{HostingLayer})
+	if err := p.SkipLayers(&src, []string{HostingLayer}); err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(src.SkippedLayers, []string{HostingLayer}) {
 		t.Fatalf("SkippedLayers = %v", src.SkippedLayers)
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], HostingLayer) || !strings.Contains(logs[0], "skip_layers") {
 		t.Errorf("logs = %v", logs)
 	}
-	args := strings.Join(p.geoArgs("out.mmdb", "/kept/feeds", src), " ")
-	if strings.Contains(args, HostingLayer) || strings.Contains(args, "-first-country") || !strings.Contains(args, IXLayer) {
-		t.Errorf("args = %s", args)
+	got, err := p.geoArgs("out.mmdb", "")
+	args := strings.Join(got, " ")
+	if err != nil || strings.Contains(args, HostingLayer) || strings.Contains(args, "-first-country") || !strings.Contains(args, IXLayer) {
+		t.Errorf("args = %s, %v", args, err)
 	}
 
-	// A layer that is already skipped (no rows) is not added twice.
+	// A layer that is already skipped (no rows, no file) is not added twice.
 	src = Source{SkippedLayers: []string{IXLayer}}
-	p.SkipLayers(&src, []string{IXLayer, HostingLayer, HostingLayer})
+	if err := p.SkipLayers(&src, []string{IXLayer, HostingLayer, HostingLayer}); err != nil {
+		t.Fatal(err)
+	}
 	if !reflect.DeepEqual(src.SkippedLayers, []string{IXLayer, HostingLayer}) {
 		t.Errorf("SkippedLayers = %v", src.SkippedLayers)
 	}
@@ -395,7 +479,7 @@ func TestSkipLayers(t *testing.T) {
 
 func TestSourceSkippedLayersJSON(t *testing.T) {
 	data, _ := json.Marshal(Source{SkippedLayers: []string{HostingLayer, IXLayer}})
-	if !strings.Contains(string(data), `"skipped_layers":["hosting.csv","ix.csv"]`) {
+	if !strings.Contains(string(data), `"skipped_layers":["40-hosting.csv.gz","50-ix.csv.gz"]`) {
 		t.Errorf("json = %s", data)
 	}
 	data, _ = json.Marshal(Source{})

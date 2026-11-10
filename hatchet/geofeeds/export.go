@@ -26,17 +26,22 @@ import (
 
 const (
 	// RowsFile, in OutDir, holds every row of every working feed that passes
-	// the ownership check: prefix,country,region,city,feed_url.
-	RowsFile = "geofeed-rows.csv.gz"
+	// the ownership check, as a layer file of build-geo-data (see layerHeader).
+	RowsFile = "70-geofeeds.csv.gz"
 	// RowsKey is where build-geo-data finds RowsFile: one fixed key in the
 	// private R2 bucket, replaced by each upload.
-	RowsKey = "internal/geofeeds/" + RowsFile
+	RowsKey = "internal/layers/" + RowsFile
 
 	uploadFile     = "upload.json" // what the last upload sent
 	maxRowsDrop    = 0.10          // refuse an upload with this much fewer rows than the last one
 	minFirstUpload = 1_000_000     // with no previous upload, refuse fewer rows than this
 	minFeeds       = 5000          // refuse an upload from fewer working feeds than this
 )
+
+// layerHeader is the header of the layer files, in the geofeed (RFC 8805)
+// layout: source is the feed URL for geofeed rows and whois:<registry> for
+// whois rows. build-geo-data reads every layer in this format.
+var layerHeader = []string{"prefix", "country", "region", "city", "source"}
 
 // dropOtherOwner counts rows dropped because the most specific whois block
 // covering them links a feed on another site.
@@ -51,16 +56,17 @@ var ErrGate = errors.New("upload gate")
 
 // ExportOutput is the export-rows task's result.
 type ExportOutput struct {
-	Feeds           int            `json:"feeds"` // working feeds read
-	Rows            int            `json:"rows"`  // rows written
-	Dropped         map[string]int `json:"dropped,omitempty"`
-	MissingFeeds    int            `json:"missing_feeds,omitempty"`    // working feeds with no stored copy
-	UnreadableFeeds int            `json:"unreadable_feeds,omitempty"` // stored copies that could not be read; skipped
-	BroadRows       int            `json:"broad_rows,omitempty"`       // rows kept although they span a block of another owner
-	Bytes           int64          `json:"bytes"`
-	Uploaded        bool           `json:"uploaded"`
-	PreviousRows    int            `json:"previous_rows,omitempty"`
-	DurationSeconds float64        `json:"duration_seconds"`
+	Feeds           int               `json:"feeds"` // working feeds read
+	Rows            int               `json:"rows"`  // rows written
+	Dropped         map[string]int    `json:"dropped,omitempty"`
+	MissingFeeds    int               `json:"missing_feeds,omitempty"`    // working feeds with no stored copy
+	UnreadableFeeds int               `json:"unreadable_feeds,omitempty"` // stored copies that could not be read; skipped
+	BroadRows       int               `json:"broad_rows,omitempty"`       // rows kept although they span a block of another owner
+	Bytes           int64             `json:"bytes"`
+	Uploaded        bool              `json:"uploaded"`
+	PreviousRows    int               `json:"previous_rows,omitempty"`
+	Whois           WhoisUploadOutput `json:"whois"` // never fails the task: see WhoisUploadOutput.Skipped
+	DurationSeconds float64           `json:"duration_seconds"`
 }
 
 // owners indexes the whois blocks that point to feeds, by the feed's site:
@@ -244,7 +250,8 @@ func (p *Pipeline) CheckUpload() error {
 
 // ExportRows writes RowsFile from the stored copies of the working feeds (the
 // feeds that public.geofeed_urls says worked in the last 30 days) and, if upload is
-// set, puts it at RowsKey in R2. An upload with more than 10% fewer rows than
+// set, puts it at RowsKey in R2. It also uploads the whois geoloc rows that
+// discover wrote (WhoisRowsFile) to WhoisRowsKey. An upload with more than 10% fewer rows than
 // the last one is refused with ErrGate, unless force is set (for a manual run
 // that accepts a real drop).
 func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOutput, error) {
@@ -301,7 +308,7 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 	defer file.Close()
 	gz := gzip.NewWriter(file)
 	w := csv.NewWriter(gz)
-	w.Write([]string{"prefix", "country", "region", "city", "feed_url"})
+	w.Write(layerHeader)
 	// The rows a whois block backs go last, because for a prefix that several
 	// feeds list, the build keeps the last row. They wait in a second file
 	// and are copied after the others.
@@ -382,6 +389,16 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 	}
 	p.log("export: %d rows from %d feeds, dropped %v, %d broad rows kept, %d feeds missing, %d unreadable, %d bytes",
 		out.Rows, out.Feeds, out.Dropped, out.BroadRows, out.MissingFeeds, out.UnreadableFeeds, out.Bytes)
+
+	// The whois geoloc rows are separate: whatever goes wrong with them leaves the geofeed rows alone.
+	var whoisUpload uploadFunc
+	if upload {
+		whoisUpload = r2.Upload
+	}
+	out.Whois = p.uploadWhois(ctx, whoisUpload, force)
+	if err := ctx.Err(); err != nil {
+		return out, err
+	}
 
 	if upload {
 		if err := p.uploadRows(ctx, r2, path, force, &out); err != nil {

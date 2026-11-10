@@ -112,5 +112,6 @@ const (
 	statusDownloaded = download.Downloaded
 	statusCached     = download.Cached // 304: the local copy is current
 	statusStale      = "stale"         // download failed; using the previous copy
+	statusFresh      = "fresh"         // young enough to use without asking the server
 	statusFailed     = "failed"
 )

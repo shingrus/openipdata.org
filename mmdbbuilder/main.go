@@ -1,9 +1,9 @@
 // Command mmdbbuilder builds and checks openipdata MMDB files.
 //
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
-//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv[.gz]>...
+//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
-//	mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
+//	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, a layer named in -same-country applies only where the country so
 // far is the same or unknown. A layer named in -within-first is used only for
@@ -43,9 +43,9 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv[.gz]>...")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
 }
 

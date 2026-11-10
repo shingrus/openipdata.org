@@ -33,16 +33,16 @@ func writeFile(t *testing.T, path, body string) string {
 
 func TestBuildGeo(t *testing.T) {
 	dir := t.TempDir()
-	base := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n"+
+	base := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/8,US,\n"+
 		"45.10.0.0/16,CA,\n"+
 		"2a00::/12,DE,\n"+
 		"45.20.0.0/16,usa,\n"+ // bad code
 		"not-a-prefix,US,\n")
 	// A later layer replaces everything under its prefixes, even more specific ones.
-	pdb := writeFile(t, filepath.Join(dir, "pdb.csv"), "prefix,country,city\n45.10.0.0/15,FR,Paris\n")
+	pdb := writeFile(t, filepath.Join(dir, "pdb.csv.gz"), "prefix,country,city\n45.10.0.0/15,FR,Paris\n")
 	// Geofeed rows: extra columns, a bare address, host bits, a repeated prefix.
-	feeds := writeFile(t, filepath.Join(dir, "geofeeds.csv.gz"), "prefix,country,region,city,feed_url\n"+
+	feeds := writeFile(t, filepath.Join(dir, "geofeeds.csv.gz"), "prefix,country,region,city,source\n"+
 		"45.10.1.0/24,GB,GB-ENG,London,https://a.example/f.csv\n"+
 		"45.10.2.7/24,NL,,Amsterdam,https://a.example/f.csv\n"+
 		"45.10.3.4,BE,,,https://b.example/f.csv\n"+
@@ -55,8 +55,8 @@ func TestBuildGeo(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []geoLayerStats{
-		{name: "rir.csv", rows: 3, prefixes: 3, skipped: 2},
-		{name: "pdb.csv", rows: 1, prefixes: 1},
+		{name: "rir.csv.gz", rows: 3, prefixes: 3, skipped: 2},
+		{name: "pdb.csv.gz", rows: 1, prefixes: 1},
 		{name: "geofeeds.csv.gz", rows: 4, prefixes: 3},
 	}
 	if !reflect.DeepEqual(stats, want) {
@@ -99,9 +99,11 @@ func TestBuildGeoFailures(t *testing.T) {
 	out := filepath.Join(dir, "ip2geo.mmdb")
 	writeFile(t, out, "previous database")
 	for name, body := range map[string]string{
-		"empty.csv":     "prefix,country,city\n",
-		"bad-rows.csv":  "prefix,country,city\nnope,US,\n",
-		"no-header.csv": "45.0.0.0/8,US,\n",
+		"empty.csv.gz":     "prefix,country,city\n",
+		"bad-rows.csv.gz":  "prefix,country,city\nnope,US,\n",
+		"no-header.csv.gz": "45.0.0.0/8,US,\n",
+		"no-city.csv.gz":   "prefix,country\n45.0.0.0/8,US\n",                       // the layout has a city column
+		"plain.csv":        "prefix,country,region,city,source\n45.0.0.0/8,US,,,\n", // layers are gzipped
 	} {
 		if _, err := buildGeo([]string{writeFile(t, filepath.Join(dir, name), body)}, "", out, false, nil, nil, nil); err == nil {
 			t.Errorf("%s: no error", name)
@@ -131,10 +133,10 @@ func lookupGeo(t *testing.T, path, ip string) map[string]any {
 // A same-country layer refines: it leaves networks of another country alone.
 func TestBuildGeoSameCountry(t *testing.T) {
 	dir := t.TempDir()
-	base := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n45.0.0.0/8,US,\n45.10.0.0/16,CA,\n")
-	pdb := writeFile(t, filepath.Join(dir, "pdb.csv"), "prefix,country,city\n45.0.0.0/8,US,Dallas\n46.0.0.0/8,FR,Paris\n")
+	base := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n45.0.0.0/8,US,\n45.10.0.0/16,CA,\n")
+	pdb := writeFile(t, filepath.Join(dir, "pdb.csv.gz"), "prefix,country,city\n45.0.0.0/8,US,Dallas\n46.0.0.0/8,FR,Paris\n")
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv": true}, nil, nil); err != nil {
+	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv.gz": true}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for ip, want := range map[string]map[string]any{
@@ -153,7 +155,7 @@ func TestBuildGeoSameCountry(t *testing.T) {
 // space, a line that does not parse, and a city that is not plain text.
 func TestBuildGeoHostileRows(t *testing.T) {
 	dir := t.TempDir()
-	layer := writeFile(t, filepath.Join(dir, "feeds.csv"), "prefix,country,city\n"+
+	layer := writeFile(t, filepath.Join(dir, "feeds.csv.gz"), "prefix,country,city\n"+
 		"45.10.0.0/16,US,Dallas\n"+
 		"::800:0/104,RU,Moscow\n"+ // 8.0.0.0/8 in an IPv6 tree
 		"::/0,RU,Moscow\n"+
@@ -184,9 +186,9 @@ func TestBuildGeoHostileRows(t *testing.T) {
 // A within-first layer skips rows broader than every block of the first layer.
 func TestBuildGeoWithinFirst(t *testing.T) {
 	dir := t.TempDir()
-	base := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n45.10.0.0/16,US,\n2a00::/32,DE,\n"+
+	base := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n45.10.0.0/16,US,\n2a00::/32,DE,\n"+
 		"47.0.0.0/8,,\n") // delegated, no country: only marks a block
-	feeds := writeFile(t, filepath.Join(dir, "feeds.csv"), "prefix,country,city\n"+
+	feeds := writeFile(t, filepath.Join(dir, "feeds.csv.gz"), "prefix,country,city\n"+
 		"47.1.0.0/16,SE,Stockholm\n"+ // inside the block without a country
 		"45.0.0.0/8,RU,Moscow\n"+ // broader than the block
 		"45.10.0.0/16,GB,London\n"+ // the block itself
@@ -195,11 +197,11 @@ func TestBuildGeoWithinFirst(t *testing.T) {
 		"2a00:0:1::/48,FR,Paris\n"+ // inside the block
 		"46.0.0.0/24,BE,\n") // outside every block: skipped too
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv": true, "rir.csv": true}, nil)
+	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv.gz": true, "rir.csv.gz": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (geoLayerStats{name: "feeds.csv", rows: 4, prefixes: 4, skipped: 3}); stats[1] != want {
+	if want := (geoLayerStats{name: "feeds.csv.gz", rows: 4, prefixes: 4, skipped: 3}); stats[1] != want {
 		t.Errorf("stats = %+v, want %+v", stats[1], want)
 	}
 	for ip, want := range map[string]string{
@@ -222,15 +224,15 @@ func TestBuildGeoWithinFirst(t *testing.T) {
 // row's country; a row that spans first-layer ranges is split.
 func TestBuildGeoFirstCountry(t *testing.T) {
 	dir := t.TempDir()
-	rir := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n"+
+	rir := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/16,FR,\n45.1.0.0/16,DE,\n45.2.0.0/16,US,\n"+
 		"45.4.0.0/16,FR,\n45.4.8.0/24,DE,\n"+ // a more specific block of another country
 		"47.0.0.0/8,,\n"+ // delegated, no country
 		"2a00::/32,FR,\n2a01::/32,DE,\n")
 	// Registration data: all of it says Italy (or the US), which the hosting layer may undo.
-	blocks := writeFile(t, filepath.Join(dir, "geo-ip-blocks.csv"), "prefix,country,city\n"+
+	blocks := writeFile(t, filepath.Join(dir, "geo-ip-blocks.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/13,IT,\n47.0.0.0/8,IT,\n48.0.0.0/8,IT,\n2a00::/31,IT,\n")
-	hosting := writeFile(t, filepath.Join(dir, "hosting.csv"), "prefix,country,city\n"+
+	hosting := writeFile(t, filepath.Join(dir, "hosting.csv.gz"), "prefix,country,city\n"+
 		"45.0.5.0/24,FR,Paris\n"+ // first layer FR: applies
 		"45.2.5.0/24,DE,Berlin\n"+ // first layer US: skipped
 		"45.0.0.0/15,FR,Lyon\n"+ // spans FR and DE: only the FR half
@@ -240,12 +242,12 @@ func TestBuildGeoFirstCountry(t *testing.T) {
 		"2a00:0:1::/48,FR,Paris\n"+
 		"2a01::/48,FR,Paris\n") // first layer DE: skipped
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{rir, blocks, hosting}, "", out, false, nil, nil, map[string]bool{"hosting.csv": true})
+	stats, err := buildGeo([]string{rir, blocks, hosting}, "", out, false, nil, nil, map[string]bool{"hosting.csv.gz": true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 4 rows apply; the Nice /16 minus the DE /24 hole is 8 networks, the others 1 each.
-	if want := (geoLayerStats{name: "hosting.csv", rows: 4, prefixes: 11, skipped: 4}); stats[2] != want {
+	if want := (geoLayerStats{name: "hosting.csv.gz", rows: 4, prefixes: 11, skipped: 4}); stats[2] != want {
 		t.Errorf("stats = %+v, want %+v", stats[2], want)
 	}
 	for ip, want := range map[string][2]string{
@@ -267,5 +269,24 @@ func TestBuildGeoFirstCountry(t *testing.T) {
 		if code != want[0] || city != want[1] {
 			t.Errorf("%s = %v, want %v", ip, got, want)
 		}
+	}
+}
+
+// RFC 8805 allows leaving out trailing fields: a row with just prefix and country is read
+// with an empty city; one without a country is passed on as unusable.
+func TestReadLayerShortRows(t *testing.T) {
+	path := writeFile(t, filepath.Join(t.TempDir(), "layer.csv.gz"), "prefix,country,region,city,source\n"+
+		"45.0.0.0/8,US\n"+
+		"45.1.0.0/16,CA,,Toronto\n"+
+		"45.2.0.0/16\n"+
+		"45.3.0.0/16,FR,,Paris,https://feed.example/f.csv\n")
+	type row struct{ prefix, code, city string }
+	var got []row
+	if err := readLayer(path, func(_ int, prefix, code, city string) { got = append(got, row{prefix, code, city}) }); err != nil {
+		t.Fatal(err)
+	}
+	want := []row{{"45.0.0.0/8", "US", ""}, {"45.1.0.0/16", "CA", "Toronto"}, {"", "", ""}, {"45.3.0.0/16", "FR", "Paris"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("rows = %v, want %v", got, want)
 	}
 }

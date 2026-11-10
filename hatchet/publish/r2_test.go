@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -114,7 +115,7 @@ func TestR2Download(t *testing.T) {
 	if data, _ := os.ReadFile(path); string(data) != "rows bytes" || !got.Equal(modified) {
 		t.Errorf("file %q, modified %v", data, got)
 	}
-	if _, err := r2.Download(context.Background(), "internal/missing", path+"2"); err == nil {
-		t.Error("a missing object downloaded")
+	if _, err := r2.Download(context.Background(), "internal/missing", path+"2"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a missing object: %v", err)
 	}
 }

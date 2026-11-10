@@ -45,10 +45,19 @@
   An asn_geo_pdb shrink refuses the whole replace; a geo_ix_pdb shrink or empty result only keeps the old
   geo_ix_pdb rows (`StoreStats.IXKept`) and asn_geo_pdb is still replaced.
 - `build-geo-data` only reads these tables and runs DDL only for `public.geo_eval` (`schema.EnsureGeoEval`), never `schema.Ensure`. A missing or empty `public.geo_ix_pdb`
-  skips the `ix.csv` layer for that run, and missing facility columns or no matching network skip `hosting.csv`
-  (`Source.SkippedLayers`, used by `build-mmdb` and the holdout build alike); an `ix.csv` of 1 to 199 usable rows
-  fails, `hosting.csv` has no minimum. Exchanges without a city are never written to `ix.csv`.
-  `asn_geo_pdb.fac_count`/`fac_city`/`fac_country` (facilities only, city set only if all are in one city) feed `hosting.csv`.
+  skips the `50-ix` layer for that run, and missing facility columns or no matching network skip `40-hosting`
+  (`Source.SkippedLayers`); a `50-ix` of 1 to 199 usable rows fails, `40-hosting` has no minimum. Exchanges without a
+  city are never written to `50-ix`.
+  `asn_geo_pdb.fac_count`/`fac_city`/`fac_country` (facilities only, city set only if all are in one city) feed `40-hosting`.
+- ip2geo layers have ONE format and ONE name in every stage: a gzipped CSV in the geofeed (RFC 8805) layout, header
+  `prefix,country,region,city,source`, named `NN-name.csv.gz` (`10-rir`, `20-ipverse`, `30-pdb`, `40-hosting`, `50-ix`,
+  `60-whois`, `70-geofeeds`; steps of 10, the name is the order). `build-geo-data` `download` empties its layers dir, each
+  source writes its file through the one shared writer (`.tmp` plus rename), and the R2 layers are downloaded as they are.
+  The build passes every `*.csv.gz` in the dir, sorted by name, to `mmdbbuilder geo` (one reader, columns found by header);
+  there is no per-layer code and no layer list in the build. Special rules live only in `layerRules` (`geo/pipeline.go`),
+  one line per layer name; a rule for an absent file is not passed. A new layer is a new file name, not new code.
+  Optional layers (`40-hosting`, `50-ix`, `60-whois`) that are absent are listed in `Source.SkippedLayers` for
+  reporting; an R2 layer (`60-whois`, `70-geofeeds`) that is missing or older than 3 days skips the `HC_PING_GEO` ping.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
 - Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes only `public.geofeed_urls`
@@ -61,8 +70,13 @@
   error), in batches. Its backoff and the 30-day working window depend only on the timestamps (failing since
   `last_success_at`, or `first_seen_at` if it never worked), never on the status text, so rows written by an older tool
   just come due. The stored feed copies on the VM are only caches.
-- Data between workflows goes through Postgres tables, except the geofeed rows (millions of rows):
-  `sync-geofeeds` uploads them to one fixed key in the private R2 bucket and `build-geo-data` reads them from there.
+- Data between workflows goes through Postgres tables, except the geofeed rows (millions of rows) and the whois geoloc
+  rows (city rows for RIPE, APNIC and AFRINIC `inetnum` objects with a `geoloc:`): `sync-geofeeds` uploads them as the
+  layer files `70-geofeeds.csv.gz` and `60-whois.csv.gz`, each to the fixed key `internal/layers/<name>` in the private R2
+  bucket, and `build-geo-data` reads them from there (no fallback to older keys).
+  `sync-geofeeds` downloads GeoNames `cities1000.zip` itself (7-day age gate, own `dumps/` dir) and names the whois cities
+  in `discover`; a problem with the whois rows (GeoNames, gate, upload) only skips them (the previous `60-whois` file is
+  kept and is not uploaded again) and is reported in the task output, never blocks the geofeed rows.
   A workflow's own caches and state on the VM (e.g. `/var/lib/openipdata/geofeeds/`) are never read by another workflow.
 - `sync-geofeeds` HTTP and FTP requests use IPv4 only and must never reach non-public addresses (feed URLs come from
   whois records anyone can write). Nothing it builds is published. Its RDAP results live in `rdap.jsonl` on the VM,

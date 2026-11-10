@@ -1,7 +1,7 @@
 package main
 
-// ip2geo: layered CSV files (RIR stats, registration data, PeeringDB rows,
-// geofeed rows) -> country and city per prefix.
+// ip2geo: layer files (gzipped CSV in the geofeed layout) -> country and city
+// per prefix.
 
 import (
 	"bufio"
@@ -343,25 +343,21 @@ func parseGeoPrefix(s string) (netip.Prefix, error) {
 	return p, nil
 }
 
-// readLayer calls fn for each data row of a CSV file (gzipped if it ends in
-// .gz). The header row names the columns: prefix, country, and optionally
-// city; other columns are ignored.
+// readLayer calls fn for each data row of a layer file: a gzipped CSV in the
+// geofeed (RFC 8805) layout with a header line, prefix,country,region,city,source.
+// The columns are found by name; region and source are not used.
 func readLayer(path string, fn func(line int, prefix, code, city string)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	var in io.Reader = bufio.NewReader(f)
-	if strings.HasSuffix(path, ".gz") {
-		gz, err := gzip.NewReader(in)
-		if err != nil {
-			return err
-		}
-		defer gz.Close()
-		in = gz
+	gz, err := gzip.NewReader(bufio.NewReader(f))
+	if err != nil {
+		return err
 	}
-	r := csv.NewReader(in)
+	defer gz.Close()
+	r := csv.NewReader(gz)
 	r.FieldsPerRecord = -1
 	r.ReuseRecord = true
 	header, err := r.Read()
@@ -374,9 +370,9 @@ func readLayer(path string, fn func(line int, prefix, code, city string)) error 
 	}
 	prefixCol, ok1 := col["prefix"]
 	countryCol, ok2 := col["country"]
-	cityCol, hasCity := col["city"]
-	if !ok1 || !ok2 {
-		return fmt.Errorf("header %q lacks prefix or country", strings.Join(header, ","))
+	cityCol, ok3 := col["city"]
+	if !ok1 || !ok2 || !ok3 {
+		return fmt.Errorf("header %q lacks prefix, country, or city", strings.Join(header, ","))
 	}
 	for {
 		rec, err := r.Read()
@@ -393,12 +389,13 @@ func readLayer(path string, fn func(line int, prefix, code, city string)) error 
 			return err
 		}
 		line, _ := r.FieldPos(0)
-		if len(rec) <= prefixCol || len(rec) <= countryCol {
+		if len(rec) <= max(prefixCol, countryCol) {
 			fn(line, "", "", "")
 			continue
 		}
+		// RFC 8805 allows leaving out trailing fields: a row may end before the city.
 		city := ""
-		if hasCity && len(rec) > cityCol {
+		if len(rec) > cityCol {
 			city = rec[cityCol]
 		}
 		fn(line, rec[prefixCol], rec[countryCol], city)

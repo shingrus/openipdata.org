@@ -54,10 +54,11 @@ type (
 
 // SyncGeofeedsInput is the sync-geofeeds input; cron runs use the zero value.
 type SyncGeofeedsInput struct {
-	// SkipUpload writes the rows file but does not upload it (for manual test runs).
+	// SkipUpload writes the rows files but does not upload them (for manual test runs).
 	SkipUpload bool `json:"skip_upload"`
 	// ForceUpload uploads even if the row count dropped more than 10% (for a
-	// manual run after checking that the drop is real).
+	// manual run after checking that the drop is real); it also lets the whois
+	// geoloc rows go up with fewer than the first-upload minimum.
 	ForceUpload bool `json:"force_upload"`
 	// RDAPBudget, if positive, caps the RDAP lookups per registry (for test runs).
 	RDAPBudget int `json:"rdap_budget"`
@@ -74,7 +75,7 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["hosting.csv"] (for manual test runs).
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 40-hosting, 50-ix and 60-whois (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
 
@@ -366,7 +367,7 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 // Nothing is published.
 func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-geofeeds",
-		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists + ASN website probes -> checked geofeed rows in private R2"),
+		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists + ASN website probes -> checked geofeed rows and whois geoloc rows in private R2"),
 		hatchet.WithWorkflowCron("0 0 * * *"),
 		// Its own limit, not asn-db: it reads and writes no ASN table.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
@@ -451,7 +452,7 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("build-geo-data",
-		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout"),
+		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout"),
 		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
 		hatchet.WithWorkflowCron("0 7,19 * * *"),
 		// Its own limit, not asn-db: it only reads the ASN tables.
@@ -474,7 +475,9 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		if err != nil {
 			return src, err
 		}
-		p.SkipLayers(&src, input.SkipLayers)
+		if err := p.SkipLayers(&src, input.SkipLayers); err != nil {
+			return src, err
+		}
 		return src, nil
 	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
 

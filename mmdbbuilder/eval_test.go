@@ -46,9 +46,9 @@ func approx(got *float64, want float64) bool {
 func TestEvaluate(t *testing.T) {
 	dir := t.TempDir()
 	// 1,280 addresses of delegated space; the IPv6 row and 47.0.0.0/24 do not count.
-	rir := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n"+
+	rir := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/24,US,\n45.0.1.0/24,DE,\n45.0.2.0/24,FR,\n45.0.3.0/24,,\n46.0.0.0/24,,\n2a00::/12,DE,\n")
-	cities := writeFile(t, filepath.Join(dir, "cities.csv"), "prefix,country,city\n"+
+	cities := writeFile(t, filepath.Join(dir, "cities.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/25,US,Dallas\n45.0.1.0/24,DE,Berlin\n45.0.2.0/25,FR,Paris\n47.0.0.0/24,US,Elsewhere\n")
 	ours := filepath.Join(dir, "ours.mmdb")
 	if _, err := buildGeo([]string{rir, cities}, "", ours, false, nil, nil, nil); err != nil {
@@ -68,7 +68,7 @@ func TestEvaluate(t *testing.T) {
 	})
 	atlas := writeFile(t, filepath.Join(dir, "atlas.csv"), "ip,country,lat,lon\n"+
 		"45.0.0.5,US,1,2\n45.0.1.5,DE,1,2\n45.0.2.5,NL,1,2\n45.0.3.5,FR,1,2\nnope,US,1,2\n2a00::1,DE,1,2\n")
-	holdoutRIR := writeFile(t, filepath.Join(dir, "holdout-cities.csv"), "prefix,country,city\n"+
+	holdoutRIR := writeFile(t, filepath.Join(dir, "holdout-cities.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/24,US,Dallas\n45.0.1.0/24,DE,\n45.0.2.0/24,NL,\n")
 	holdout := filepath.Join(dir, "holdout.mmdb")
 	if _, err := buildGeo([]string{holdoutRIR}, "", holdout, false, nil, nil, nil); err != nil {
@@ -107,7 +107,7 @@ func TestEvaluate(t *testing.T) {
 // Scores whose reference is missing are left out, not zero.
 func TestEvaluateOmitsMissingReferences(t *testing.T) {
 	dir := t.TempDir()
-	rir := writeFile(t, filepath.Join(dir, "rir.csv"), "prefix,country,city\n45.0.0.0/24,US,\n")
+	rir := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n45.0.0.0/24,US,\n")
 	ours := filepath.Join(dir, "ours.mmdb")
 	if _, err := buildGeo([]string{rir}, "", ours, false, nil, nil, nil); err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestEvaluateOmitsMissingReferences(t *testing.T) {
 	if _, err := evaluate(evalInputs{db: ours, rir: rir, holdoutDB: ours}); err == nil {
 		t.Error("-holdout-db without -holdout-truth: no error")
 	}
-	if _, err := evaluate(evalInputs{db: ours, rir: writeFile(t, filepath.Join(dir, "v6.csv"), "prefix,country,city\n2a00::/12,DE,\n")}); err == nil {
+	if _, err := evaluate(evalInputs{db: ours, rir: writeFile(t, filepath.Join(dir, "v6.csv.gz"), "prefix,country,city\n2a00::/12,DE,\n")}); err == nil {
 		t.Error("an RIR layer without IPv4 space: no error")
 	}
 }
@@ -155,7 +155,7 @@ func TestJoin(t *testing.T) {
 }
 
 func TestLoadSpaceMerges(t *testing.T) {
-	path := writeFile(t, filepath.Join(t.TempDir(), "rir.csv"), "prefix,country,city\n"+
+	path := writeFile(t, filepath.Join(t.TempDir(), "rir.csv.gz"), "prefix,country,city\n"+
 		"45.0.1.0/24,,\n45.0.0.0/24,US,\n45.0.0.0/16,US,\n46.0.0.0/24,,\n46.0.1.0/24,,\n")
 	got, err := loadSpace(path)
 	if err != nil {

@@ -93,7 +93,7 @@ func writeASNPrefixRows(ctx context.Context, conn *pgx.Conn, query string, w *cs
 		}
 		n := 0
 		for _, p := range asnPrefixes(raw) {
-			w.Write([]string{p.String(), code, city})
+			layerRow(w, p.String(), code, city)
 			n++
 		}
 		if n > 0 {
@@ -198,7 +198,7 @@ func writeIXRows(ctx context.Context, dsn string, w *csv.Writer) (int, error) {
 		if err := rows.Scan(&prefix, &code, &city); err != nil {
 			return 0, err
 		}
-		w.Write([]string{prefix, code, city})
+		layerRow(w, prefix, code, city)
 		n++
 	}
 	if err := rows.Err(); err != nil {

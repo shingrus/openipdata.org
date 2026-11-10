@@ -56,7 +56,7 @@ func heldOutSet(urls map[string]bool) func(context.Context) (map[string]bool, er
 
 func TestSplitFeeds(t *testing.T) {
 	dir := t.TempDir()
-	const header = "prefix,country,region,city,feed_url\n"
+	const header = "prefix,country,region,city,source\n"
 	feeds := filepath.Join(dir, "geofeed-rows.csv.gz")
 	writeGzip(t, feeds, header+
 		// feed0 and feed2 are kept, feed1 and feed7 are held out.
@@ -108,11 +108,11 @@ func TestSplitFeeds(t *testing.T) {
 	}
 	writeGzip(t, feeds, "prefix,country\n45.0.0.0/8,US\n")
 	if _, err := splitFeeds(feeds, kept, truth, testHeldOut); err == nil {
-		t.Error("no error for a file without feed_url")
+		t.Error("no error for a file without source")
 	}
 }
 
-// The holdout build runs with the real build's arguments, but with the kept
+// The holdout build runs with the real build's layers and rules, but with the kept
 // feeds file, which must keep the layer's file name.
 func TestPrepareHoldoutArgs(t *testing.T) {
 	dir := t.TempDir()
@@ -122,20 +122,23 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 	p := &Pipeline{DataDir: dir, MMDBBuilder: script, heldOutURLs: heldOutSet(testHeldOut)}
 	layers := p.layersDir()
 	os.MkdirAll(layers, 0o750)
-	writeGzip(t, filepath.Join(layers, FeedsLayer), "prefix,country,region,city,feed_url\n"+
+	for _, name := range []string{RIRLayer, PDBLayer, HostingLayer, IXLayer, WhoisLayer} {
+		writeGzip(t, filepath.Join(layers, name), "prefix,country,region,city,source\n")
+	}
+	writeGzip(t, filepath.Join(layers, FeedsLayer), "prefix,country,region,city,source\n"+
 		"45.0.0.0/16,US,,,https://feed0.example/geo.csv\n46.0.0.0/24,FR,,Paris,https://feed1.example/geo.csv\n")
 
 	eval := p.evalDir()
 	os.MkdirAll(eval, 0o750)
-	mmdb, truth, status, err := p.prepareHoldout(context.Background(), Source{}, eval)
+	mmdb, truth, status, err := p.prepareHoldout(context.Background(), eval)
 	if err != nil {
 		t.Fatal(err)
 	}
 	args, _ := os.ReadFile(argsFile)
 	kept := filepath.Join(eval, "holdout", FeedsLayer)
 	want := strings.Join([]string{"geo", "-out", filepath.Join(eval, "holdout.mmdb"),
-		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer, "-first-country", HostingLayer,
-		filepath.Join(layers, RIRLayer), filepath.Join(layers, BlocksLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, HostingLayer), filepath.Join(layers, IXLayer), kept}, " ")
+		"-names", filepath.Join(layers, NamesFile), "-first-country", HostingLayer, "-same-country", PDBLayer, "-within-first", WhoisLayer + "," + FeedsLayer,
+		filepath.Join(layers, RIRLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, HostingLayer), filepath.Join(layers, IXLayer), filepath.Join(layers, WhoisLayer), kept}, " ")
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
 	}
@@ -144,32 +147,29 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 		t.Errorf("%s %s %q", mmdb, truth, status)
 	}
 
-	// Skipped optional layers are left out of the holdout build as well.
-	if _, _, _, err = p.prepareHoldout(context.Background(), Source{SkippedLayers: []string{HostingLayer, IXLayer}}, eval); err != nil {
+	// A layer that is not in the directory (skipped) is left out of the holdout build as well,
+	// with its rule.
+	os.Remove(filepath.Join(layers, HostingLayer))
+	os.Remove(filepath.Join(layers, WhoisLayer))
+	if _, _, _, err = p.prepareHoldout(context.Background(), eval); err != nil {
 		t.Fatal(err)
 	}
 	args, _ = os.ReadFile(argsFile)
-	if strings.Contains(string(args), IXLayer) || strings.Contains(string(args), HostingLayer) ||
-		!strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, PDBLayer)+" "+kept) {
+	if strings.Contains(string(args), "40-") || strings.Contains(string(args), "60-") || strings.Contains(string(args), "-first-country") ||
+		!strings.Contains(string(args), "-within-first "+FeedsLayer+" ") ||
+		!strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, IXLayer)+" "+kept) {
 		t.Errorf("skipped args = %s", args)
-	}
-	if _, _, _, err = p.prepareHoldout(context.Background(), Source{SkippedLayers: []string{HostingLayer}}, eval); err != nil {
-		t.Fatal(err)
-	}
-	args, _ = os.ReadFile(argsFile)
-	if strings.Contains(string(args), HostingLayer) || strings.Contains(string(args), "-first-country") || !strings.HasSuffix(strings.TrimSpace(string(args)), filepath.Join(layers, IXLayer)+" "+kept) {
-		t.Errorf("hosting skipped args = %s", args)
 	}
 
 	// Without held-out feeds there is nothing to score and no build.
 	os.Remove(argsFile)
 	p.heldOutURLs = heldOutSet(map[string]bool{})
-	if mmdb, _, status, err = p.prepareHoldout(context.Background(), Source{}, eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
+	if mmdb, _, status, err = p.prepareHoldout(context.Background(), eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
 		t.Errorf("empty set: %q %q %v", mmdb, status, err)
 	}
 	// A failed lookup is an error, never another sample.
 	p.heldOutURLs = func(context.Context) (map[string]bool, error) { return nil, errors.New("boom") }
-	if _, _, _, err = p.prepareHoldout(context.Background(), Source{}, eval); err == nil || !strings.Contains(err.Error(), "boom") {
+	if _, _, _, err = p.prepareHoldout(context.Background(), eval); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("lookup error = %v", err)
 	}
 	p.heldOutURLs = heldOutSet(testHeldOut)
@@ -179,8 +179,8 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 
 	// Nothing held out outside the kept feeds: nothing to score, no build.
 	os.Remove(argsFile)
-	writeGzip(t, filepath.Join(layers, FeedsLayer), "prefix,country,region,city,feed_url\n45.0.0.0/16,US,,,https://feed0.example/geo.csv\n")
-	if mmdb, _, status, err = p.prepareHoldout(context.Background(), Source{}, eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
+	writeGzip(t, filepath.Join(layers, FeedsLayer), "prefix,country,region,city,source\n45.0.0.0/16,US,,,https://feed0.example/geo.csv\n")
+	if mmdb, _, status, err = p.prepareHoldout(context.Background(), eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
 		t.Errorf("no held-out rows: %q %q %v", mmdb, status, err)
 	}
 	if _, err := os.Stat(argsFile); err == nil {
@@ -406,7 +406,8 @@ func evalPipeline(t *testing.T, script string) *Pipeline {
 		refURLs:     &evalURLs{dbip: server.URL + "/dbip-%s", atlas: server.URL + "/atlas"},
 		heldOutURLs: heldOutSet(testHeldOut)}
 	os.MkdirAll(p.layersDir(), 0o750)
-	writeGzip(t, filepath.Join(p.layersDir(), FeedsLayer), "prefix,country,region,city,feed_url\n"+
+	writeGzip(t, filepath.Join(p.layersDir(), RIRLayer), "prefix,country,region,city,source\n")
+	writeGzip(t, filepath.Join(p.layersDir(), FeedsLayer), "prefix,country,region,city,source\n"+
 		"45.0.0.0/16,US,,,https://feed0.example/geo.csv\n46.0.0.0/24,FR,,Paris,https://feed1.example/geo.csv\n")
 	return p
 }

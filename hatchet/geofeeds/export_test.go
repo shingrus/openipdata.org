@@ -111,6 +111,10 @@ func TestExportRows(t *testing.T) {
 		out.UnreadableFeeds != 1 || out.Uploaded {
 		t.Errorf("out = %+v", out)
 	}
+	// No whois geoloc blocks yet: that is a note in the output, not a failure.
+	if out.Whois.Skipped == "" || out.Whois.Uploaded {
+		t.Errorf("whois geo = %+v", out.Whois)
+	}
 	file, err := os.Open(filepath.Join(p.dir(), OutDir, RowsFile))
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +126,7 @@ func TestExportRows(t *testing.T) {
 	}
 	data, _ := io.ReadAll(gz)
 	// The row a whois block backs comes last, so it wins a repeated prefix.
-	want := "prefix,country,region,city,feed_url\n" +
+	want := "prefix,country,region,city,source\n" +
 		"45.10.2.0/24,DE,,,https://isp.example/feed.csv\n" +
 		"45.10.112.0/21,DE,,,https://isp.example/feed.csv\n" +
 		"45.10.100.0/24,US,US-CA,San Jose,https://list.example/feed.csv\n" +

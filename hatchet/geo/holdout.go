@@ -94,8 +94,8 @@ func prefixBlock(p netip.Prefix) block {
 	return block{lo, uint32(uint64(lo) + 1<<(32-p.Bits()) - 1)}
 }
 
-// splitFeeds reads the geofeed rows layer (prefix,country,region,city,feed_url)
-// and writes
+// splitFeeds reads the geofeeds layer (prefix,country,region,city,source; the
+// source is the feed URL) and writes
 //
 //   - keptPath: the same file without the rows of the feeds in heldOut (a set
 //     of feed URLs)
@@ -132,7 +132,7 @@ func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]bool) 
 	prefixCol, err1 := col("prefix")
 	countryCol, err2 := col("country")
 	cityCol, err3 := col("city")
-	urlCol, err4 := col("feed_url")
+	urlCol, err4 := col("source")
 	if err := errors.Join(err1, err2, err3, err4); err != nil {
 		return stats, err
 	}
@@ -254,7 +254,7 @@ func cmpU32(a, b uint32) int {
 // kept feeds with the same arguments as the real build. It returns the paths
 // of the MMDB and the truth CSV, or empty paths and a status when there is
 // nothing to score.
-func (p *Pipeline) prepareHoldout(ctx context.Context, src Source, dir string) (mmdbPath, truthPath, status string, err error) {
+func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, truthPath, status string, err error) {
 	heldOut, err := p.loadHeldOut(ctx)
 	if err != nil {
 		return "", "", "", fmt.Errorf("holdout feeds: %w", err)
@@ -262,7 +262,7 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, src Source, dir string) (
 	if len(heldOut) == 0 {
 		return "", "", "skipped: no held-out feeds in public.geofeed_urls", nil
 	}
-	// The layer's file name matters to mmdbbuilder's -within-first flag.
+	// The layer's file name matters: layerRules is keyed by it.
 	keptDir := filepath.Join(dir, "holdout")
 	if err := os.MkdirAll(keptDir, 0o750); err != nil {
 		return "", "", "", err
@@ -278,7 +278,11 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, src Source, dir string) (
 		return "", "", "skipped: " + summary, nil
 	}
 	mmdbPath = filepath.Join(dir, "holdout.mmdb")
-	if _, err := p.runBuilder(ctx, p.geoArgs(mmdbPath, kept, src)); err != nil {
+	args, err := p.geoArgs(mmdbPath, kept)
+	if err != nil {
+		return "", "", "", err
+	}
+	if _, err := p.runBuilder(ctx, args); err != nil {
 		return "", "", "", fmt.Errorf("holdout build: %w", err)
 	}
 	return mmdbPath, truthPath, summary, nil

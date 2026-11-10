@@ -2,30 +2,44 @@
 // is one task; the Hatchet workflow and the local run-geo command call them
 // in the same order.
 //
-// The database is built in layers, each replacing what the layers before it
-// put under its prefixes:
+// The database is built in layers. A layer is a gzipped CSV file named
+// NN-name.csv.gz in the geofeed (RFC 8805) layout, with a header line
+// prefix,country,region,city,source (region may be empty; source is free
+// text: the feed URL, whois:<registry>, or empty). mmdbbuilder applies every
+// file of the layers directory in name order, each replacing what the files
+// before it put under its prefixes:
 //
-//  1. RIR delegated stats: the country every block was delegated to (IPv4, IPv6)
-//  2. ipverse/geo-ip-blocks: the country in registration records (IPv4 only)
-//  3. PeeringDB: country and city of ASNs with one dominant city (Postgres);
-//     applied only where layers 1 and 2 gave the same country or none
-//  4. hosting networks whose PeeringDB facilities are all in one city: that
-//     city and country for every announced prefix (Postgres); applied only
-//     where the RIR stats (layer 1) give the same country, so it can only
-//     change a country back to the delegated one; skipped while no network matches
-//  5. PeeringDB internet exchange peering LAN prefixes: the exchange's country
-//     and city (Postgres); exchanges without a city are left out, and the
-//     whole layer is skipped while the table has no rows
-//  6. geofeed rows from sync-geofeeds (private R2); a row broader than one
-//     RIR block is skipped
+//	10-rir        RIR delegated stats: the country every block was delegated to (IPv4, IPv6)
+//	20-ipverse    ipverse/geo-ip-blocks: the country in registration records (IPv4 only)
+//	30-pdb        PeeringDB: country and city of ASNs with one dominant city (Postgres);
+//	              applied only where 10 and 20 gave the same country or none
+//	40-hosting    hosting networks whose PeeringDB facilities are all in one city: that
+//	              city and country for every announced prefix (Postgres); applied only
+//	              where the RIR stats give the same country, so it can only change a
+//	              country back to the delegated one; skipped while no network matches
+//	50-ix         PeeringDB internet exchange peering LAN prefixes: the exchange's country
+//	              and city (Postgres); exchanges without a city are left out, and the
+//	              whole layer is skipped while the table has no rows
+//	60-whois      whois geoloc rows from sync-geofeeds (private R2): the most populous
+//	              place within 25 km of the "geoloc:" point of RIPE, APNIC and AFRINIC
+//	              inetnums; a row broader than one RIR block is skipped; skipped while
+//	              the object is missing
+//	70-geofeeds   geofeed rows from sync-geofeeds (private R2); a row broader than one
+//	              RIR block is skipped
+//
+// The layers directory is emptied at the start of each Download and the build
+// passes whatever files are in it: the file name is the order, and layerRules
+// is the one place that says which layer gets a special rule.
 package geo
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,26 +66,64 @@ const (
 	minStatsBlocks  = 1000 // per RIR
 	minGeoCountries = 200
 	minPDBASNs      = 100
-	minIXPrefixes   = 200 // the hosting layer has no minimum: it may legitimately be small
+	minIXPrefixes   = 200 // the hosting and whois layers have no minimum: they may legitimately be small
 
-	// Geofeed rows older than rowsMaxAge are still used (old rows are better
+	// An R2 layer older than rowsMaxAge is still used (old rows are better
 	// than none), but the run warns and skips the health check ping.
 	rowsMaxAge = 3 * 24 * time.Hour
 )
 
-// Layer files in DataDir/geo/layers, rebuilt by Download, in the order
-// mmdbbuilder applies them.
+// Layer files in DataDir/geo/layers, rebuilt by Download. The name is the
+// order. The last two are the files sync-geofeeds uploads to R2, under the
+// same names.
 const (
-	RIRLayer     = "rir.csv"
-	BlocksLayer  = "geo-ip-blocks.csv"
-	PDBLayer     = "pdb.csv"
-	HostingLayer = "hosting.csv"
-	IXLayer      = "ix.csv"
-	FeedsLayer   = "geofeed-rows.csv.gz"
-	NamesFile    = "names.tsv"
+	RIRLayer     = "10-rir.csv.gz"
+	IPverseLayer = "20-ipverse.csv.gz"
+	PDBLayer     = "30-pdb.csv.gz"
+	HostingLayer = "40-hosting.csv.gz"
+	IXLayer      = "50-ix.csv.gz"
+	WhoisLayer   = geofeeds.WhoisRowsFile // 60-whois.csv.gz
+	FeedsLayer   = geofeeds.RowsFile      // 70-geofeeds.csv.gz
+	NamesFile    = "names.tsv"            // not a layer
 )
 
-var layerOrder = []string{RIRLayer, BlocksLayer, PDBLayer, HostingLayer, IXLayer, FeedsLayer}
+// layerRules is the one place that gives a layer a special rule: the
+// "mmdbbuilder geo" flag that names the layer. A layer that is not here is a
+// plain layer: it replaces what the layers before it put under its prefixes.
+//
+//   - -same-country: the PeeringDB rows only refine. An ASN's city must not
+//     replace more specific networks that the registration data puts in another
+//     country.
+//   - -first-country: a hosting row applies only where the RIR stats (the first
+//     layer) give the row's country, so the layer can only change a country back
+//     to the delegated one; PeeringDB facility lists can be incomplete.
+//   - -within-first: rows no broader than one prefix of the first layer. A broad
+//     row cannot change the country of networks that belong to someone else.
+//
+// The whois layer, like the geofeeds, may change a network's country: it has
+// only -within-first, no -first-country, because the inetnum's own country is
+// usually right (measured: 4% of geoloc /24s lie in another country than the
+// geofeed truth).
+var layerRules = map[string]string{
+	PDBLayer:     "-same-country",
+	HostingLayer: "-first-country",
+	WhoisLayer:   "-within-first",
+	FeedsLayer:   "-within-first",
+}
+
+// optionalLayers may be missing: a run without one is reported in
+// Source.SkippedLayers. Every other layer is required: a run without it fails.
+// Only this list and r2Layers know about layers, and only for reporting;
+// the build takes whatever files the directory holds.
+var optionalLayers = []string{HostingLayer, IXLayer, WhoisLayer}
+
+// r2Layers are the layer files that sync-geofeeds uploads; Download fetches
+// them as they are. One that is missing or older than rowsMaxAge also skips
+// the health check ping.
+var r2Layers = []struct{ Name, Key string }{
+	{WhoisLayer, geofeeds.WhoisRowsKey},
+	{FeedsLayer, geofeeds.RowsKey},
+}
 
 // Pipeline runs the geo database build.
 type Pipeline struct {
@@ -80,7 +132,7 @@ type Pipeline struct {
 	MMDBBuilder string // path to the mmdbbuilder binary
 	Progress    func(string)
 
-	R2          string // the private bucket: geofeed rows in, MMDB out
+	R2          string // the private bucket: the R2 layers in, MMDB out
 	GitHubToken string
 	GitHubRepo  string // owner/name of the repo whose "latest" release gets the MMDB
 	HCPing      string // optional healthchecks.io ping URL
@@ -97,41 +149,50 @@ type Pipeline struct {
 
 // Source is what Download prepared for the run.
 type Source struct {
-	DateTag       string            `json:"date_tag"`
-	Rows          map[string]int    `json:"rows"` // rows per layer file
-	StatsStatus   map[string]string `json:"stats_status"`
-	GeoBlocks     string            `json:"geo_ip_blocks_status"`
-	PDBASNs       int               `json:"pdb_asns"`
-	FeedsUploaded string            `json:"geofeed_rows_uploaded"` // when sync-geofeeds uploaded them
-	FeedsStale    bool              `json:"geofeed_rows_stale,omitempty"`
+	DateTag     string            `json:"date_tag"`
+	Rows        map[string]int    `json:"rows"` // rows per layer file written from a source here (not the R2 layers)
+	StatsStatus map[string]string `json:"stats_status"`
+	GeoBlocks   string            `json:"geo_ip_blocks_status"`
+	PDBASNs     int               `json:"pdb_asns"`
+	// R2Uploaded tells when sync-geofeeds uploaded each R2 layer that was downloaded.
+	R2Uploaded map[string]string `json:"r2_layers_uploaded"`
+	// StaleLayers are the R2 layers that were missing or older than rowsMaxAge;
+	// Publish sends no health check ping then.
+	StaleLayers []string `json:"stale_layers,omitempty"`
 
-	// SkippedLayers are the optional layer files (ix.csv, hosting.csv) that had
-	// no rows this run and are not built; BuildMMDB and the holdout build leave them out.
+	// SkippedLayers are the optional layers (see optionalLayers) that are not
+	// in the build this run: they had no rows or no object, or skip_layers
+	// named them.
 	SkippedLayers []string `json:"skipped_layers,omitempty"`
 }
 
 func (s Source) skipped(layer string) bool { return slices.Contains(s.SkippedLayers, layer) }
 
-// ValidateSkipLayers accepts only the optional layer files.
+// ValidateSkipLayers accepts only the optional layers.
 func ValidateSkipLayers(layers []string) error {
 	for _, name := range layers {
-		if name != HostingLayer && name != IXLayer {
-			return fmt.Errorf("skip_layers: unknown layer %q (allowed: %s, %s)", name, HostingLayer, IXLayer)
+		if !slices.Contains(optionalLayers, name) {
+			return fmt.Errorf("skip_layers: unknown layer %q (allowed: %s)", name, strings.Join(optionalLayers, ", "))
 		}
 	}
 	return nil
 }
 
-// SkipLayers adds the named optional layers (see ValidateSkipLayers) to
-// src.SkippedLayers, as if they had no rows, for manual test runs. A layer
-// that is already skipped is not added twice.
-func (p *Pipeline) SkipLayers(src *Source, layers []string) {
+// SkipLayers removes the named optional layers (see ValidateSkipLayers) from
+// the layers directory and adds them to src.SkippedLayers, for manual test
+// runs; the build and the holdout build then leave them out. A layer that is
+// already skipped is not added twice.
+func (p *Pipeline) SkipLayers(src *Source, layers []string) error {
 	for _, name := range layers {
+		if err := os.Remove(filepath.Join(p.layersDir(), name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		if !src.skipped(name) {
 			src.SkippedLayers = append(src.SkippedLayers, name)
 			p.log("download: skipping %s (skip_layers)", name)
 		}
 	}
+	return nil
 }
 
 func (p *Pipeline) dir() string       { return filepath.Join(p.DataDir, "geo") }
@@ -163,12 +224,18 @@ func (p *Pipeline) CheckSettings(publishing bool) error {
 	return nil
 }
 
-// Download rebuilds the layer files: RIR stats and geo-ip-blocks from the
-// web, the PeeringDB rows and exchange prefixes from Postgres, the geofeed rows from R2.
+// Download rebuilds the layer files from scratch: RIR stats and geo-ip-blocks
+// from the web, the PeeringDB rows and exchange prefixes from Postgres, and
+// the whois geoloc and geofeed layers as sync-geofeeds uploaded them to R2.
 func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) {
-	src := Source{DateTag: now.UTC().Format(dateTagLayout), Rows: map[string]int{}, StatsStatus: map[string]string{}}
+	src := Source{DateTag: now.UTC().Format(dateTagLayout), Rows: map[string]int{}, StatsStatus: map[string]string{},
+		R2Uploaded: map[string]string{}}
 	layers := p.layersDir()
 	downloads := filepath.Join(p.dir(), "downloads")
+	// Outputs are rebuilt each run: no layer file of an earlier run may outlive its source.
+	if err := os.RemoveAll(layers); err != nil {
+		return src, err
+	}
 	for _, dir := range []string{layers, downloads} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return src, err
@@ -217,7 +284,7 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 		return src, fmt.Errorf("geo-ip-blocks: %w", err)
 	}
 	var names map[string]string
-	rows, err = writeLayer(filepath.Join(layers, BlocksLayer), func(w *csv.Writer) error {
+	rows, err = writeLayer(filepath.Join(layers, IPverseLayer), func(w *csv.Writer) error {
 		var err error
 		names, _, err = writeGeoIPBlocksRows(tarball, w)
 		if err == nil && len(names) < minGeoCountries {
@@ -231,7 +298,7 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 	if err != nil {
 		return src, err
 	}
-	src.Rows[BlocksLayer] = rows
+	src.Rows[IPverseLayer] = rows
 	p.log("download: geo-ip-blocks %s, %d countries, %d IPv4 prefixes", src.GeoBlocks, len(names), rows)
 	if err := writeNames(filepath.Join(layers, NamesFile), names); err != nil {
 		return src, err
@@ -275,30 +342,50 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 		return src, err
 	}
 
-	// 6. Geofeed rows.
+	// 6. and 7. The layers sync-geofeeds uploaded: whois geoloc and geofeeds.
 	r2, err := publish.NewR2(p.R2)
 	if err != nil {
 		return src, err
 	}
-	uploaded, err := r2.Download(ctx, geofeeds.RowsKey, filepath.Join(layers, FeedsLayer))
-	if err != nil {
-		return src, fmt.Errorf("geofeed rows (has sync-geofeeds uploaded them?): %w", err)
+	if err := p.downloadR2Layers(ctx, r2.Download, layers, now, &src); err != nil {
+		return src, err
 	}
-	src.FeedsUploaded = uploaded.UTC().Format(time.RFC3339)
-	if now.Sub(uploaded) > rowsMaxAge {
-		src.FeedsStale = true
-		p.log("download: WARNING geofeed rows are from %s; is sync-geofeeds failing?", src.FeedsUploaded)
-	}
-	p.log("download: geofeed rows uploaded %s", src.FeedsUploaded)
 	return src, nil
+}
+
+// downloadR2Layers fetches the R2 layers into the layers directory as they are
+// (no conversion). A missing optional one is skipped with a warning; any other
+// error fails. A layer that is missing or older than rowsMaxAge goes into
+// src.StaleLayers.
+func (p *Pipeline) downloadR2Layers(ctx context.Context, get func(ctx context.Context, key, path string) (time.Time, error),
+	layers string, now time.Time, src *Source) error {
+	for _, l := range r2Layers {
+		uploaded, err := get(ctx, l.Key, filepath.Join(layers, l.Name))
+		if errors.Is(err, publish.ErrNotFound) && slices.Contains(optionalLayers, l.Name) {
+			src.SkippedLayers = append(src.SkippedLayers, l.Name)
+			src.StaleLayers = append(src.StaleLayers, l.Name)
+			p.log("download: WARNING %s is not in R2 (has sync-geofeeds uploaded it?); building without it", l.Name)
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%s (has sync-geofeeds uploaded it?): %w", l.Name, err)
+		}
+		src.R2Uploaded[l.Name] = uploaded.UTC().Format(time.RFC3339)
+		if now.Sub(uploaded) > rowsMaxAge {
+			src.StaleLayers = append(src.StaleLayers, l.Name)
+			p.log("download: WARNING %s is from %s; is sync-geofeeds failing?", l.Name, src.R2Uploaded[l.Name])
+		}
+		p.log("download: %s uploaded %s", l.Name, src.R2Uploaded[l.Name])
+	}
+	return nil
 }
 
 // downloadOptional writes an optional layer file. When write returns ErrNoRows
 // (its source is missing or empty, the state before sync-peeringdb has filled
-// it) the layer is skipped for this run: its name goes into src.SkippedLayers,
-// so BuildMMDB and Evaluate leave it out, and a stale file from an earlier run
-// is removed. Any other error fails, and so does fewer than minRows rows (a
-// minRows of 0 accepts any count).
+// it) the layer is skipped for this run: its name goes into src.SkippedLayers
+// and no file is written, so BuildMMDB and Evaluate leave it out. Any other
+// error fails, and so does fewer than minRows rows (a minRows of 0 accepts any
+// count).
 func (p *Pipeline) downloadOptional(ctx context.Context, layers string, src *Source, name string, minRows int,
 	label, hint string, write func(context.Context, *csv.Writer) (int, error)) error {
 	path := filepath.Join(layers, name)
@@ -311,9 +398,6 @@ func (p *Pipeline) downloadOptional(ctx context.Context, layers string, src *Sou
 	})
 	if errors.Is(err, ErrNoRows) {
 		src.SkippedLayers = append(src.SkippedLayers, name)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
 		p.log("download: WARNING %s has no rows (%s); building without the %s layer", label, hint, name)
 		return nil
 	}
@@ -325,8 +409,10 @@ func (p *Pipeline) downloadOptional(ctx context.Context, layers string, src *Sou
 	return nil
 }
 
-// writeLayer writes a layer file through a temporary file and returns its
-// row count.
+// writeLayer writes a layer file (gzipped, with the header line
+// prefix,country,region,city,source) through a temporary file and returns its
+// row count. Every source here writes its layer through it; fill writes the
+// rows with layerRow.
 func writeLayer(path string, fill func(w *csv.Writer) error) (int, error) {
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
@@ -335,14 +421,18 @@ func writeLayer(path string, fill func(w *csv.Writer) error) (int, error) {
 	}
 	defer os.Remove(tmp)
 	defer f.Close()
-	counter := &countingWriter{f: f}
+	gz := gzip.NewWriter(f)
+	counter := &countingWriter{w: gz}
 	w := csv.NewWriter(counter)
-	w.Write([]string{"prefix", "country", "city"})
+	w.Write([]string{"prefix", "country", "region", "city", "source"})
 	if err := fill(w); err != nil {
 		return 0, err
 	}
 	w.Flush()
 	if err := w.Error(); err != nil {
+		return 0, err
+	}
+	if err := gz.Close(); err != nil {
 		return 0, err
 	}
 	if err := f.Close(); err != nil {
@@ -353,13 +443,13 @@ func writeLayer(path string, fill func(w *csv.Writer) error) (int, error) {
 
 // countingWriter counts the lines written through it.
 type countingWriter struct {
-	f     *os.File
+	w     io.Writer
 	lines int
 }
 
 func (c *countingWriter) Write(b []byte) (int, error) {
 	c.lines += bytes.Count(b, []byte{'\n'})
-	return c.f.Write(b)
+	return c.w.Write(b)
 }
 
 func writeNames(path string, names map[string]string) error {
@@ -390,35 +480,66 @@ type BuildMMDBOutput struct {
 // layerSummary matches mmdbbuilder's "layer <name>: R rows, P prefixes, S skipped".
 var layerSummary = regexp.MustCompile(`(?m)^layer (\S+): \d+ rows, (\d+) prefixes, (\d+) skipped$`)
 
-// geoArgs are the arguments of "mmdbbuilder geo": the layer files in order,
-// with feeds in place of the geofeed rows layer. The layer file names matter
-// to the flags, so feeds must be named FeedsLayer. src.SkippedLayers leaves
-// those layers out; BuildMMDB and the holdout build both go through here, so
-// they use the same layers.
-func (p *Pipeline) geoArgs(out, feeds string, src Source) []string {
-	// The hosting and exchange layers are plain layers: they come after the
-	// PeeringDB rows and before the geofeeds, so operator geofeeds still win.
-	// The PeeringDB rows only refine: an ASN's city must not replace more
-	// specific networks that the registration data puts in another country.
-	// A hosting row applies only where the RIR stats (the first layer) give the
-	// row's country, so the layer can only change a country back to the
-	// delegated one; PeeringDB facility lists can be incomplete. The flag is
-	// left out with the layer: mmdbbuilder is not told about a file it does not get.
-	args := []string{"geo", "-out", out, "-names", filepath.Join(p.layersDir(), NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer}
-	if !src.skipped(HostingLayer) {
-		args = append(args, "-first-country", HostingLayer)
+// layerFiles lists the layer files in the layers directory, sorted by name:
+// that is the order they are applied in.
+func (p *Pipeline) layerFiles() ([]string, error) {
+	entries, err := os.ReadDir(p.layersDir())
+	if err != nil {
+		return nil, err
 	}
-	for _, name := range layerOrder {
-		if src.skipped(name) {
-			continue
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".csv.gz") {
+			names = append(names, e.Name())
 		}
-		if name == FeedsLayer {
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// geoArgs are the arguments of "mmdbbuilder geo": every layer file in the layers
+// directory in name order (the first must be RIRLayer, which the
+// -within-first and -first-country rules judge rows against), each rule of layerRules named for the layers that
+// are there (a rule for an absent file is not passed), and, if feeds is not
+// empty, that file in place of the FeedsLayer one (the holdout build). BuildMMDB
+// and the holdout build both go through here, so they use the same layers and rules.
+func (p *Pipeline) geoArgs(out, feeds string) ([]string, error) {
+	names, err := p.layerFiles()
+	if err != nil {
+		return nil, err
+	}
+	// -within-first and -first-country judge rows against the first layer passed.
+	if len(names) == 0 || names[0] != RIRLayer {
+		return nil, fmt.Errorf("the layers must start with %s, not %v", RIRLayer, names)
+	}
+	args := []string{"geo", "-out", out, "-names", filepath.Join(p.layersDir(), NamesFile)}
+	// One flag per distinct rule of layerRules, sorted, naming its layers that are there.
+	var flags []string
+	for _, flag := range layerRules {
+		if !slices.Contains(flags, flag) {
+			flags = append(flags, flag)
+		}
+	}
+	sort.Strings(flags)
+	for _, flag := range flags {
+		var named []string
+		for _, name := range names {
+			if layerRules[name] == flag {
+				named = append(named, name)
+			}
+		}
+		if len(named) > 0 {
+			args = append(args, flag, strings.Join(named, ","))
+		}
+	}
+	for _, name := range names {
+		if name == FeedsLayer && feeds != "" {
 			args = append(args, feeds)
 		} else {
 			args = append(args, filepath.Join(p.layersDir(), name))
 		}
 	}
-	return args
+	return args, nil
 }
 
 // runBuilder runs mmdbbuilder and returns what it printed.
@@ -441,7 +562,11 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	}
 	// mmdbbuilder writes through a temporary file and renames it into place.
 	final := filepath.Join(dir, fmt.Sprintf(mmdbFileFormat, src.DateTag))
-	stdout, err := p.runBuilder(ctx, p.geoArgs(final, filepath.Join(p.layersDir(), FeedsLayer), src))
+	args, err := p.geoArgs(final, "")
+	if err != nil {
+		return BuildMMDBOutput{}, err
+	}
+	stdout, err := p.runBuilder(ctx, args)
 	if err != nil {
 		return BuildMMDBOutput{}, err
 	}
@@ -487,7 +612,7 @@ func evalFailure(ev EvalOutput) string {
 // (ErrGate; force skips it), then uploads the MMDB to R2 under <YYYY-MM-DD>/,
 // replaces it on the rolling GitHub release (leaving the release text, which
 // build-asn-data writes), marks ev's row in public.geo_eval as published, and
-// pings HCPing if set and the geofeed rows are not stale. A failed evaluation
+// pings HCPing if set and no R2 layer is missing or stale. A failed evaluation
 // (ev.Error, or no stored row) is refused with ErrGate before anything else
 // unless force is set; the row is then not marked, as there is none.
 func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string, ev EvalOutput, force bool) (PublishOutput, error) {
@@ -530,9 +655,9 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string, ev 
 	} else if err := p.markPublished(ctx, ev.ID); err != nil {
 		return out, err
 	}
-	if src.FeedsStale {
+	if len(src.StaleLayers) > 0 {
 		// No ping: the missing one raises the alert that sync-geofeeds needs.
-		p.log("publish: no health check ping, the geofeed rows are from %s", src.FeedsUploaded)
+		p.log("publish: no health check ping, missing or old in R2: %s", strings.Join(src.StaleLayers, ", "))
 	} else if err := publish.Ping(ctx, p.HCPing); err != nil {
 		p.log("publish: %v", err) // the uploads succeeded; a missed ping only delays the alert
 	}
