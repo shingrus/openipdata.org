@@ -388,7 +388,7 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 			s := state[u]
 			s.Status, s.HTTPStatus = feedHostDown, 0
 			if s.FailingSince == "" {
-				s.FailingSince = time.Now().UTC().Format(time.RFC3339)
+				s.FailingSince = now.Format(time.RFC3339)
 			}
 			stale = !s.working(now)
 			out.Skipped++
@@ -424,7 +424,7 @@ func (p *Pipeline) CheckFeeds(ctx context.Context) (CheckOutput, error) {
 			gate.fails = 0
 		}
 		s := state[u]
-		s.Checked, s.Status, s.HTTPStatus = time.Now().UTC().Format(time.RFC3339), res.status, res.httpStatus
+		s.Checked, s.Status, s.HTTPStatus = now.Format(time.RFC3339), res.status, res.httpStatus
 		if res.status == feedOK {
 			s.Rows, s.LastOK, s.FailingSince = res.rows, s.Checked, ""
 		} else if s.FailingSince == "" {

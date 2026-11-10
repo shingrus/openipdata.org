@@ -21,6 +21,12 @@ const (
 	Cached     = "cached" // 304: the local copy is current
 )
 
+// StatusError is the error for any HTTP status other than 200 (or 304 with a
+// local copy). It carries no URL, so callers whose URL holds a secret can show it.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
+
 // File downloads rawURL to path unless the local copy is current. The file's
 // modification time holds the server's Last-Modified and <path>.etag its
 // ETag; both go back as If-Modified-Since and If-None-Match. The file is
@@ -47,7 +53,7 @@ func File(ctx context.Context, client *http.Client, rawURL, path string) (string
 	case resp.StatusCode == http.StatusNotModified && statErr == nil:
 		return Cached, nil
 	case resp.StatusCode != http.StatusOK:
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return "", &StatusError{resp.StatusCode}
 	}
 
 	tmp := path + ".tmp"

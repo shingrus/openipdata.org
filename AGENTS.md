@@ -33,7 +33,8 @@
 - Postgres is the source of truth; the VM only keeps caches and the last few builds.
 - Output files (MMDB, SQLite) are rebuilt from scratch each run and written via a `.tmp` file plus rename.
 - One writer per table; every other workflow only reads it:
-  `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`.
+  `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`,
+  `public.geo_eval` ← `build-geo-data`.
 - Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand.
 - Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
   `build-asn-data` sets `public.asn.seen_at` for every ASN in the source each run; readers use it to ignore old rows
@@ -49,6 +50,9 @@
 - `sync-geofeeds` HTTP and FTP requests use IPv4 only and must never reach non-public addresses (feed URLs come from
   whois records anyone can write). Nothing it builds is published. Its RDAP results live in `rdap.jsonl` on the VM,
   not in Postgres.
+- `build-geo-data` scores each MMDB it builds (`evaluate` task, results in `public.geo_eval`) and `publish` refuses a
+  clear drop against the last published row (`geo.ErrGate`). All MMDB reading is done by `mmdbbuilder eval`.
+  The IPinfo URL holds `IPINFO_TOKEN`: any error from that request is replaced by a fixed message, never passed on.
 - Secrets live only in the env file. Never put secrets or visitor IPs in Hatchet task inputs, outputs, log lines, or returned errors.
 - Pass every error from `pgx.Connect` / `ParseConfig` through `schema.HideDSN`: pgx parse errors can echo the whole `PGSQL` value.
 - The `R2` setting holds the secret key: errors about it use the fixed `publish.ErrInvalidR2`, never the value.

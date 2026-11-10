@@ -32,6 +32,7 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 | `public.asn` | `build-asn-data` |
 | `public.asn_geo_pdb` | `sync-peeringdb` |
 | `public.asn_domain` | `update-asn-domains` |
+| `public.geo_eval` | `build-geo-data` |
 
 All three share one concurrency limit, so only one runs at a time. Every morning (UTC):
 `sync-peeringdb` (03:00) → `update-asn-domains` (04:00) → `build-asn-data` (06:00).
@@ -202,7 +203,13 @@ layers before it put under its prefixes.
 |---|---|---|
 | `download` | | rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows from Postgres, geofeed rows from R2 |
 | `build-mmdb` | `download` | runs `mmdbbuilder geo` on the layer files → `ip2geo-openipdata-<date>.mmdb` |
-| `publish` | `download`, `build-mmdb` | uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, pings `HC_PING_GEO` if set |
+| `evaluate` | `download`, `build-mmdb` | scores the MMDB against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
+| `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
+
+A problem with the evaluation itself (holdout, `mmdbbuilder eval`, Postgres) does not fail the
+`evaluate` task: it is logged and stored in its output as `error`, and `publish` then refuses with
+a non-retryable error until a run with `{"force_publish": true}`. A retry of `evaluate` replaces the
+unpublished `public.geo_eval` row of the same date.
 
 - Layers, in order:
   1. the five RIRs' delegated stats: the country each block was delegated to (IPv4 and IPv6);
@@ -233,9 +240,52 @@ layers before it put under its prefixes.
 - Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB
   is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2geo-openipdata.mmdb`.
 - Needs `PGSQL` and `R2` always, and `GITHUB_TOKEN` to publish; a missing setting fails
-  `download` without retries. Manual runs can pass `{"skip_publish": true}` (or
-  `run-geo -skip-publish`) to build without uploading.
+  `download` without retries. `IPINFO_TOKEN` is optional (see below). Manual runs can pass
+  `{"skip_publish": true}` (or `run-geo -skip-publish`) to build and evaluate without uploading.
 - It only reads the ASN tables, so it has its own `geo` concurrency limit.
+
+#### Evaluation and publish gate
+
+`evaluate` runs `mmdbbuilder eval` (IPv4 only; all MMDB reading is there) on the MMDB that
+`build-mmdb` wrote and inserts one row into `public.geo_eval` (`id`, `run_at`, `date_tag`, `metrics`
+as JSON, `published`), with `published = false`. `publish` sets it to true after a successful publish.
+`build-geo-data` is the table's only writer.
+
+References, refreshed into `/var/lib/openipdata/geo/eval/` with conditional downloads; a reference
+that cannot be fetched falls back to its cached copy, and with none it is skipped and reported in the
+task output (its scores are then left out of `metrics`, never zero):
+
+| Reference | Source | Used for |
+|---|---|---|
+| DB-IP Lite city (CC BY 4.0) | `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz`, this month's, last month's if not out yet | country and city agreement |
+| IPinfo Lite (country) | `https://ipinfo.io/data/ipinfo_lite.mmdb?token=...`, needs `IPINFO_TOKEN`; skipped without it | country agreement |
+| RIPE Atlas probes | `https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest` (daily JSON, bzip2): connected probes with a public IPv4 address and a country, kept as `atlas-probes.csv` (`ip,country,lat,lon`) | per-probe country accuracy |
+| Geofeed holdout | the feeds whose `sha256(feed_url)` falls in a fixed 10% bucket are left out of a second build, `holdout.mmdb`, with the real build's arguments | how well the lower layers guess what operators declared |
+
+The IPinfo token is a secret and sits in the download URL: every error of that request is replaced
+by a fixed message, so it never reaches a log, a task output or a returned error.
+
+The holdout is scored on the held-out IPv4 rows (`holdout-truth.csv`: `prefix,country,city`) that no
+kept row covers or lies inside, so it measures the lower layers, not the overlap of two feeds. The
+score looks up the first address of each prefix.
+
+Metrics (percentages with 2 decimals; address-weighted unless said otherwise):
+
+| Metric | Meaning |
+|---|---|
+| `country_pct`, `city_pct` | share of the IPv4 space in the RIR layer (`rir.csv`) that has a country, a city |
+| `dbip_country_agree_pct` | our country equals DB-IP's, over addresses both have a country for |
+| `dbip_city_agree_pct` | our city equals DB-IP's (case-insensitive, trimmed), over addresses where both have a city and the same country |
+| `ipinfo_country_agree_pct` | our country equals IPinfo's |
+| `consensus_country_agree_pct` | over addresses where DB-IP and IPinfo agree with each other, how often we agree with them |
+| `atlas_probes`, `atlas_country_pct` | per probe: probes in the file; share whose country we have right (no answer counts as wrong) |
+| `holdout_prefixes`, `holdout_country_pct`, `holdout_city_pct` | per held-out prefix: prefixes scored; share with the right country; share with the right city among those that name one |
+
+Publish gate: before publishing, the new `atlas_country_pct` and `holdout_country_pct` are compared
+with the latest row where `published` is true. If either fell by more than 2.0 points (only scores
+present in both rows), `publish` fails without retries (`geo.ErrGate`). With no published row there is
+no baseline and it publishes. A manual run with `{"force_publish": true}` (or `run-geo -force-publish`)
+skips the gate, after checking that the drop is real; the forced row becomes the new baseline.
 
 ## Commands
 
@@ -251,8 +301,10 @@ openipdata-worker run-geofeeds -force-upload # same, uploading even after a drop
 openipdata-worker run-geofeeds -skip-upload -rdap-budget 100  # a quick local test run
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet
 openipdata-worker run-geo -skip-publish  # same, without uploading
+openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] <layer.csv[.gz]>...
+mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <f>] [-ipinfo <f>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs

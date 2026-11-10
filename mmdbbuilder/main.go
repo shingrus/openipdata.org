@@ -3,13 +3,17 @@
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
 //	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-debug] <layer.csv[.gz]>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
+//	mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, a layer named in -same-country applies only where the country so
 // far is the same or unknown. A layer named in -within-first is used only for
 // rows no broader than one prefix of the first layer; others are skipped.
+//
+// eval scores an ip2geo MMDB (IPv4 only) and prints one JSON object. See eval.go.
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -27,6 +31,8 @@ func main() {
 		runGeo(os.Args[2:])
 	case "lookup":
 		runLookup(os.Args[2:])
+	case "eval":
+		runEval(os.Args[2:])
 	default:
 		usage()
 	}
@@ -36,6 +42,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-debug] <layer.csv[.gz]>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <rir.csv> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
 }
 
@@ -89,6 +96,32 @@ func runLookup(args []string) {
 		usage()
 	}
 	if err := printLookups(*db, *ip, *ips); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runEval(args []string) {
+	flags := flag.NewFlagSet("eval", flag.ExitOnError)
+	var in evalInputs
+	flags.StringVar(&in.db, "db", "", "ip2geo MMDB to score")
+	flags.StringVar(&in.rir, "rir", "", "RIR layer CSV: the IPv4 space that should have a country")
+	flags.StringVar(&in.dbip, "dbip", "", "DB-IP city MMDB (optional)")
+	flags.StringVar(&in.ipinfo, "ipinfo", "", "IPinfo Lite MMDB (optional)")
+	flags.StringVar(&in.atlas, "atlas", "", "RIPE Atlas probes CSV ip,country,lat,lon (optional)")
+	flags.StringVar(&in.holdoutDB, "holdout-db", "", "MMDB built without the held-out geofeeds (optional, needs -holdout-truth)")
+	flags.StringVar(&in.holdoutTruth, "holdout-truth", "", "CSV prefix,country,city of the held-out rows (optional, needs -holdout-db)")
+	flags.Parse(args)
+
+	if in.db == "" || in.rir == "" || flags.NArg() > 0 {
+		usage()
+	}
+	metrics, err := evaluate(in)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(metrics); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

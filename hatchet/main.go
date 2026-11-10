@@ -6,12 +6,13 @@
 //	openipdata-worker run-pdb                    # sync-peeringdb
 //	openipdata-worker run-domains                # update-asn-domains
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] # sync-geofeeds
-//	openipdata-worker run-geo [-skip-publish]    # build-geo-data
+//	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //
 // Environment: PGSQL (Postgres DSN), PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
-// HC_PING_GEO (optional), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
+// HC_PING_GEO (optional), IPINFO_TOKEN (optional, a secret: the IPinfo Lite
+// reference of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // mmdbbuilder is expected next to this binary.
 package main
 
@@ -62,8 +63,11 @@ type SyncGeofeedsInput struct {
 
 // BuildGeoInput is the build-geo-data input; cron runs use the zero value.
 type BuildGeoInput struct {
-	// SkipPublish builds the MMDB but uploads nothing (for manual test runs).
+	// SkipPublish builds and evaluates the MMDB but uploads nothing (for manual test runs).
 	SkipPublish bool `json:"skip_publish"`
+	// ForcePublish publishes even if the scores dropped more than the gate allows
+	// (for a manual run after checking that the drop is real).
+	ForcePublish bool `json:"force_publish"`
 }
 
 func main() {
@@ -131,6 +135,7 @@ func newGeoPipeline(progress func(string)) (*geo.Pipeline, error) {
 		GitHubToken: env("GITHUB_TOKEN"),
 		GitHubRepo:  githubRepo(),
 		HCPing:      env("HC_PING_GEO"),
+		IPinfoToken: env("IPINFO_TOKEN"),
 	}, nil
 }
 
@@ -411,7 +416,7 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("build-geo-data",
-		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + geofeed rows (R2) -> ip2geo MMDB"),
+		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout"),
 		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
 		hatchet.WithWorkflowCron("0 7,19 * * *"),
 		// Its own limit, not asn-db: it only reads the ASN tables.
@@ -448,6 +453,20 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		return p.BuildMMDB(ctx, src)
 	}, taskRetry(hatchet.WithParents(download), hatchet.WithExecutionTimeout(time.Hour))...)
 
+	// The scores go to public.geo_eval; publish refuses a database that scores
+	// clearly worse than the last published one.
+	eval := wf.NewTask("evaluate", func(ctx hatchet.Context, _ BuildGeoInput) (geo.EvalOutput, error) {
+		p, src, err := withSource(ctx)
+		if err != nil {
+			return geo.EvalOutput{}, err
+		}
+		var built geo.BuildMMDBOutput
+		if err := ctx.ParentOutput(mmdb, &built); err != nil {
+			return geo.EvalOutput{}, err
+		}
+		return p.Evaluate(ctx, src, built.Path)
+	}, taskRetry(hatchet.WithParents(download, mmdb), hatchet.WithExecutionTimeout(time.Hour))...)
+
 	wf.NewTask("publish", func(ctx hatchet.Context, input BuildGeoInput) (geo.PublishOutput, error) {
 		if input.SkipPublish {
 			taskLog(ctx)("publish: skipped (skip_publish=true)")
@@ -461,8 +480,16 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		if err := ctx.ParentOutput(mmdb, &built); err != nil {
 			return geo.PublishOutput{}, err
 		}
-		return p.Publish(ctx, src, built.Path)
-	}, taskRetry(hatchet.WithParents(download, mmdb), hatchet.WithExecutionTimeout(30*time.Minute))...)
+		var scores geo.EvalOutput
+		if err := ctx.ParentOutput(eval, &scores); err != nil {
+			return geo.PublishOutput{}, err
+		}
+		out, err := p.Publish(ctx, src, built.Path, scores, input.ForcePublish)
+		if errors.Is(err, geo.ErrGate) {
+			err = hatchet.NewNonRetryableError(err)
+		}
+		return out, err
+	}, taskRetry(hatchet.WithParents(download, mmdb, eval), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	return wf
 }
@@ -569,7 +596,8 @@ func runGeofeeds(ctx context.Context, args []string) error {
 // runGeo runs the build-geo-data tasks once, in order, without Hatchet.
 func runGeo(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-geo", flag.ExitOnError)
-	skipPublish := flags.Bool("skip-publish", false, "build the MMDB but upload nothing")
+	skipPublish := flags.Bool("skip-publish", false, "build and evaluate the MMDB but upload nothing")
+	forcePublish := flags.Bool("force-publish", false, "publish even if the scores dropped more than the gate allows")
 	flags.Parse(args)
 	if flags.NArg() > 0 {
 		return fmt.Errorf("run-geo: unexpected argument %q", flags.Arg(0))
@@ -590,10 +618,14 @@ func runGeo(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	scores, err := p.Evaluate(ctx, src, built.Path)
+	if err != nil {
+		return err
+	}
 	if *skipPublish {
 		cliLog("publish: skipped (-skip-publish)")
 		return nil
 	}
-	_, err = p.Publish(ctx, src, built.Path)
+	_, err = p.Publish(ctx, src, built.Path, scores, *forcePublish)
 	return err
 }

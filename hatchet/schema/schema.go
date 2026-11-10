@@ -1,5 +1,5 @@
 // Package schema creates and upgrades the Postgres tables the workflows share:
-// public.asn, public.asn_domain, and public.asn_geo_pdb. Each table has one
+// public.asn, public.asn_domain, public.asn_geo_pdb, and public.geo_eval. Each table has one
 // writer (see AGENTS.md); every workflow runs Ensure before it touches them.
 package schema
 
@@ -51,6 +51,16 @@ var statements = []string{
 		city TEXT,
 		dominance DOUBLE PRECISION,
 		domain TEXT
+	)`,
+	// One row per build-geo-data run: the scores of the MMDB it built. published
+	// is set once that MMDB has been published; the latest such row is the
+	// baseline the next publish is compared with.
+	`CREATE TABLE IF NOT EXISTS public.geo_eval (
+		id BIGSERIAL PRIMARY KEY,
+		run_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		date_tag TEXT,
+		metrics JSONB NOT NULL,
+		published BOOLEAN NOT NULL DEFAULT false
 	)`,
 }
 

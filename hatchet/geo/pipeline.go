@@ -73,10 +73,12 @@ type Pipeline struct {
 	GitHubToken string
 	GitHubRepo  string // owner/name of the repo whose "latest" release gets the MMDB
 	HCPing      string // optional healthchecks.io ping URL
+	IPinfoToken string // optional; without it Evaluate skips the IPinfo reference. A secret: never log it
 
 	// Tests only.
 	stats     []struct{ Name, URL string }
 	geoBlocks string
+	refURLs   *evalURLs
 }
 
 // Source is what Download prepared for the run.
@@ -294,6 +296,35 @@ type BuildMMDBOutput struct {
 // layerSummary matches mmdbbuilder's "layer <name>: R rows, P prefixes, S skipped".
 var layerSummary = regexp.MustCompile(`(?m)^layer (\S+): \d+ rows, (\d+) prefixes, (\d+) skipped$`)
 
+// geoArgs are the arguments of "mmdbbuilder geo": the layer files in order,
+// with feeds in place of the geofeed rows layer. The layer file names matter
+// to the flags, so feeds must be named FeedsLayer.
+func (p *Pipeline) geoArgs(out, feeds string) []string {
+	// The PeeringDB rows only refine: an ASN's city must not replace more
+	// specific networks that the registration data puts in another country.
+	args := []string{"geo", "-out", out, "-names", filepath.Join(p.layersDir(), NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer}
+	for _, name := range layerOrder {
+		if name == FeedsLayer {
+			args = append(args, feeds)
+		} else {
+			args = append(args, filepath.Join(p.layersDir(), name))
+		}
+	}
+	return args
+}
+
+// runBuilder runs mmdbbuilder and returns what it printed.
+func (p *Pipeline) runBuilder(ctx context.Context, args []string) (string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, p.MMDBBuilder, args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("mmdbbuilder %s: %w: %s", args[0], err, outputs.LastLines(stderr.String(), 5))
+	}
+	return stdout.String(), nil
+}
+
 // BuildMMDB runs "mmdbbuilder geo" on the layer files.
 func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, error) {
 	dir := p.outDir(src.DateTag)
@@ -302,25 +333,15 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	}
 	// mmdbbuilder writes through a temporary file and renames it into place.
 	final := filepath.Join(dir, fmt.Sprintf(mmdbFileFormat, src.DateTag))
-	// The PeeringDB rows only refine: an ASN's city must not replace more
-	// specific networks that the registration data puts in another country.
-	args := []string{"geo", "-out", final, "-names", filepath.Join(p.layersDir(), NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer}
-	for _, name := range layerOrder {
-		args = append(args, filepath.Join(p.layersDir(), name))
+	stdout, err := p.runBuilder(ctx, p.geoArgs(final, filepath.Join(p.layersDir(), FeedsLayer)))
+	if err != nil {
+		return BuildMMDBOutput{}, err
 	}
-
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, p.MMDBBuilder, args...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return BuildMMDBOutput{}, fmt.Errorf("mmdbbuilder: %w: %s", err, outputs.LastLines(stderr.String(), 5))
-	}
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
 	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final)}
-	for _, m := range layerSummary.FindAllStringSubmatch(stdout.String(), -1) {
+	for _, m := range layerSummary.FindAllStringSubmatch(stdout, -1) {
 		out.Prefixes[m[1]], _ = strconv.Atoi(m[2])
 		if n, _ := strconv.Atoi(m[3]); n > 0 {
 			out.Skipped[m[1]] = n
@@ -342,12 +363,34 @@ type PublishOutput struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 }
 
-// Publish uploads the MMDB to R2 under <YYYY-MM-DD>/, replaces it on the
-// rolling GitHub release (leaving the release text, which build-asn-data
-// writes), then pings HCPing if set and the geofeed rows are not stale.
-func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string) (PublishOutput, error) {
+// evalFailure tells why ev cannot be trusted: Evaluate recorded an error, or
+// no scores row was stored. It is empty for a usable result.
+func evalFailure(ev EvalOutput) string {
+	switch {
+	case ev.Error != "":
+		return ev.Error
+	case ev.ID == 0:
+		return "no scores were stored"
+	}
+	return ""
+}
+
+// Publish first checks the publish gate against the latest published scores
+// (ErrGate; force skips it), then uploads the MMDB to R2 under <YYYY-MM-DD>/,
+// replaces it on the rolling GitHub release (leaving the release text, which
+// build-asn-data writes), marks ev's row in public.geo_eval as published, and
+// pings HCPing if set and the geofeed rows are not stale. A failed evaluation
+// (ev.Error, or no stored row) is refused with ErrGate before anything else
+// unless force is set; the row is then not marked, as there is none.
+func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string, ev EvalOutput, force bool) (PublishOutput, error) {
 	started := time.Now()
 	out := PublishOutput{}
+	if failure := evalFailure(ev); failure != "" {
+		if !force {
+			return out, fmt.Errorf("%w: evaluation failed: %s; check it, then run with force_publish", ErrGate, failure)
+		}
+		p.log("publish: evaluation failed (%s), publishing anyway (force_publish)", failure)
+	}
 	r2, err := publish.NewR2(p.R2)
 	if err != nil {
 		return out, err
@@ -360,6 +403,11 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string) (Pu
 	if err != nil {
 		return out, err
 	}
+	if force {
+		p.log("publish: gate skipped (force_publish)")
+	} else if err := p.CheckGate(ctx, ev); err != nil {
+		return out, err
+	}
 	if out.R2, err = r2.Upload(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(mmdbPath), mmdbPath); err != nil {
 		return out, err
 	}
@@ -369,6 +417,11 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string) (Pu
 		return out, err
 	}
 	p.log("publish: %s", out.ReleaseURL)
+	if ev.ID == 0 {
+		p.log("publish: no scores row to mark as published")
+	} else if err := p.markPublished(ctx, ev.ID); err != nil {
+		return out, err
+	}
 	if src.FeedsStale {
 		// No ping: the missing one raises the alert that sync-geofeeds needs.
 		p.log("publish: no health check ping, the geofeed rows are from %s", src.FeedsUploaded)
