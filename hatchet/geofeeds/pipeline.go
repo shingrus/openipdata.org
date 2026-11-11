@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -30,7 +31,8 @@ type Pipeline struct {
 	dumps        []dump
 	rdap         []rdapRegistry
 	caidaBase    string
-	geonames     string // URL of cities1000.zip
+	listPages    []string // pages to read for feed links; nil: the pages in feeds.txt
+	geonames     string   // URL of cities1000.zip
 	now          func() time.Time
 	allowPrivate bool // let the HTTP clients reach test servers on 127.0.0.1
 	// Replace Postgres and the candidate URLs in tests.
@@ -224,13 +226,38 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 	out.Sources[sourceDomain] = SourceStats{Status: "probed", URLs: len(domainURLs)}
 	p.log("discover: domain: %d URLs", len(domainURLs))
 
-	listed := parseFeedList(listedFeeds)
+	listClient := newHTTPClient(2*time.Minute, p.allowPrivate)
+	listed, pages := parseFeedList(listedFeeds)
+	if p.listPages != nil {
+		pages = p.listPages
+	}
 	for _, u := range listed {
 		c.add("list", u, netip.Prefix{})
 	}
-	out.Sources["list"] = SourceStats{Status: "embedded", URLs: len(listed)}
+	listStats := SourceStats{Status: "embedded", URLs: len(listed)}
+	// A page that fails or has no links is reported, not fatal.
+	var pageErrs []string
+	for _, page := range pages {
+		links, err := pageFeeds(ctx, listClient, page)
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if err == nil && len(links) == 0 {
+			err = errors.New("no feed links")
+		}
+		if err != nil {
+			p.log("discover: list page %s: %v", page, err)
+			pageErrs = append(pageErrs, page+": "+err.Error())
+			continue
+		}
+		for _, u := range links {
+			c.add("list", u, netip.Prefix{})
+		}
+		listStats.URLs += len(links)
+	}
+	listStats.Error = strings.Join(pageErrs, "; ")
+	out.Sources["list"] = listStats
 
-	listClient := newHTTPClient(2*time.Minute, p.allowPrivate)
 	caida, files, err := caidaURLs(ctx, listClient, base, p.clock())
 	stats := SourceStats{Status: statusDownloaded, URLs: len(caida)}
 	if err != nil {

@@ -395,9 +395,9 @@ func TestDiscoverAddsDomainFeeds(t *testing.T) {
 	day := time.Date(2026, 11, 10, 5, 0, 0, 0, time.UTC)
 	store := newFakeStore()
 	p := &Pipeline{
-		DataDir:      t.TempDir(),
-		dumps:        []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}},
-		caidaBase:    server.URL + "/caida",
+		DataDir:   t.TempDir(),
+		dumps:     []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}},
+		caidaBase: server.URL + "/caida", listPages: []string{},
 		now:          func() time.Time { return day },
 		allowPrivate: true,
 		store:        store,

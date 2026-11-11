@@ -571,7 +571,7 @@ func TestDiscoverWhois(t *testing.T) {
 			{"ripe-inetnum", "ripe", server.URL + "/ripe.gz"},
 			{"lacnic", "lacnic", server.URL + "/lacnic.gz"}, // not read for geoloc
 		},
-		caidaBase:    server.URL + "/caida",
+		caidaBase: server.URL + "/caida", listPages: []string{},
 		geonames:     server.URL + "/cities.zip",
 		now:          func() time.Time { return time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC) },
 		allowPrivate: true,

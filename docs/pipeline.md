@@ -141,13 +141,15 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 
 `evaluate` scores every build into `public.geo_eval`; `publish` refuses when `atlas_country_pct` or `holdout_country_pct` fell more than 2.0 points against the last published row (`force_publish` overrides).
 
-| Reference | Measures | 2026-11-10 |
-| --- | --- | --- |
-| Coverage (RIR layer space) | `country_pct`, `city_pct` | city 26.12% of IPv4 |
-| RIPE Atlas probes (connected, public IPv4) | `atlas_country_pct` | 96.32% |
-| Geofeed holdout (frozen 10% of feeds left out of a second build) | `holdout_country_pct`, `holdout_city_pct` | city ~6.5% |
-| DB-IP Lite city | country and city agreement | — |
-| IPinfo Lite | country agreement; consensus with DB-IP | — |
+| Reference | Measures |
+| --- | --- |
+| Coverage (RIR layer space) | `country_pct`, `city_pct` |
+| RIPE Atlas probes (connected, public IPv4) | `atlas_country_pct` |
+| Geofeed holdout (frozen 10% of feeds left out of a second build) | `holdout_country_pct`, `holdout_city_pct` |
+| DB-IP Lite city | country and city agreement |
+| IPinfo Lite | country agreement; consensus with DB-IP |
+
+The scores of every build are in `public.geo_eval`.
 
 City accuracy by distance (≤100 km, GeoNames) is planned; today city matches are by name.
 
@@ -156,6 +158,7 @@ City accuracy by distance (≤100 km, GeoNames) is planned; today city matches a
 | Item | Status | Expected effect |
 | --- | --- | --- |
 | `build-geo-data` every 4 h | decided | results reach users within ~4 h |
+| `visitor_city_pct`: share of visitor /24s in `unknown_ip_networks` (last 30 days, /24 and /48 only, never full IPs) that have a city from a measured layer (`60-whois`, `65-rdns`, `70-geofeeds`) | decided | the 90% target for `resolve-ips`; `city_pct` (whole RIR space) stays as a coverage figure |
 | `resolve-ips`: visitor /24s from nossl.sh `/api/unknown` → traceroute → nearest routers → city → `65-rdns` | design | open: where the Atlas part runs (own workflow or inside `resolve-ips`) |
 | Atlas routers ≤1 ms from a probe → `atlas_router_locations`; learn and measure rDNS name → city rules | design | ~7,300 located routers per round; ground truth for rules |
 | Atlas probe /24s as data (even ids), odd ids for evaluation | proposed | ~6,500 /24s |

@@ -55,7 +55,7 @@ func TestDiscover(t *testing.T) {
 			{"irr", "irr", server.URL + "/irr.gz"},
 			{"lacnic-irr", "irr", server.URL + "/broken.gz"}, // a missing IRR dump is not fatal
 		},
-		caidaBase:    server.URL + "/caida",
+		caidaBase: server.URL + "/caida", listPages: []string{},
 		now:          func() time.Time { return day },
 		allowPrivate: true,
 	}
@@ -163,6 +163,38 @@ func TestReadDumpBroken(t *testing.T) {
 
 // rdap-lookups runs beside discover: Discover (and loadRDAP) must never fail or
 // see a partial result while rdap.jsonl is appended to in pieces and compacted.
+func TestDiscoverListPages(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/page", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"url":"https:\/\/dl.example\/f1\/geo.csv"} <a href="https://dl.example/f1/byoip.csv">x</a> https://dl.example/f1/geo.csv`))
+	})
+	mux.HandleFunc("/empty", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("<html>no links</html>")) })
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	store := newFakeStore()
+	p := &Pipeline{
+		DataDir:      t.TempDir(),
+		store:        store,
+		dumps:        []dump{},
+		caidaBase:    server.URL + "/caida",
+		listPages:    []string{server.URL + "/page", server.URL + "/empty", server.URL + "/gone"},
+		allowPrivate: true,
+	}
+	out, err := p.Discover(context.Background()) // the empty and the missing page do not fail it
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := out.Sources["list"]
+	if s.URLs < 2 || !strings.Contains(s.Error, "/empty: no feed links") || !strings.Contains(s.Error, "/gone: HTTP 404") || strings.Contains(s.Error, "/page:") {
+		t.Errorf("list stats = %+v", s)
+	}
+	for _, u := range []string{"https://dl.example/f1/geo.csv", "https://dl.example/f1/byoip.csv"} {
+		if r := store.row(u); r == nil || !reflect.DeepEqual(r.Sources, []string{"list"}) {
+			t.Errorf("%s: row %+v", u, r)
+		}
+	}
+}
+
 func TestDiscoverWhileRDAPIsWritten(t *testing.T) {
 	whois := gzipped(t, "inetnum: 192.0.2.0 - 192.0.2.255\ngeofeed: https://isp.example/geofeed.csv\n")
 	mux := http.NewServeMux()
@@ -171,10 +203,10 @@ func TestDiscoverWhileRDAPIsWritten(t *testing.T) {
 	defer server.Close()
 	day := time.Date(2026, 11, 9, 5, 0, 0, 0, time.UTC)
 	p := &Pipeline{
-		DataDir:      t.TempDir(),
-		store:        newFakeStore(),
-		dumps:        []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}},
-		caidaBase:    server.URL + "/caida", // 404: the CAIDA lists are optional
+		DataDir:   t.TempDir(),
+		store:     newFakeStore(),
+		dumps:     []dump{{"ripe", "ripe", server.URL + "/ripe.gz"}},
+		caidaBase: server.URL + "/caida", listPages: []string{}, // 404: the CAIDA lists are optional
 		now:          func() time.Time { return day },
 		allowPrivate: true,
 	}

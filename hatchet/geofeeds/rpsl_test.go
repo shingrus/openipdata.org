@@ -1,9 +1,13 @@
 package geofeeds
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestScanObjects(t *testing.T) {
@@ -104,11 +108,39 @@ func TestCleanURL(t *testing.T) {
 }
 
 func TestParseFeedList(t *testing.T) {
-	got := parseFeedList("# comment\n\nhttps://a.example/feed.csv \nnot a url\n")
-	if !reflect.DeepEqual(got, []string{"https://a.example/feed.csv"}) {
-		t.Errorf("got %q", got)
+	feeds, pages := parseFeedList("# comment\n\nhttps://a.example/feed.csv \npage https://b.example/get?id=1\nnot a url\npage nope\n")
+	if !reflect.DeepEqual(feeds, []string{"https://a.example/feed.csv"}) || !reflect.DeepEqual(pages, []string{"https://b.example/get?id=1"}) {
+		t.Errorf("got %q, %q", feeds, pages)
 	}
-	if len(parseFeedList(listedFeeds)) < 20 {
+	feeds, pages = parseFeedList(listedFeeds)
+	if len(feeds) < 20 || len(pages) == 0 {
 		t.Error("embedded feeds.txt looks empty")
+	}
+}
+
+func TestPageFeeds(t *testing.T) {
+	html := `<a href="https://Host.example/a/one.CSV">one</a>
+<script>{"url":"https:\/\/dl.example\/x\/two.csv","other":"https:\/\/dl.example\/x\/doc.pdf"}</script>
+<a href="https://host.example/a/one.CSV">again</a> <a href="http://plain.example/z.csv">http</a>
+<a href="https://dl.example/x/two.csv">two again</a> https://site.example/page.html`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/page" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("User-Agent") != userAgent {
+			t.Errorf("User-Agent = %q", r.Header.Get("User-Agent"))
+		}
+		w.Write([]byte(html))
+	}))
+	defer server.Close()
+	client := newHTTPClient(time.Minute, true)
+	got, err := pageFeeds(context.Background(), client, server.URL+"/page")
+	want := []string{"https://host.example/a/one.CSV", "https://dl.example/x/two.csv"}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("pageFeeds = %q, %v, want %q", got, err, want)
+	}
+	if _, err := pageFeeds(context.Background(), client, server.URL+"/gone"); err == nil || !strings.Contains(err.Error(), "404") {
+		t.Errorf("404 page: %v", err)
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -53,18 +55,60 @@ var defaultDumps = []dump{
 //go:embed feeds.txt
 var listedFeeds string
 
-func parseFeedList(text string) []string {
-	var out []string
+// parseFeedList splits feeds.txt into feed URLs and the pages that link to feeds.
+func parseFeedList(text string) (feeds, pages []string) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if u, ok := cleanURL(line); ok {
-			out = append(out, u)
+		page := strings.HasPrefix(line, "page ")
+		if u, ok := cleanURL(strings.TrimPrefix(line, "page ")); ok {
+			if page {
+				pages = append(pages, u)
+			} else {
+				feeds = append(feeds, u)
+			}
 		}
 	}
-	return out
+	return feeds, pages
+}
+
+// maxPage caps how much of a page is read.
+const maxPage = 5 << 20
+
+// csvLink matches an https link to a .csv file.
+var csvLink = regexp.MustCompile(`(?i)https://[^\s"'<>\\]+\.csv`)
+
+// pageFeeds returns the distinct .csv links in a page. Links inside JSON
+// have escaped slashes (https:\/\/host\/file.csv).
+func pageFeeds(ctx context.Context, client *http.Client, page string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, page, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPage))
+	if err != nil {
+		return nil, err
+	}
+	var urls []string
+	seen := map[string]bool{}
+	for _, link := range csvLink.FindAllString(strings.ReplaceAll(string(body), `\/`, "/"), -1) {
+		if u, ok := cleanURL(link); ok && !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+	return urls, nil
 }
 
 // CAIDA publishes the geofeed URLs it finds in whois dumps, including ARIN's

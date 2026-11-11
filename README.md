@@ -123,7 +123,7 @@ inetnums into city rows for the same build. Nothing is published.
 |---|---|---|
 | `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
 | `probe-domains` | | needs `PGSQL` (and checks the R2 settings, unless `skip_upload`); reads the ASN website domains from `public.asn_domain` and probes the due ones for a geofeed at the usual paths, within a budget per run; runs beside the other tasks |
-| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list, and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them and `out/60-whois.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
+| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list (and the feed links on its pages), and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them and `out/60-whois.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
 | `check-feeds` | `discover` | needs `PGSQL`; fetches every due feed in `public.geofeed_urls`, keeps a checked copy of each working one, stores the results in the table, and writes the lists |
 | `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them as `70-geofeeds.csv.gz` to R2; also uploads `60-whois.csv.gz` (a problem with that one never fails the task) |
 
@@ -184,7 +184,9 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   the announced prefixes of its domain's ASNs; the other rows are dropped and counted as `outside_asn`
   (a feed with no prefixes on record loses all its rows). A feed with another source (whois, RDAP,
   IRR, list, CAIDA) is exported as before.
-- `hatchet/geofeeds/feeds.txt` lists operator feeds that no whois record points to (source `list`).
+- `hatchet/geofeeds/feeds.txt` lists operator feeds that no whois record points to (source `list`). A `page <url>` line names an
+  HTML page (Microsoft's download page) whose `.csv` links `discover` reads on each run; a page that fails or has no links is
+  reported in the `list` source's `error` and does not fail the run.
 - CAIDA's lists (union of the last 7 days) add ARIN and NIR feeds, which have no public dumps.
   Their use is governed by the CAIDA AUA for public datasets: publications must cite
   "The CAIDA UCSD Geofeed WHOIS dataset", https://catalog.caida.org/dataset/geofeed_whois.

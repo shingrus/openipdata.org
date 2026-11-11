@@ -104,7 +104,7 @@ func TestLookupRDAP(t *testing.T) {
 
 	// discover turns the results into blocks with the registry as source.
 	p.dumps = []dump{}
-	p.caidaBase = server.URL + "/caida"
+	p.caidaBase, p.listPages = server.URL+"/caida", []string{}
 	if _, err := p.Discover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestLookupRDAPFailureKeepsLastAnswer(t *testing.T) {
 	now := time.Now().UTC() // lookup times are wall-clock times
 	p := &Pipeline{DataDir: t.TempDir(), allowPrivate: true, store: newFakeStore(), now: func() time.Time { return now },
 		rdap:  []rdapRegistry{{"arin", server.URL + "/stats", nil, server.URL, time.Millisecond, 100, time.Millisecond}},
-		dumps: []dump{}, caidaBase: server.URL + "/caida"}
+		dumps: []dump{}, caidaBase: server.URL + "/caida", listPages: []string{}}
 	if _, err := p.LookupRDAP(context.Background(), 0); err != nil {
 		t.Fatal(err)
 	}
