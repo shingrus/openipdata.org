@@ -35,7 +35,7 @@ func twoHopTrace(prefix, kind, target, second, last string) traceIn {
 func TestLocateMMDBFallbackVotes(t *testing.T) {
 	o, rules := locateWorld(t)
 	traces := []traceIn{twoHopTrace("5.6.7.0/24", kindVisitor, "5.6.7.9", "9.9.9.1", "5.6.0.2")}
-	rows, out := locate(traces, nil, rules, o, hopCities("5.6.0.2", "DE", "Frankfurt"))
+	rows, out := locate(traces, nil, rules, o, hopCities("5.6.0.2", "DE", "Frankfurt"), nil)
 	if len(rows) != 1 {
 		t.Fatalf("rows = %+v", rows)
 	}
@@ -104,7 +104,7 @@ func TestLocateMMDBFallbackOrder(t *testing.T) {
 			nil, nil,
 		},
 	} {
-		rows, out := locate(c.traces, nil, rules, o, c.hops)
+		rows, out := locate(c.traces, nil, rules, o, c.hops, nil)
 		w := rowFor(rows, "5.6.0.0/16", scopeWide)
 		switch {
 		case c.want == nil && (w != nil || out.MMDBVotes != 0 || out.Votes != 0):
@@ -122,7 +122,7 @@ func TestLocateMMDBFallbackOrder(t *testing.T) {
 func TestLocateMMDBFallbackNeedsASN(t *testing.T) {
 	o, rules := locateWorld(t)
 	traces := []traceIn{twoHopTrace("77.1.2.0/24", kindVisitor, "77.1.2.9", "5.6.0.2", "5.6.0.2")}
-	rows, out := locate(traces, nil, rules, o, hopCities("5.6.0.2", "DE", "Frankfurt"))
+	rows, out := locate(traces, nil, rules, o, hopCities("5.6.0.2", "DE", "Frankfurt"), nil)
 	if len(rows) != 0 || out.MMDBVotes != 0 || out.Votes != 0 || out.NoASN != 1 {
 		t.Errorf("rows = %+v, out = %+v", rows, out)
 	}
@@ -139,7 +139,7 @@ func TestLocateMMDBAgreement(t *testing.T) {
 	}
 	ptrs := names("5.6.0.1", "a.fra1.isp.net", "5.6.0.2", "a.fra2.isp.net", "5.6.0.3", "a.fra3.isp.net", "5.6.4.9", "h.fra4.isp.net")
 	hops := hopCities("5.6.0.1", "DE", "Frankfurt", "5.6.0.2", "DE", "Munich", "5.6.4.9", "DE", "Munich", "5.6.0.4", "DE", "Munich")
-	rows, out := locate(traces, ptrs, rules, o, hops)
+	rows, out := locate(traces, ptrs, rules, o, hops, nil)
 	if out.MMDBCompared != 2 || out.MMDBAgreed != 1 || out.MMDBVotes != 0 {
 		t.Errorf("out = %+v", out)
 	}
@@ -163,19 +163,19 @@ func TestLocateMMDBMixedVotes(t *testing.T) {
 	}
 	hops := hopCities("5.6.0.2", "DE", "Frankfurt", "5.6.0.3", "DE", "Munich", "5.6.0.4", "DE", "Munich")
 	// One rule vote and one MMDB vote for Frankfurt against one MMDB vote for Munich.
-	rows, out := locate(traces(tr("5.6.2.0/24", kindVisitor, "5.6.2.9", "5.6.0.2"), tr("5.6.3.0/24", kindVisitor, "5.6.3.9", "5.6.0.3")), ptrs, rules, o, hops)
+	rows, out := locate(traces(tr("5.6.2.0/24", kindVisitor, "5.6.2.9", "5.6.0.2"), tr("5.6.3.0/24", kindVisitor, "5.6.3.9", "5.6.0.3")), ptrs, rules, o, hops, nil)
 	w := rowFor(rows, "5.6.0.0/16", scopeWide)
 	if w == nil || w.City != "Frankfurt" || w.Method != methodRule || w.RuleVotes != 1 || w.MMDBVotes != 1 || out.Votes != 3 || out.MMDBVotes != 2 {
 		t.Errorf("mixed: %+v %+v", w, out)
 	}
 	// MMDB votes only: two for Munich.
-	rows, _ = locate([]traceIn{tr("5.6.3.0/24", kindVisitor, "5.6.3.9", "5.6.0.3"), tr("5.6.4.0/24", kindVisitor, "5.6.4.9", "5.6.0.4")}, nil, rules, o, hops)
+	rows, _ = locate([]traceIn{tr("5.6.3.0/24", kindVisitor, "5.6.3.9", "5.6.0.3"), tr("5.6.4.0/24", kindVisitor, "5.6.4.9", "5.6.0.4")}, nil, rules, o, hops, nil)
 	w = rowFor(rows, "5.6.0.0/16", scopeWide)
 	if w == nil || w.City != "Munich" || w.Method != methodMMDB || w.RuleVotes != 0 || w.MMDBVotes != 2 {
 		t.Errorf("mmdb only: %+v", w)
 	}
 	// A rule vote against an MMDB vote for another city is a tie: no wide row, as before.
-	rows, out = locate(traces(tr("5.6.3.0/24", kindVisitor, "5.6.3.9", "5.6.0.3")), ptrs, rules, o, hops)
+	rows, out = locate(traces(tr("5.6.3.0/24", kindVisitor, "5.6.3.9", "5.6.0.3")), ptrs, rules, o, hops, nil)
 	if rowFor(rows, "5.6.0.0/16", scopeWide) != nil || out.WideTies != 1 {
 		t.Errorf("tie: %+v %+v", rows, out)
 	}
@@ -215,8 +215,8 @@ func TestHopIPsCoverWhatLocateUses(t *testing.T) {
 			}
 		}
 	}
-	rowsAll, outAll := locate(traces, ptrs, rules, o, all)
-	rowsAsked, outAsked := locate(traces, ptrs, rules, o, asked)
+	rowsAll, outAll := locate(traces, ptrs, rules, o, all, nil)
+	rowsAsked, outAsked := locate(traces, ptrs, rules, o, asked, nil)
 	if !reflect.DeepEqual(rowsAll, rowsAsked) || outAll.MMDBVotes != outAsked.MMDBVotes ||
 		outAll.MMDBCompared != outAsked.MMDBCompared || outAll.MMDBAgreed != outAsked.MMDBAgreed {
 		t.Errorf("rows differ:\nall   %+v %+v\nasked %+v %+v", rowsAll, outAll, rowsAsked, outAsked)

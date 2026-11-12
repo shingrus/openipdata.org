@@ -7,17 +7,24 @@
 // Each Pipeline method is one task; the Hatchet workflow and the local run-rdns
 // command call them in the same order:
 //
-//	PickNetworks  /24s with a visitor and no recent trace -> the batch file (also the only
-//	              task that runs DDL: it creates and upgrades the tables for the whole run)
-//	Trace         scamper traceroutes of three hosts per /24 -> public.network_traces
-//	ResolveNames  PTR names of the targets and the last hops -> public.ip_ptr_names
+//	PickNetworks  the /24s that are due (never traced with a visitor, schedule over, or brought
+//	              back by a visitor; see schedule.go) -> the batch file (also the only task that
+//	              runs DDL: it creates and upgrades the tables for the whole run)
+//	Trace         scamper traceroutes of up to three hosts per /24 -> public.network_traces and
+//	              the schedule public.traced_networks; deletes visitor IPs it no longer needs
+//	ResolveNames  PTR names of the targets and the last hops (and the old names of located
+//	              /24s) -> public.ip_ptr_names
 //	Locate        rules + names + announced prefixes (+ router hop cities from our own
-//	              published ip2geo MMDB) -> public.rdns_geo_layer (skipped while nothing
-//	              it reads has changed)
+//	              published ip2geo MMDB) -> public.rdns_geo_layer, which keeps the rows of
+//	              located /24s that no trace locates again (skipped while nothing it reads
+//	              has changed)
 //
 // A /24 that no rule matches may still vote for its announced prefix with the city of
 // one of its router hops in our own published ip2geo MMDB (a copy kept from R2, read
 // by mmdbbuilder lookup); see mmdb.go.
+//
+// A Hatchet run that picked its full limit starts the next run once it has succeeded (see
+// ShouldChain and main.go). resolve-ips is also the deleter of public.visitor_ips.
 //
 // Visitor IPs (and every traced IP) stay in Postgres and in the batch file on the
 // VM: never in Hatchet task inputs, outputs, log lines or returned errors. Tasks

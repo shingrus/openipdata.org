@@ -35,8 +35,8 @@
 - One writer per table; every other workflow only reads it:
   `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`,
   `public.geo_ix_pdb` ← `sync-peeringdb`, `public.geo_eval` ← `build-geo-data`, `public.geofeed_urls` ← `sync-geofeeds`,
-  `public.visitor_ips` ← external websites (`resolve-ips` only reads it), `public.network_traces`, `public.ip_ptr_names` and
-  `public.rdns_geo_layer` ← `resolve-ips`.
+  `public.visitor_ips` ← external websites insert; `resolve-ips` is its only deleter (exception to one writer: it never inserts or updates),
+  `public.network_traces`, `public.traced_networks`, `public.ip_ptr_names` and `public.rdns_geo_layer` ← `resolve-ips`.
 - Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand. A workflow runs DDL only
   for tables it writes: `ALTER TABLE` takes an ACCESS EXCLUSIVE lock even when the column exists.
 - Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
@@ -63,8 +63,9 @@
   with `-same-country`: they add cities, never change a country); an R2 layer (`60-whois`, `70-geofeeds`) that is missing or older than 3 days skips the `HC_PING_GEO` ping.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
-- `resolve-ips` (cron every 30 minutes, tasks `pick-networks` → `trace` → `resolve-names` → `locate`, own `rdns` limit) only reads
-  `public.visitor_ips` (DDL only `schema.EnsureVisitorIPs`: `CREATE TABLE IF NOT EXISTS`, so it never locks the table the websites write),
+- `resolve-ips` (cron every 30 minutes, tasks `pick-networks` → `trace` → `resolve-names` → `locate`, own `rdns` limit) reads and deletes rows of
+  `public.visitor_ips` (DDL only `schema.EnsureVisitorIPs`: `CREATE TABLE IF NOT EXISTS`, so it never locks the table the websites write; deletes: `trace` removes all but the newest visitor IP
+  (`last_seen_at`, then `ip`) of each /24 it just stored traces for, in the transaction that stores them, and `locate` removes every visitor IP of a `located` /24 after its commit; counts only in the outputs),
   `public.generated_rules` (read only; a missing table means no rules; a rule without domains applies to every name) and `public.asn` (only the IPv4 prefixes of `json`, extracted in SQL, kept in memory), and runs
   DDL only for its own tables (`schema.EnsureRDNS`), never `schema.Ensure`. That DDL runs once per workflow run, in the first task
   (`pick-networks`, which the `run-rdns` command also starts with: `connectEnsure`); `trace`, `resolve-names` and `locate` open their connections
@@ -92,6 +93,18 @@
   invalid lines are skipped and counted on stderr, never echoed) and removes both files; the core `locate()` stays pure and gets the hop-to-city map. `public.rdns_geo_layer.method` is `rdns_rule` for traced rows and
   for a wide row that at least one rule voted for, `mmdb_hop` for a wide row of MMDB votes only; wide rows also hold `rule_votes` and `mmdb_votes` for their city (the columns are added by `schema.EnsureRDNS`).
   `build-geo-data` reads prefix, country and city by scope and ignores these columns.
+  **Schedule** (`public.traced_networks`, one row per traced /24, `resolve-ips` the only writer, created by `schema.EnsureRDNS`; pure rules in `rdns/schedule.go`): `status` is `silent` (no hop answered in the /24's new traces),
+  `unmatched` (hops answered, no city) or `located`; `attempts` counts consecutive traces with the same non-located status; `next_trace_at` NULL means "only when a visitor comes again". Silent: next trace after 7 days, at most 3 attempts, then NULL.
+  Unmatched: after attempt 1, 2, 3 wait 7, 20, 60 days, then NULL. NULL rows are traced again only when a visitor of the /24 has `last_seen_at` newer than `last_traced_at` and that trace is at least 60 days old (attempts restart).
+  Located: recheck 150 days after the last trace, whatever the visitors do; a recheck keeps the old city unless it finds one. `trace` writes silent/provisional `unmatched` (a located /24 stays located) in the transaction that stores the traces;
+  `locate` makes the /24s of its traced rows `located` in the transaction that replaces the layer. `pick-networks` (limit 1000, `PickOutput.Limit`) picks, in this order: /24s with no row and a visitor seen in the last 30 days (most visitors first),
+  then rows with `next_trace_at <= now()` (oldest first), then visitor-revived NULL rows (oldest trace first). Targets: newest visitor IP (if the /24 has one; it is optional in the batch file), `.1` and a random host. The first `pick-networks` after the table
+  was added (table empty) backfills it from `network_traces` and `rdns_geo_layer` (located if the layer has a traced row, else unmatched/silent from the newest traces, attempts 1). `trace` also deletes `network_traces` rows older than 200 days and
+  `traced_networks` rows that are not located, have no `next_trace_at` and were last traced more than 200 days ago, and reports `path_compared`/`path_changed` (the two newest traces per prefix and kind, candidates without the target; counts only).
+  **Located /24s stay**: `locate` only uses the newest round of traces of a /24 (those within an hour of its newest), keeps every traced row of the current layer whose /24 no trace located in this rebuild (same columns, same `located_at`) and
+  counts it as a rule vote for its announced prefix (a carried /24 casts no other vote); a row located by a trace gets that trace's time as `located_at`. The shrink guard counts the carried rows. `resolve-names` also looks up again up to 500
+  answers per run older than 30 days that belong to located /24s (routers of traced rows, candidates of their newest traces), oldest first (`refreshed`), with the same no-overwrite-on-error rule. Every lookup sets `public.ip_ptr_names.tried_at` (an error that does not overwrite a stored `ok`/`not_found` row moves only `tried_at`); the refresh skips IPs tried in the last 7 days, so failing names cannot hold its slots. Freshness for the normal lookups stays on `resolved_at`.
+  When a Hatchet run picked its full limit and `trace` stored traces, its successful `locate` task starts a new `resolve-ips` run (not a child; `chained` in the output; the `rdns` limit queues it behind the current run); never from `run-rdns`.
 - Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes only `public.geofeed_urls`
   (DDL only through `schema.EnsureGeofeedURLs`, never `schema.Ensure`; its `probe-domains` task only reads
   `public.asn_domain` and `public.asn`) and has its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.

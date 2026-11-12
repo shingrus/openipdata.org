@@ -101,7 +101,13 @@ func TestTargetsFor(t *testing.T) {
 	}
 	join := func(ts []target) string { return strings.Join(kinds(ts), " ") }
 
-	got := targetsFor(batchTarget{prefix, netip.MustParseAddr("5.6.7.9")}, pick(40))
+	// No visitor (a recheck of a located /24): .1 and a random host only.
+	got := targetsFor(batchTarget{Prefix: prefix}, pick(40))
+	if join(got) != "gateway=5.6.7.1 random=5.6.7.42" {
+		t.Errorf("no visitor: %s", join(got))
+	}
+
+	got = targetsFor(batchTarget{prefix, netip.MustParseAddr("5.6.7.9")}, pick(40))
 	if join(got) != "visitor=5.6.7.9 gateway=5.6.7.1 random=5.6.7.42" {
 		t.Errorf("targets = %s", join(got))
 	}
@@ -177,6 +183,12 @@ func TestTraceBatch(t *testing.T) {
 	byTarget := map[string]traceRow{}
 	for _, r := range rows {
 		byTarget[r.Target] = r
+	}
+	// Answered is per trace: any hop that replied.
+	for target, want := range map[string]bool{"5.6.7.9": true, "5.6.7.1": true, "5.6.7.2": false, "20.30.40.200": false, "20.30.40.1": false} {
+		if got := byTarget[target].Answered; got != want {
+			t.Errorf("%s answered = %v, want %v", target, got, want)
+		}
 	}
 	if r := byTarget["5.6.7.9"]; r.Kind != kindVisitor || r.Prefix != "5.6.7.0/24" || !strings.Contains(string(r.Hops), `"ip":"5.6.7.9"`) {
 		t.Errorf("visitor row = %+v", r)

@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
+	"time"
 
 	"openipdata.org/hatchet/ipdata"
 )
@@ -82,6 +83,7 @@ type traceIn struct {
 	Kind       string
 	Target     netip.Addr
 	Candidates []netip.Addr // the target first, then the tail hops, closest to the target first
+	TracedAt   time.Time    // when it was traced; zero in tests
 }
 
 // parseTrace reads a trace from its stored text forms; false when the target

@@ -115,17 +115,18 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 		// alone reads it) and rdns_geo_layer (build-geo-data reads it).
 		alter := strings.Contains(sql, "ALTER") &&
 			!strings.HasPrefix(sql, "ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS ") &&
+			!strings.HasPrefix(sql, "ALTER TABLE public.ip_ptr_names ADD COLUMN IF NOT EXISTS ") &&
 			!strings.HasPrefix(sql, "ALTER TABLE public.rdns_geo_layer ADD COLUMN IF NOT EXISTS ")
 		if !strings.Contains(sql, "IF NOT EXISTS") || alter || strings.Contains(sql, "visitor_ips") {
 			t.Errorf("unexpected statement: %s", sql)
 		}
-		for _, table := range []string{"network_traces", "ip_ptr_names", "rdns_geo_layer"} {
+		for _, table := range []string{"network_traces", "traced_networks", "ip_ptr_names", "rdns_geo_layer"} {
 			if strings.Contains(sql, "public."+table) {
 				tables[table] = true
 			}
 		}
 	}
-	if len(tables) != 3 {
+	if len(tables) != 4 {
 		t.Errorf("tables created: %v", tables)
 	}
 	if !strings.Contains(strings.Join(r.sqls, "\n"), "PRIMARY KEY (prefix, target_kind, traced_at)") {
@@ -133,6 +134,25 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.sqls, "\n"), "ADD COLUMN IF NOT EXISTS candidates inet[]") {
 		t.Error("network_traces has no candidates column")
+	}
+	// traced_networks: one row per traced /24, with its schedule; its next_trace_at index is partial.
+	var traced string
+	for _, sql := range r.sqls {
+		if strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS public.traced_networks") {
+			traced = sql
+		}
+	}
+	for _, col := range []string{"prefix cidr PRIMARY KEY", "status text NOT NULL", "attempts integer", "last_traced_at timestamptz NOT NULL",
+		"next_trace_at timestamptz,", "located_at timestamptz"} {
+		if !strings.Contains(traced, col) {
+			t.Errorf("traced_networks lacks %q: %s", col, traced)
+		}
+	}
+	if !strings.Contains(strings.Join(r.sqls, "\n"), "ON public.traced_networks (next_trace_at) WHERE next_trace_at IS NOT NULL") {
+		t.Error("traced_networks has no partial next_trace_at index")
+	}
+	if !strings.Contains(strings.Join(r.sqls, "\n"), "ALTER TABLE public.ip_ptr_names ADD COLUMN IF NOT EXISTS tried_at timestamptz") {
+		t.Error("ip_ptr_names has no idempotent tried_at column")
 	}
 	var alters []string
 	for _, sql := range r.sqls {
@@ -157,7 +177,7 @@ func TestEnsureLeavesOutRDNSTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sql := range r.sqls {
-		for _, table := range []string{"visitor_ips", "network_traces", "ip_ptr_names", "rdns_geo_layer"} {
+		for _, table := range []string{"visitor_ips", "network_traces", "traced_networks", "ip_ptr_names", "rdns_geo_layer"} {
 			if strings.Contains(sql, table) {
 				t.Errorf("Ensure touches %s: %s", table, sql)
 			}

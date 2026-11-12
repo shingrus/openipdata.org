@@ -1,7 +1,7 @@
 // Package schema creates and upgrades the Postgres tables the workflows share:
 // public.asn, public.asn_domain, public.asn_geo_pdb, public.geo_ix_pdb, public.geo_eval,
-// public.geofeed_urls, public.visitor_ips, public.network_traces, public.ip_ptr_names, and
-// public.rdns_geo_layer. Each table has one writer (see AGENTS.md); a workflow runs DDL only for
+// public.geofeed_urls, public.visitor_ips, public.network_traces, public.traced_networks,
+// public.ip_ptr_names, and public.rdns_geo_layer. Each table has one writer (see AGENTS.md); a workflow runs DDL only for
 // tables it writes (Ensure, EnsureGeoEval for the read-only build-geo-data, EnsureGeofeedURLs
 // for sync-geofeeds, or EnsureVisitorIPs and EnsureRDNS for resolve-ips).
 package schema
@@ -54,7 +54,8 @@ var geofeedURLsStatements = []string{
 }
 
 // visitorIPsStatement creates public.visitor_ips: the IPs of active visitors, inserted
-// by external websites (resolve-ips only reads it). resolve-ips runs this one statement
+// by external websites (resolve-ips reads it and deletes the rows it no longer needs; it
+// never inserts or updates). resolve-ips runs this one statement
 // (EnsureVisitorIPs) so it never locks the table the websites write to: no ALTER, no extra index.
 const visitorIPsStatement = `CREATE TABLE IF NOT EXISTS public.visitor_ips (
 		ip inet PRIMARY KEY,
@@ -84,6 +85,20 @@ var rdnsStatements = []string{
 	`ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS candidates inet[]`,
 	// The rows still to fill, for the one-time backfill; empty afterwards.
 	`CREATE INDEX IF NOT EXISTS network_traces_no_candidates_idx ON public.network_traces (traced_at) WHERE candidates IS NULL`,
+	// The schedule of one traced /24 (resolve-ips is the only writer). status: silent (no hop
+	// answered in the newest traces), unmatched (hops answered, no city) or located;
+	// attempts: consecutive traces with the same non-located status (0 for located);
+	// next_trace_at: when the /24 is traced again, NULL = only when a visitor comes again;
+	// located_at: when the /24 was located (NULL until then).
+	`CREATE TABLE IF NOT EXISTS public.traced_networks (
+		prefix cidr PRIMARY KEY,
+		status text NOT NULL,
+		attempts integer NOT NULL DEFAULT 0,
+		last_traced_at timestamptz NOT NULL,
+		next_trace_at timestamptz,
+		located_at timestamptz
+	)`,
+	`CREATE INDEX IF NOT EXISTS traced_networks_next_trace_at_idx ON public.traced_networks (next_trace_at) WHERE next_trace_at IS NOT NULL`,
 	// The PTR name of one IP (a hop or a target). status: ok, not_found, or error;
 	// ptr is NULL unless the status is ok.
 	`CREATE TABLE IF NOT EXISTS public.ip_ptr_names (
@@ -93,6 +108,10 @@ var rdnsStatements = []string{
 		resolved_at timestamptz NOT NULL DEFAULT now()
 	)`,
 	`CREATE INDEX IF NOT EXISTS ip_ptr_names_resolved_at_idx ON public.ip_ptr_names (resolved_at)`,
+	// tried_at: the last lookup of the IP, whatever came of it (an error never replaces an ok or
+	// not_found answer, so resolved_at stays old; tried_at tells the refresh it was just tried).
+	// NULL for rows written before the column was added. ip_ptr_names has one writer and no other reader.
+	`ALTER TABLE public.ip_ptr_names ADD COLUMN IF NOT EXISTS tried_at timestamptz`,
 	// One located prefix. scope: traced (a /24 a trace located) or wide (an announced
 	// prefix, never wider than /16, that the traced /24s voted for). A /24 can be
 	// both, hence the key. router_*, rule_name and same_asn describe a traced
@@ -211,7 +230,7 @@ func EnsureVisitorIPs(ctx context.Context, db Execer) error {
 	return nil
 }
 
-// EnsureRDNS creates public.network_traces, public.ip_ptr_names and
+// EnsureRDNS creates public.network_traces, public.traced_networks, public.ip_ptr_names and
 // public.rdns_geo_layer, the tables resolve-ips writes, and adds the
 // network_traces.candidates column and the method and vote columns of rdns_geo_layer.
 // resolve-ips uses it (with EnsureVisitorIPs) instead of Ensure, once per run: its

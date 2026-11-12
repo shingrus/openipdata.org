@@ -11,8 +11,9 @@
 //
 // Environment: PGSQL (Postgres DSN; sync-geofeeds keeps its URL list in
 // public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn;
-// resolve-ips reads public.visitor_ips, public.generated_rules and public.asn and writes
-// public.network_traces, public.ip_ptr_names and public.rdns_geo_layer),
+// resolve-ips reads public.generated_rules and public.asn, reads and deletes rows of
+// public.visitor_ips (the websites insert them), and writes public.network_traces,
+// public.traced_networks, public.ip_ptr_names and public.rdns_geo_layer),
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
@@ -567,12 +568,15 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	return wf
 }
 
+// resolveIPsName is the name of the resolve-ips workflow (its last task starts the next run by name).
+const resolveIPsName = "resolve-ips"
+
 // resolveIPsWorkflow traces visitor /24s and turns router names into cities.
 // Visitor IPs stay in Postgres (and the batch file on the VM): every task
 // returns counts only.
 func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
-	wf := client.NewWorkflow("resolve-ips",
-		hatchet.WithWorkflowDescription("public.visitor_ips -> scamper traces -> PTR names -> public.network_traces, public.ip_ptr_names, public.rdns_geo_layer (reads public.generated_rules and public.asn)"),
+	wf := client.NewWorkflow(resolveIPsName,
+		hatchet.WithWorkflowDescription("public.visitor_ips -> scamper traces -> PTR names -> public.network_traces, public.traced_networks, public.ip_ptr_names, public.rdns_geo_layer (reads public.generated_rules and public.asn; deletes visitor IPs it no longer needs)"),
 		hatchet.WithWorkflowCron("*/30 * * * *"),
 		// Its own limit: it writes no ASN table, and a run must not overlap the next one.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns")),
@@ -596,14 +600,49 @@ func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	}, taskRetry(hatchet.WithParents(trace), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	wf.NewTask("locate", func(ctx hatchet.Context, input ResolveIPsInput) (rdns.LocateOutput, error) {
-		out, err := newRDNSPipeline(taskLog(ctx)).Locate(ctx, input.ForceReplace)
+		log := taskLog(ctx)
+		out, err := newRDNSPipeline(log).Locate(ctx, input.ForceReplace)
 		if errors.Is(err, rdns.ErrShrink) {
 			err = hatchet.NewNonRetryableError(err)
 		}
-		return out, err
-	}, taskRetry(hatchet.WithParents(names), hatchet.WithExecutionTimeout(30*time.Minute))...)
+		if err != nil {
+			return out, err
+		}
+		// Every task of this run succeeded: a run that picked its full limit starts the next
+		// one at once. The run is a new top-level one (not a child of this run), so the
+		// "rdns" limit queues it behind this one.
+		var pickOut rdns.PickOutput
+		var traceOut rdns.TraceOutput
+		if err := ctx.ParentOutput(pick, &pickOut); err != nil {
+			log("locate: could not read the pick-networks output, no chaining")
+		} else if err := ctx.ParentOutput(trace, &traceOut); err != nil {
+			log("locate: could not read the trace output, no chaining")
+		} else {
+			out.Chained = chainNext(pickOut, traceOut, func() error {
+				_, err := client.RunNoWait(ctx.GetContext(), resolveIPsName, ResolveIPsInput{})
+				return err
+			}, log)
+		}
+		return out, nil
+	}, taskRetry(hatchet.WithParents(names, pick, trace), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	return wf
+}
+
+// chainNext starts the next resolve-ips run through trigger when the finished run
+// picked its full limit and stored traces (rdns.ShouldChain). A trigger that fails is
+// logged (the error is the Hatchet client's and holds no IP) and the run still succeeds:
+// its rows are stored, and the cron starts the next run anyway.
+func chainNext(pick rdns.PickOutput, trace rdns.TraceOutput, trigger func() error, log func(string)) bool {
+	if !rdns.ShouldChain(pick, trace) {
+		return false
+	}
+	if err := trigger(); err != nil {
+		log("locate: could not start the next resolve-ips run: " + err.Error())
+		return false
+	}
+	log("locate: the run picked its full limit, the next resolve-ips run is queued")
+	return true
 }
 
 // runASN runs the build-asn-data tasks once, in order, without Hatchet.

@@ -204,7 +204,7 @@ func TestStoreNamesKeepsGoodAnswers(t *testing.T) {
 	for _, part := range []string{
 		"INSERT INTO public.ip_ptr_names AS t",
 		"ON CONFLICT (ip) DO UPDATE",
-		"WHERE excluded.status <> 'error' OR t.status = 'error'",
+		"excluded.status <> 'error' OR t.status = 'error'",
 	} {
 		if !strings.Contains(storeNamesSQL, part) {
 			t.Errorf("storeNamesSQL lacks %q", part)

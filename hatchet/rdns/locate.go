@@ -45,6 +45,12 @@ type geoRow struct {
 	Rule     string     // the rule that matched it; traced rows only
 	SameASN  *bool      // traced rows: nil when the target's ASN is unknown
 
+	// LocatedAt is when the row was found: for a traced row the time of the trace that located
+	// the /24 (so a rebuild from the same trace keeps it, a newer trace moves it, and a row
+	// carried over from the previous layer keeps its own); zero for a row found without a
+	// trace time and for wide rows (the table stamps now()).
+	LocatedAt time.Time
+
 	Method string // methodRule for a traced row; for a wide row methodRule if a rule voted for the city, else methodMMDB
 	// RuleVotes and MMDBVotes count the votes for the city of a wide row by method.
 	RuleVotes, MMDBVotes int
@@ -58,8 +64,9 @@ type match struct {
 	Router   netip.Addr
 	PTR      string
 	Rule     *rule
-	SameASN  bool // the router is in the target's ASN
-	ASNKnown bool // the target's origin ASN is known
+	SameASN  bool      // the router is in the target's ASN
+	ASNKnown bool      // the target's origin ASN is known
+	At       time.Time // when the trace was made
 }
 
 // traceable reports whether the match may give the /24 its own (traced) row:
@@ -97,7 +104,8 @@ type LocateOutput struct {
 	RulesMissing bool `json:"rules_table_missing,omitempty"`
 	ASNPrefixes  int  `json:"asn_prefixes"`
 
-	Traced        int `json:"traced"`        // /24s located
+	Traced        int `json:"traced"`        // /24s located now by a trace
+	Carried       int `json:"carried"`       // traced rows of the previous layer kept: their /24 was not located again (see locate)
 	Wide          int `json:"wide"`          // announced prefixes located
 	Votes         int `json:"votes"`         // /24s that voted for their announced prefix
 	WideTies      int `json:"wide_ties"`     // announced prefixes skipped: two cities with the most votes
@@ -120,6 +128,12 @@ type LocateOutput struct {
 
 	Previous int `json:"previous"` // rows before the replace
 	Stored   int `json:"stored"`
+
+	// VisitorsCut counts the visitor IPs deleted after the commit: those of the /24s that are located.
+	VisitorsCut int `json:"visitors_cut"`
+
+	// Chained says whether this run started the next resolve-ips run (set by the task, see main.go).
+	Chained bool `json:"chained"`
 }
 
 // candidateOrder gives the order in which the candidates of t are tried: the
@@ -172,7 +186,7 @@ func matchTrace(t traceIn, ptrs map[netip.Addr]string, rules []rule, origin *ori
 		if r := firstMatch(rules, ptr); r != nil {
 			_, asn, ok := origin.lookup(cands[i])
 			return &match{Kind: t.Kind, Rank: i, Router: cands[i], PTR: ptr, Rule: r,
-				SameASN: known && ok && asn == targetASN, ASNKnown: known}, reached
+				SameASN: known && ok && asn == targetASN, ASNKnown: known, At: t.TracedAt}, reached
 		}
 	}
 	return nil, reached
@@ -347,17 +361,50 @@ func hopIPs(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 // A rule-matched /24 whose winning router (not the target itself) has a city in hops
 // is only compared with it (MMDBCompared, MMDBAgreed). hops may be nil.
 //
+// A located /24 stays located: every traced row of previous (the current layer) whose /24
+// no trace located now is kept as it is, original LocatedAt included, and casts its wide
+// vote like a freshly located one, as a rule vote for its city (instead of whatever its
+// newest traces would have voted). A /24 that a newer trace locates, in the same city or in
+// another, is replaced by the new row.
+//
 // Per announced prefix the city with the most votes (rule and MMDB votes count
 // the same) gets a wide row; a tie gets none. The row's method is methodRule when
 // a rule voted for the city, else methodMMDB.
-func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable, hops map[netip.Addr]cityKey) ([]geoRow, LocateOutput) {
+func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable, hops map[netip.Addr]cityKey, previous []geoRow) ([]geoRow, LocateOutput) {
 	out := newLocateOutput()
+	prevTraced := map[netip.Prefix]geoRow{}
+	for _, r := range previous {
+		if r.Scope == scopeTraced {
+			prevTraced[r.Prefix] = r
+		}
+	}
 	out.Traces, out.Names, out.Rules = len(traces), len(ptrs), len(rules)
 	byNet, prefixes := groupByNetwork(traces)
 	out.Networks = len(prefixes)
 
 	var rows []geoRow
 	votes := map[netip.Prefix]map[cityKey]*tally{}
+	// vote counts one vote of the /24 p24 for its announced prefix.
+	vote := func(p24 netip.Prefix, key cityKey, fromMMDB bool) {
+		wp, ok := widePrefix(origin, p24)
+		if !ok {
+			return
+		}
+		if votes[wp] == nil {
+			votes[wp] = map[cityKey]*tally{}
+		}
+		if votes[wp][key] == nil {
+			votes[wp][key] = &tally{}
+		}
+		if fromMMDB {
+			votes[wp][key].mmdb++
+			out.MMDBVotes++
+		} else {
+			votes[wp][key].rule++
+		}
+		out.Votes++
+	}
+	located := map[netip.Prefix]bool{}
 	for _, p24 := range prefixes {
 		var matches []*match
 		noASN := false
@@ -406,13 +453,17 @@ func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 
 		if winner != nil {
 			row := geoRow{Prefix: p24, Scope: scopeTraced, Country: winner.Rule.country, City: winner.Rule.city,
-				RouterIP: winner.Router, PTR: winner.PTR, Rule: winner.Rule.name, Method: methodRule}
+				RouterIP: winner.Router, PTR: winner.PTR, Rule: winner.Rule.name, Method: methodRule, LocatedAt: winner.At}
 			if winner.ASNKnown {
 				same := winner.SameASN
 				row.SameASN = &same
 			}
 			rows = append(rows, row)
+			located[p24] = true
 			out.Traced++
+		}
+		if _, kept := prevTraced[p24]; kept && winner == nil {
+			continue // carried below, with its own vote
 		}
 		var voteKey cityKey
 		var fromMMDB, voting bool
@@ -432,22 +483,22 @@ func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 			fromMMDB = true
 		}
 		if voting {
-			if wp, ok := widePrefix(origin, p24); ok {
-				if votes[wp] == nil {
-					votes[wp] = map[cityKey]*tally{}
-				}
-				if votes[wp][voteKey] == nil {
-					votes[wp][voteKey] = &tally{}
-				}
-				if fromMMDB {
-					votes[wp][voteKey].mmdb++
-					out.MMDBVotes++
-				} else {
-					votes[wp][voteKey].rule++
-				}
-				out.Votes++
-			}
+			vote(p24, voteKey, fromMMDB)
 		}
+	}
+	// The traced rows of the previous layer that no trace located now.
+	kept := make([]netip.Prefix, 0, len(prevTraced))
+	for p24 := range prevTraced {
+		if !located[p24] {
+			kept = append(kept, p24)
+		}
+	}
+	sort.Slice(kept, func(i, j int) bool { return kept[i].Addr().Less(kept[j].Addr()) })
+	for _, p24 := range kept {
+		r := prevTraced[p24]
+		rows = append(rows, r)
+		out.Carried++
+		vote(p24, cityKey{r.Country, r.City}, false)
 	}
 
 	wides := make([]netip.Prefix, 0, len(votes))
@@ -501,12 +552,20 @@ const locateWindow = "180 days"
 
 // tracesQuery reads the newest trace of each (prefix, target kind) younger than
 // $1 (an interval, as text): its candidates, never its path (hops). A row not
-// backfilled yet reads as no candidates, and parseTrace gives it its target. Read only.
-const tracesQuery = `SELECT DISTINCT ON (prefix, target_kind) prefix::text, target_kind, host(target),
-		ARRAY(SELECT host(c) FROM unnest(candidates) WITH ORDINALITY AS u(c, n) ORDER BY n)
-	FROM public.network_traces
-	WHERE traced_at > now() - $1::text::interval
-	ORDER BY prefix, target_kind, traced_at DESC`
+// backfilled yet reads as no candidates, and parseTrace gives it its target. Only the
+// newest round of traces of a /24 counts (those within an hour of its newest trace): a
+// recheck of a located /24 has no visitor trace, and an older one must not stand in for it.
+// Read only.
+const tracesQuery = `SELECT prefix::text, target_kind, host(target),
+		ARRAY(SELECT host(c) FROM unnest(candidates) WITH ORDINALITY AS u(c, n) ORDER BY n), traced_at
+	FROM (
+		SELECT prefix, target_kind, target, candidates, traced_at,
+		       row_number() OVER (PARTITION BY prefix, target_kind ORDER BY traced_at DESC) AS n,
+		       max(traced_at) OVER (PARTITION BY prefix) AS newest
+		FROM public.network_traces
+		WHERE traced_at > now() - $1::text::interval) t
+	WHERE n = 1 AND traced_at > newest - interval '1 hour'
+	ORDER BY prefix, target_kind`
 
 // newLocateOutput is an output with every kind present, all counts zero.
 func newLocateOutput() LocateOutput {
@@ -594,8 +653,12 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		res = p.mmdbHops(ctx, ref, ips)
 	}
 
+	previous, err := readTracedRows(ctx, conn)
+	if err != nil {
+		return out, err
+	}
 	backfilled := out.Backfilled
-	rows, out := locate(traces, ptrs, rules, origin, res.Hops)
+	rows, out := locate(traces, ptrs, rules, origin, res.Hops, previous)
 	out.Backfilled = backfilled
 	out.MMDB, out.MMDBReason, out.MMDBDownloaded = res.Status, res.Reason, res.Downloaded
 	if res.Status == statusUsed {
@@ -618,6 +681,13 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		return out, err
 	}
 	out.Stored = len(rows)
+	// The located /24s need no visitor IP any more: replaceLayer made them located in
+	// traced_networks, so every visitor IP of theirs can go.
+	tag, err := conn.Exec(ctx, deleteLocatedVisitorsSQL)
+	if err != nil {
+		return out, dbError("delete visitor IPs", err)
+	}
+	out.VisitorsCut = int(tag.RowsAffected())
 	if fingerprint != "" {
 		// Only the next skip is lost when this fails: the layer itself is stored.
 		if err := writeLocateState(statePath, locateState{Fingerprint: fingerprint, RebuiltAt: p.clock().UTC()}); err != nil {
@@ -636,8 +706,8 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		p.log("locate: MMDB %s (%s): %d router IPs looked up, %d /24s voted by an MMDB hop city; of %d rule-matched /24s whose router has an MMDB city, %d agree",
 			key, how, out.MMDBLookups, out.MMDBVotes, out.MMDBCompared, out.MMDBAgreed)
 	}
-	p.log("locate: %d traces in %d /24s, %d names, %d rules (%d skipped, %d invalid); %d traced rows, %d wide rows (%d votes, %d ties); %d rows before",
-		out.Traces, out.Networks, out.Names, out.Rules, out.RulesSkipped, out.RulesInvalid, out.Traced, out.Wide, out.Votes, out.WideTies, out.Previous)
+	p.log("locate: %d traces in %d /24s, %d names, %d rules (%d skipped, %d invalid); %d traced rows (%d carried over), %d wide rows (%d votes, %d ties); %d rows before; %d visitor IPs deleted",
+		out.Traces, out.Networks, out.Names, out.Rules, out.RulesSkipped, out.RulesInvalid, out.Traced+out.Carried, out.Carried, out.Wide, out.Votes, out.WideTies, out.Previous, out.VisitorsCut)
 	for _, k := range kindOrder {
 		ks := out.Kinds[k]
 		p.log("locate: %s: %d traces, %d reached the ASN, %d located, %d unique, %d agreed of %d compared",
@@ -658,10 +728,12 @@ func readTraces(ctx context.Context, conn *pgx.Conn, window string) ([]traceIn, 
 	for rows.Next() {
 		var prefix, kind, target string
 		var cands []string
-		if err := rows.Scan(&prefix, &kind, &target, &cands); err != nil {
+		var at time.Time
+		if err := rows.Scan(&prefix, &kind, &target, &cands, &at); err != nil {
 			return nil, dbError("read traces", err)
 		}
 		if t, ok := parseTrace(prefix, kind, target, cands); ok && t.Prefix.IsValid() {
+			t.TracedAt = at
 			traces = append(traces, t)
 		}
 	}
@@ -764,6 +836,7 @@ func replaceLayer(ctx context.Context, conn *pgx.Conn, rows []geoRow, force bool
 		methods := make([]string, len(part))
 		ruleVotes := make([]*int32, len(part))
 		mmdbVotes := make([]*int32, len(part))
+		locatedAt := make([]*time.Time, len(part))
 		for i, r := range part {
 			prefixes[i], scopes[i], countries[i], cities[i] = r.Prefix.String(), r.Scope, r.Country, r.City
 			if r.RouterIP.IsValid() {
@@ -774,6 +847,9 @@ func replaceLayer(ctx context.Context, conn *pgx.Conn, rows []geoRow, force bool
 			}
 			same[i] = r.SameASN
 			methods[i] = r.Method
+			if !r.LocatedAt.IsZero() {
+				locatedAt[i] = &part[i].LocatedAt
+			}
 			if r.Scope == scopeWide {
 				rv, mv := int32(r.RuleVotes), int32(r.MMDBVotes)
 				ruleVotes[i], mmdbVotes[i] = &rv, &mv
@@ -782,16 +858,80 @@ func replaceLayer(ctx context.Context, conn *pgx.Conn, rows []geoRow, force bool
 		if _, err := tx.Exec(ctx, `INSERT INTO public.rdns_geo_layer
 				(prefix, scope, country, city, router_ip, router_ptr, rule_name, same_asn, method, rule_votes, mmdb_votes, located_at)
 			SELECT u.prefix::cidr, u.scope, u.country, u.city, u.router_ip::inet, u.router_ptr, u.rule_name, u.same_asn,
-				u.method, u.rule_votes, u.mmdb_votes, now()
+				u.method, u.rule_votes, u.mmdb_votes, coalesce(u.located_at, now())
 			FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::boolean[],
-				$9::text[], $10::integer[], $11::integer[])
-				AS u(prefix, scope, country, city, router_ip, router_ptr, rule_name, same_asn, method, rule_votes, mmdb_votes)`,
-			prefixes, scopes, countries, cities, routerIPs, ptrs, ruleNames, same, methods, ruleVotes, mmdbVotes); err != nil {
+				$9::text[], $10::integer[], $11::integer[], $12::timestamptz[])
+				AS u(prefix, scope, country, city, router_ip, router_ptr, rule_name, same_asn, method, rule_votes, mmdb_votes, located_at)`,
+			prefixes, scopes, countries, cities, routerIPs, ptrs, ruleNames, same, methods, ruleVotes, mmdbVotes, locatedAt); err != nil {
 			return previous, dbError("replace rdns_geo_layer", err)
 		}
+	}
+	// Every traced row is a located /24 now: its schedule says so (rechecked 150 days after
+	// its last trace, no more attempts of the silent or unmatched kind).
+	if _, err := tx.Exec(ctx, markLocatedSQL); err != nil {
+		return previous, dbError("mark located networks", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return previous, dbError("replace rdns_geo_layer", err)
 	}
 	return previous, nil
+}
+
+// markLocatedSQL makes every /24 of the traced rows of rdns_geo_layer located in
+// traced_networks, in the transaction that replaced them. An existing row keeps its
+// last_traced_at; next_trace_at is 150 days after it. A row that is already located and
+// whose located_at did not change is left alone.
+const markLocatedSQL = `INSERT INTO public.traced_networks AS t (prefix, status, attempts, last_traced_at, next_trace_at, located_at)
+	SELECT g.prefix, 'located', 0, g.located_at, g.located_at + interval '150 days', g.located_at
+	FROM public.rdns_geo_layer g WHERE g.scope = 'traced'
+	ON CONFLICT (prefix) DO UPDATE SET status = 'located', attempts = 0, located_at = excluded.located_at,
+		next_trace_at = t.last_traced_at + interval '150 days'
+	WHERE t.status <> 'located' OR t.located_at IS DISTINCT FROM excluded.located_at`
+
+// tracedRowsQuery reads the traced rows of the current layer. Read only.
+const tracedRowsQuery = `SELECT prefix::text, country, city, host(router_ip), router_ptr, rule_name, same_asn, method, located_at
+	FROM public.rdns_geo_layer WHERE scope = 'traced' ORDER BY prefix`
+
+// readTracedRows reads the traced rows of the current rdns_geo_layer, with all their columns,
+// for locate to keep the ones that no trace locates again. A row older than the method
+// column has no method: it was found by a rule.
+func readTracedRows(ctx context.Context, conn *pgx.Conn) ([]geoRow, error) {
+	rows, err := conn.Query(ctx, tracedRowsQuery)
+	if err != nil {
+		return nil, dbError("read rdns_geo_layer", err)
+	}
+	defer rows.Close()
+	var out []geoRow
+	for rows.Next() {
+		r := geoRow{Scope: scopeTraced}
+		var prefix string
+		var router, ptr, rule, method *string
+		if err := rows.Scan(&prefix, &r.Country, &r.City, &router, &ptr, &rule, &r.SameASN, &method, &r.LocatedAt); err != nil {
+			return nil, dbError("read rdns_geo_layer", err)
+		}
+		var perr error
+		if r.Prefix, perr = netip.ParsePrefix(prefix); perr != nil {
+			continue
+		}
+		if router != nil {
+			if a, err := netip.ParseAddr(*router); err == nil {
+				r.RouterIP = a.Unmap()
+			}
+		}
+		if ptr != nil {
+			r.PTR = *ptr
+		}
+		if rule != nil {
+			r.Rule = *rule
+		}
+		r.Method = methodRule
+		if method != nil && *method != "" {
+			r.Method = *method
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbError("read rdns_geo_layer", err)
+	}
+	return out, nil
 }

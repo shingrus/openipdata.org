@@ -78,9 +78,9 @@ type target struct {
 	Addr   netip.Addr
 }
 
-// targetsFor picks the hosts of a /24: the newest visitor IP, .1 and one random
-// host (not .0 or .255, and not one of the other two). When the visitor IP is
-// .1 there is no separate gateway target.
+// targetsFor picks the hosts of a /24: the newest visitor IP (when there is one: a
+// recheck of a located /24 may have none), .1 and one random host (not .0 or .255, and
+// not one of the other two). When the visitor IP is .1 there is no separate gateway target.
 func targetsFor(b batchTarget, intn func(n int) int) []target {
 	base := b.Prefix.Addr().As4()
 	host := func(last int) netip.Addr {
@@ -88,12 +88,15 @@ func targetsFor(b batchTarget, intn func(n int) int) []target {
 		a[3] = byte(last)
 		return netip.AddrFrom4(a)
 	}
-	out := []target{{b.Prefix, kindVisitor, b.Visitor}}
+	var out []target
+	if b.Visitor.IsValid() {
+		out = append(out, target{b.Prefix, kindVisitor, b.Visitor})
+	}
 	gateway := host(1)
 	if gateway != b.Visitor {
 		out = append(out, target{b.Prefix, kindGateway, gateway})
 	}
-	// 2..254 minus the visitor host leaves at least 252 choices.
+	// 2..254 minus the visitor host leaves at least 252 choices (an invalid visitor equals no host).
 	for {
 		random := host(2 + intn(253))
 		if random != b.Visitor {
@@ -180,6 +183,8 @@ type traceRow struct {
 	// Candidates are the IPs of the path that get named and matched (see candidates):
 	// stored beside the path, so later tasks never read it.
 	Candidates []netip.Addr
+	// Answered: at least one hop of the path replied (any address).
+	Answered bool
 }
 
 // TraceOutput counts the traces of a run.
@@ -191,12 +196,28 @@ type TraceOutput struct {
 	Reached  int `json:"reached"`  // the target itself replied
 	Dropped  int `json:"dropped"`  // batch lines that were not a /24 with a public visitor IP
 	Pruned   int `json:"pruned"`   // older traces removed (more than two per prefix and kind)
+
+	Stored      int `json:"stored"`       // traces stored
+	SilentNets  int `json:"silent_nets"`  // /24s with no answering hop in any new trace (see schedule.go)
+	VisitorsCut int `json:"visitors_cut"` // visitor IPs deleted: all but the newest of each traced /24
+
+	// PathCompared counts the (prefix, kind) pairs that have two stored traces now, and
+	// PathChanged those whose candidates (the target left out) differ between them.
+	PathCompared int `json:"path_compared"`
+	PathChanged  int `json:"path_changed"`
+
+	// Removed by the cleanup: traces older than 200 days, and the rows of /24s that are not
+	// located, have no next_trace_at and were last traced more than 200 days ago.
+	TracesExpired   int `json:"traces_expired"`
+	NetworksExpired int `json:"networks_expired"`
 }
 
-// Trace traces the three targets of every /24 of the batch with one scamper
-// process, stores every trace (a target that got no result is stored with an
-// empty path, so its /24 is not picked again at once), and keeps the two newest per
-// (prefix, kind).
+// Trace traces the targets of every /24 of the batch (the newest visitor IP if any, .1 and a
+// random host) with one scamper process, stores every trace (a target that got no result is
+// stored with an empty path), keeps the two newest per (prefix, kind), and in the same
+// transaction updates the schedule of the /24s (traced_networks), deletes all but the
+// newest visitor IP of each, and counts how many paths changed since the previous trace.
+// Then it removes what is older than 200 days (see cleanupSchedule).
 func (p *Pipeline) Trace(ctx context.Context) (TraceOutput, error) {
 	var out TraceOutput
 	if err := p.CheckPGSQL(); err != nil {
@@ -211,20 +232,27 @@ func (p *Pipeline) Trace(ctx context.Context) (TraceOutput, error) {
 	if err != nil {
 		return out, err
 	}
+	conn, err := connect(ctx, p.PGSQL)
+	if err != nil {
+		return out, err
+	}
+	defer conn.Close(ctx)
 	if len(rows) > 0 {
-		conn, err := connect(ctx, p.PGSQL)
+		res, err := storeTraces(ctx, conn, rows, p.clock())
 		if err != nil {
 			return out, err
 		}
-		defer conn.Close(ctx)
-		if out.Pruned, err = storeTraces(ctx, conn, rows, time.Now()); err != nil {
-			return out, err
-		}
+		out.Stored, out.Pruned, out.SilentNets, out.VisitorsCut = len(rows), res.Pruned, res.Silent, res.VisitorsDeleted
+		out.PathCompared, out.PathChanged = res.PathCompared, res.PathChanged
 	}
 	// The batch is done: a retry of this task has nothing left to trace.
 	os.Remove(filepath.Join(p.dir(), batchFile))
-	p.log("trace: %d /24s, %d targets, %d answered, %d silent, %d reached the target, %d old traces removed",
-		out.Networks, out.Targets, out.Answered, out.Silent, out.Reached, out.Pruned)
+	if out.TracesExpired, out.NetworksExpired, err = cleanupSchedule(ctx, conn); err != nil {
+		return out, err
+	}
+	p.log("trace: %d /24s (%d silent), %d targets, %d answered, %d silent, %d reached the target, %d old traces removed; paths: %d of %d changed; %d visitor IPs deleted; expired: %d traces, %d /24s",
+		out.Networks, out.SilentNets, out.Targets, out.Answered, out.Silent, out.Reached, out.Pruned, out.PathChanged, out.PathCompared, out.VisitorsCut,
+		out.TracesExpired, out.NetworksExpired)
 	return out, nil
 }
 
@@ -308,7 +336,7 @@ func (p *Pipeline) traceBatch(ctx context.Context, batch []batchTarget, out Trac
 			return nil, out, err
 		}
 		rows = append(rows, traceRow{Prefix: t.Prefix.String(), Kind: t.Kind, Target: t.Addr.String(), Hops: data,
-			Candidates: candidates(t.Addr, hops)})
+			Candidates: candidates(t.Addr, hops), Answered: answered})
 	}
 	return rows, out, nil
 }
@@ -323,17 +351,41 @@ func joinAddrs(addrs []netip.Addr) string {
 	return strings.Join(texts, ",")
 }
 
-// storeTraces inserts the rows in one transaction and removes the traces of the
-// same prefixes beyond the two newest per kind. It returns the number removed.
-// A failed statement is reported by code only: its message can quote an IP.
-func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.Time) (int, error) {
+// storeResult is what storeTraces did besides inserting the rows.
+type storeResult struct {
+	Pruned          int // older traces removed (more than two per prefix and kind)
+	Silent          int // /24s that are silent after this batch
+	VisitorsDeleted int
+	PathCompared    int
+	PathChanged     int
+}
+
+// comparePathsSQL compares, for each of the prefixes ($1), the two newest traces of each
+// target kind: their candidates with the target left out (the target differs between
+// traces of the random kind and is not part of the path). Rows with no candidates yet
+// (written before the column existed) are left out.
+const comparePathsSQL = `WITH r AS (
+		SELECT prefix, target_kind, array_remove(candidates, target) AS c,
+		       row_number() OVER (PARTITION BY prefix, target_kind ORDER BY traced_at DESC) AS n
+		FROM public.network_traces
+		WHERE prefix = ANY ($1::text[]::cidr[]) AND candidates IS NOT NULL)
+	SELECT count(*), count(*) FILTER (WHERE a.c <> b.c)
+	FROM r a JOIN r b ON a.prefix = b.prefix AND a.target_kind = b.target_kind AND a.n = 1 AND b.n = 2`
+
+// storeTraces, in one transaction, inserts the rows, removes the traces of the same
+// prefixes beyond the two newest per kind, updates the schedule of the prefixes
+// (traced_networks), deletes all but the newest visitor IP of each prefix, and compares
+// the two newest paths. A failed statement is reported by code only: its message can
+// quote an IP.
+func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.Time) (storeResult, error) {
+	var res storeResult
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return 0, dbError("store traces", err)
+		return res, dbError("store traces", err)
 	}
 	defer tx.Rollback(ctx)
 	var prefixes, kinds, targets, hops, cands []string
-	seen := map[string]bool{}
+	answered := map[string]bool{}
 	var touched []string
 	for _, r := range rows {
 		prefixes = append(prefixes, r.Prefix)
@@ -341,17 +393,17 @@ func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.T
 		targets = append(targets, r.Target)
 		hops = append(hops, string(r.Hops))
 		cands = append(cands, joinAddrs(r.Candidates))
-		if !seen[r.Prefix] {
-			seen[r.Prefix] = true
+		if _, seen := answered[r.Prefix]; !seen {
 			touched = append(touched, r.Prefix)
 		}
+		answered[r.Prefix] = answered[r.Prefix] || r.Answered
 	}
 	sort.Strings(touched)
 	if _, err := tx.Exec(ctx, `INSERT INTO public.network_traces (prefix, target_kind, target, traced_at, hops, candidates)
 		SELECT u.prefix::cidr, u.kind, u.target::inet, $6::timestamptz, u.hops::jsonb, string_to_array(u.cands, ',')::inet[]
 		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) AS u(prefix, kind, target, hops, cands)`,
 		prefixes, kinds, targets, hops, cands, at); err != nil {
-		return 0, dbError("store traces", err)
+		return res, dbError("store traces", err)
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM public.network_traces t USING (
 			SELECT prefix, target_kind, traced_at,
@@ -361,10 +413,22 @@ func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.T
 		WHERE t.prefix = old.prefix AND t.target_kind = old.target_kind AND t.traced_at = old.traced_at AND old.n > $2`,
 		touched, keepTraces)
 	if err != nil {
-		return 0, dbError("prune traces", err)
+		return res, dbError("prune traces", err)
 	}
+	res.Pruned = int(tag.RowsAffected())
+	if err := tx.QueryRow(ctx, comparePathsSQL, touched).Scan(&res.PathCompared, &res.PathChanged); err != nil {
+		return res, dbError("compare paths", err)
+	}
+	if res.Silent, err = updateSchedule(ctx, tx, answered, at); err != nil {
+		return res, err
+	}
+	tag, err = tx.Exec(ctx, keepNewestVisitorSQL, touched)
+	if err != nil {
+		return res, dbError("delete visitor IPs", err)
+	}
+	res.VisitorsDeleted = int(tag.RowsAffected())
 	if err := tx.Commit(ctx); err != nil {
-		return 0, dbError("store traces", err)
+		return res, dbError("store traces", err)
 	}
-	return int(tag.RowsAffected()), nil
+	return res, nil
 }

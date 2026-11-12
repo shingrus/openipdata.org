@@ -16,10 +16,10 @@ import (
 func TestOutputsAreCountsOnly(t *testing.T) {
 	ip := regexp.MustCompile(`\d+\.\d+\.\d+\.\d+`)
 	for _, out := range []any{
-		PickOutput{Eligible: 5, Picked: 3, Visitors: 9},
-		TraceOutput{Networks: 1, Targets: 3},
-		NamesOutput{IPs: 4, OK: 2},
-		LocateOutput{Traced: 2, Kinds: map[string]*KindStats{kindVisitor: {Traces: 1}}},
+		PickOutput{Eligible: 5, Picked: 3, Visitors: 9, PickedNew: 1, PickedDue: 1, PickedRevived: 1, Backfilled: 7},
+		TraceOutput{Networks: 1, Targets: 3, Stored: 3, SilentNets: 1, VisitorsCut: 4, PathCompared: 3, PathChanged: 1, TracesExpired: 2, NetworksExpired: 1},
+		NamesOutput{IPs: 4, OK: 2, Refreshed: 5},
+		LocateOutput{Traced: 2, Carried: 1, VisitorsCut: 6, Chained: true, Kinds: map[string]*KindStats{kindVisitor: {Traces: 1}}},
 		withMMDB(statusUsed, "", mmdbKey(time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC))),
 		withMMDB(statusSkipped, reasonStat, ""),
 	} {

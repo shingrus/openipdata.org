@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"openipdata.org/hatchet/download"
+	"openipdata.org/hatchet/ipdata"
 )
 
 // PTR answers and how long they are trusted. An error is not trusted at all:
@@ -38,6 +39,12 @@ const (
 	// traced about once in 60 days, so 7 days is a seventh of the table and the work
 	// stays small, and an outage longer than a week is a failure someone must fix.
 	resolveWindow = "7 days"
+
+	// refreshMax is how many stale answers of located /24s one run looks up again
+	// (see refreshQuery); a name older than freshOK is stale.
+	refreshMax = 500
+	// refreshRetry is how long the refresh leaves an IP alone after a lookup of any outcome.
+	refreshRetry = "7 days"
 
 	resolveWorkers = 32
 	resolveChunk   = 500 // answers stored per statement
@@ -219,12 +226,14 @@ type NamesOutput struct {
 	Traces   int `json:"traces"`    // newest traces of the last 7 days
 	IPs      int `json:"ips"`       // distinct public targets and last hops in them
 	Fresh    int `json:"fresh"`     // already answered recently
-	Resolved int `json:"resolved"`  // looked up now
+	Resolved int `json:"resolved"`  // looked up now (the refreshed ones included)
 	OK       int `json:"ok"`        // got a name
 	NotFound int `json:"not_found"` // no PTR record
 	Errors   int `json:"errors"`    // failed; tried again next run
 	DoH      int `json:"doh"`       // of the lookups, answered through the DoH fallback
 	Pruned   int `json:"pruned"`    // old names removed
+
+	Refreshed int `json:"refreshed"` // answers of located /24s' routers older than 30 days, looked up again (counted in resolved too)
 
 	Backfilled int `json:"backfilled,omitempty"` // traces that got their candidates (see backfillCandidates)
 }
@@ -232,7 +241,9 @@ type NamesOutput struct {
 // ResolveNames looks up the PTR name of the target and of the last quarter of
 // the hops of the newest trace per (prefix, target kind) of the last 7 days,
 // unless ip_ptr_names has a fresh answer (ok 30 days, not found 7 days; an
-// error is retried), and stores the answers as they come, 500 at a time.
+// error is retried), and stores the answers as they come, 500 at a time. Then it looks up
+// again up to 500 answers older than 30 days that belong to located /24s (see refreshQuery),
+// with the same resolver and the same rule: a failed lookup never replaces an answer.
 func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 	var out NamesOutput
 	conn, err := connect(ctx, p.PGSQL)
@@ -272,11 +283,49 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 	if resolver == nil {
 		resolver = newPTRResolver()
 	}
-	for start := 0; start < len(todo); start += resolveChunk {
-		chunk := todo[start:min(start+resolveChunk, len(todo))]
+	if err := resolveStore(ctx, conn, resolver, todo, &out); err != nil {
+		return out, err
+	}
+
+	// The names behind the located /24s get old too: look up the stalest again, unless
+	// this run just did.
+	stale, err := staleLocatedIPs(ctx, conn, refreshMax)
+	if err != nil {
+		return out, err
+	}
+	asked := make(map[netip.Addr]bool, len(todo))
+	for _, ip := range todo {
+		asked[ip] = true
+	}
+	var refresh []netip.Addr
+	for _, ip := range stale {
+		if !asked[ip] {
+			refresh = append(refresh, ip)
+		}
+	}
+	out.Refreshed = len(refresh)
+	if err := resolveStore(ctx, conn, resolver, refresh, &out); err != nil {
+		return out, err
+	}
+
+	tag, err := conn.Exec(ctx, `DELETE FROM public.ip_ptr_names WHERE resolved_at < now() - $1::text::interval`, pruneAfter)
+	if err != nil {
+		return out, dbError("prune names", err)
+	}
+	out.Pruned = int(tag.RowsAffected())
+	p.log("resolve-names: %d traces, %d IPs (%d fresh); looked up %d (%d refreshed): %d names, %d not found, %d errors, %d through DoH; %d old removed",
+		out.Traces, out.IPs, out.Fresh, out.Resolved, out.Refreshed, out.OK, out.NotFound, out.Errors, out.DoH, out.Pruned)
+	return out, nil
+}
+
+// resolveStore looks up ips, resolveChunk at a time, stores the answers as they come
+// (see storeNamesSQL: an error never replaces a name) and adds to the counts of out.
+func resolveStore(ctx context.Context, conn *pgx.Conn, resolver *ptrResolver, ips []netip.Addr, out *NamesOutput) error {
+	for start := 0; start < len(ips); start += resolveChunk {
+		chunk := ips[start:min(start+resolveChunk, len(ips))]
 		answers, doh := resolveAll(ctx, resolver, chunk, resolveWorkers)
 		if err := ctx.Err(); err != nil {
-			return out, err // answers cut short by a stop are not real errors
+			return err // answers cut short by a stop are not real errors
 		}
 		out.DoH += doh
 		for _, a := range answers {
@@ -291,19 +340,63 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 		}
 		out.Resolved += len(chunk)
 		if err := storeNames(ctx, conn, chunk, answers); err != nil {
-			return out, err
+			return err
 		}
 	}
-
-	tag, err := conn.Exec(ctx, `DELETE FROM public.ip_ptr_names WHERE resolved_at < now() - $1::text::interval`, pruneAfter)
-	if err != nil {
-		return out, dbError("prune names", err)
-	}
-	out.Pruned = int(tag.RowsAffected())
-	p.log("resolve-names: %d traces, %d IPs (%d fresh); looked up %d: %d names, %d not found, %d errors, %d through DoH; %d old removed",
-		out.Traces, out.IPs, out.Fresh, out.Resolved, out.OK, out.NotFound, out.Errors, out.DoH, out.Pruned)
-	return out, nil
+	return nil
 }
+
+// refreshQuery lists the IPs whose names matter for the located /24s and whose answer is
+// older than 30 days, the oldest answer first: the routers of the traced rows of
+// rdns_geo_layer, and the candidates of the newest traces (within the window locate reads)
+// of those /24s, leaving out IPs tried in the last 7 days (an answer that keeps failing never
+// gets a younger resolved_at, so without tried_at it would hold a slot in every run); the cap
+// bounds the work. $1 is the cap. Read only.
+const refreshQuery = `SELECT host(c.ip)
+	FROM (
+		SELECT g.router_ip AS ip FROM public.rdns_geo_layer g WHERE g.scope = 'traced' AND g.router_ip IS NOT NULL
+		UNION
+		SELECT unnest(t.candidates) FROM (
+			SELECT DISTINCT ON (prefix, target_kind) prefix, candidates FROM public.network_traces
+			WHERE traced_at > now() - interval '` + locateWindow + `'
+			ORDER BY prefix, target_kind, traced_at DESC) t
+		WHERE t.prefix IN (SELECT prefix FROM public.rdns_geo_layer WHERE scope = 'traced')
+	) c
+	JOIN public.ip_ptr_names n ON n.ip = c.ip
+	WHERE n.resolved_at < now() - interval '` + freshOK + `'
+	  AND (n.tried_at IS NULL OR n.tried_at < now() - interval '` + refreshRetry + `')
+	ORDER BY n.resolved_at, c.ip
+	LIMIT $1`
+
+// staleLocatedIPs reads refreshQuery: at most limit public IPs.
+func staleLocatedIPs(ctx context.Context, conn *pgx.Conn, limit int) ([]netip.Addr, error) {
+	rows, err := conn.Query(ctx, refreshQuery, limit)
+	if err != nil {
+		return nil, dbError("read stale names", err)
+	}
+	defer rows.Close()
+	var ips []netip.Addr
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return nil, dbError("read stale names", err)
+		}
+		if ip, err := netip.ParseAddr(text); err == nil && ipdata.PublicV4(ip.Unmap()) {
+			ips = append(ips, ip.Unmap())
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbError("read stale names", err)
+	}
+	return ips, nil
+}
+
+// freshNamesSQL selects the IPs of $1 whose answer is still trusted. It looks at
+// resolved_at only: tried_at (the last lookup of any outcome) is for the refresh.
+const freshNamesSQL = `SELECT host(ip) FROM public.ip_ptr_names
+	WHERE ip = ANY ($1::text[]::inet[])
+	  AND ((status = 'ok' AND resolved_at > now() - $2::text::interval)
+	    OR (status = 'not_found' AND resolved_at > now() - $3::text::interval))`
 
 // freshNames returns the IPs among ips that have an answer in ip_ptr_names that is
 // still trusted (ok for 30 days, not found for 7; an error never is).
@@ -312,11 +405,7 @@ func freshNames(ctx context.Context, conn *pgx.Conn, ips []netip.Addr) (map[neti
 	for i, ip := range ips {
 		list[i] = ip.String()
 	}
-	rows, err := conn.Query(ctx, `SELECT host(ip) FROM public.ip_ptr_names
-		WHERE ip = ANY ($1::text[]::inet[])
-		  AND ((status = 'ok' AND resolved_at > now() - $2::text::interval)
-		    OR (status = 'not_found' AND resolved_at > now() - $3::text::interval))`,
-		list, freshOK, freshNotFound)
+	rows, err := conn.Query(ctx, freshNamesSQL, list, freshOK, freshNotFound)
 	if err != nil {
 		return nil, dbError("read names", err)
 	}
@@ -336,13 +425,18 @@ func freshNames(ctx context.Context, conn *pgx.Conn, ips []netip.Addr) (map[neti
 
 // storeNamesSQL upserts the answers. A failed lookup never replaces an answer
 // that is there: the old ok or not_found name stays usable (and is tried again
-// when it gets stale); an error only replaces another error. An error for an IP
-// with no row is inserted, so the IP is known to have failed.
-const storeNamesSQL = `INSERT INTO public.ip_ptr_names AS t (ip, ptr, status, resolved_at)
-	SELECT u.ip::inet, u.ptr, u.status, now()
+// when it gets stale); an error only replaces another error, and then only tried_at
+// moves. An error for an IP with no row is inserted, so the IP is known to have failed.
+// Every lookup sets tried_at, which the refresh of old names uses to leave out
+// IPs it has just tried; freshness stays based on resolved_at.
+const storeNamesSQL = `INSERT INTO public.ip_ptr_names AS t (ip, ptr, status, resolved_at, tried_at)
+	SELECT u.ip::inet, u.ptr, u.status, now(), now()
 	FROM unnest($1::text[], $2::text[], $3::text[]) AS u(ip, ptr, status)
-	ON CONFLICT (ip) DO UPDATE SET ptr = excluded.ptr, status = excluded.status, resolved_at = excluded.resolved_at
-	WHERE excluded.status <> 'error' OR t.status = 'error'`
+	ON CONFLICT (ip) DO UPDATE SET
+		ptr = CASE WHEN excluded.status <> 'error' OR t.status = 'error' THEN excluded.ptr ELSE t.ptr END,
+		status = CASE WHEN excluded.status <> 'error' OR t.status = 'error' THEN excluded.status ELSE t.status END,
+		resolved_at = CASE WHEN excluded.status <> 'error' OR t.status = 'error' THEN excluded.resolved_at ELSE t.resolved_at END,
+		tried_at = excluded.tried_at`
 
 // storeNames upserts one answer per IP (see storeNamesSQL).
 func storeNames(ctx context.Context, conn *pgx.Conn, ips []netip.Addr, answers []ptrAnswer) error {
