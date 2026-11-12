@@ -56,7 +56,7 @@ func rowFor(rows []geoRow, prefix, scope string) *geoRow {
 func TestLocateSameASNMatch(t *testing.T) {
 	o, rules := locateWorld(t)
 	traces := []traceIn{tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "10.0.0.1", "9.9.9.1", "5.6.0.1", "5.6.7.9")}
-	rows, out := locate(traces, names("5.6.0.1", "ae1.fra01.isp.net"), rules, o)
+	rows, out := locate(traces, names("5.6.0.1", "ae1.fra01.isp.net"), rules, o, nil)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v", rows)
 	}
@@ -82,7 +82,7 @@ func TestLocateSameASNMatch(t *testing.T) {
 func TestLocateOtherASNOnlyVotes(t *testing.T) {
 	o, rules := locateWorld(t)
 	traces := []traceIn{tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "10.0.0.1", "9.9.9.1")}
-	rows, out := locate(traces, names("9.9.9.1", "be2.ams1.transit.net"), rules, o)
+	rows, out := locate(traces, names("9.9.9.1", "be2.ams1.transit.net"), rules, o, nil)
 	if rowFor(rows, "5.6.7.0/24", scopeTraced) != nil {
 		t.Error("a traced row from a router of another ASN")
 	}
@@ -101,7 +101,7 @@ func TestLocateSameASNBeforeCloserOtherASN(t *testing.T) {
 	// 5.6.0.2 (the target's own ASN, fra) is next.
 	traces := []traceIn{tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "11.0.0.1", "11.0.0.2", "9.9.9.1", "9.9.9.3", "5.6.0.2", "9.9.9.2")}
 	ptrs := names("9.9.9.2", "be2.ams1.transit.net", "5.6.0.2", "ae0.fra2.isp.net")
-	rows, _ := locate(traces, ptrs, rules, o)
+	rows, _ := locate(traces, ptrs, rules, o, nil)
 	r := rowFor(rows, "5.6.7.0/24", scopeTraced)
 	if r == nil || r.City != "Frankfurt" {
 		t.Fatalf("traced row = %+v", r)
@@ -111,7 +111,7 @@ func TestLocateSameASNBeforeCloserOtherASN(t *testing.T) {
 	}
 	// With nothing to prefer, the closest candidate wins: the target itself before a router.
 	ptrs = names("5.6.7.9", "host.muc.isp.net", "5.6.0.2", "ae0.fra2.isp.net")
-	rows, _ = locate(traces, ptrs, rules, o)
+	rows, _ = locate(traces, ptrs, rules, o, nil)
 	if r := rowFor(rows, "5.6.7.0/24", scopeTraced); r == nil || r.City != "Munich" || r.RouterIP.String() != "5.6.7.9" {
 		t.Errorf("target's own name: %+v", r)
 	}
@@ -121,7 +121,7 @@ func TestLocateSameASNBeforeCloserOtherASN(t *testing.T) {
 func TestLocateIgnoresHopsFarFromTarget(t *testing.T) {
 	o, rules := locateWorld(t)
 	traces := []traceIn{tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "5.6.0.7", "11.0.0.2", "11.0.0.3", "11.0.0.4")}
-	rows, out := locate(traces, names("5.6.0.7", "ae0.fra2.isp.net"), rules, o)
+	rows, out := locate(traces, names("5.6.0.7", "ae0.fra2.isp.net"), rules, o, nil)
 	if len(rows) != 0 || out.Kinds[kindVisitor].Located != 0 {
 		t.Errorf("rows = %+v, out = %+v", rows, out)
 	}
@@ -139,7 +139,7 @@ func TestLocateDisagreeingTargets(t *testing.T) {
 		tr(p, kindRandom, "5.6.7.77", "10.0.0.1"),
 	}
 	ptrs := names("5.6.0.1", "ae1.fra1.isp.net", "5.6.7.1", "gw.muc.isp.net")
-	rows, out := locate(traces, ptrs, rules, o)
+	rows, out := locate(traces, ptrs, rules, o, nil)
 	r := rowFor(rows, p, scopeTraced)
 	if r == nil || r.City != "Munich" || r.RouterIP.String() != "5.6.7.1" {
 		t.Fatalf("row = %+v", r)
@@ -152,7 +152,7 @@ func TestLocateDisagreeingTargets(t *testing.T) {
 	ptrs = names("5.6.0.1", "ae1.fra1.isp.net")
 	traces[1] = tr(p, kindGateway, "5.6.7.1", "10.0.0.1", "5.6.0.3")
 	ptrs[netip.MustParseAddr("5.6.0.3")] = "ae1.muc1.isp.net"
-	rows, out = locate(traces, ptrs, rules, o)
+	rows, out = locate(traces, ptrs, rules, o, nil)
 	if r := rowFor(rows, p, scopeTraced); r == nil || r.City != "Frankfurt" || out.Disagreements != 1 {
 		t.Errorf("tie: row = %+v, out = %+v", r, out)
 	}
@@ -178,7 +178,7 @@ func TestLocateKindStats(t *testing.T) {
 		tr("5.6.3.0/24", kindVisitor, "5.6.3.9"),
 	}
 	ptrs := names("5.6.0.8", "r1.fra1.isp.net", "5.6.0.1", "r2.fra2.isp.net")
-	rows, out := locate(traces, ptrs, rules, o)
+	rows, out := locate(traces, ptrs, rules, o, nil)
 	if out.Networks != 3 || out.Traced != 2 || len(rows) != 3 { // two traced rows and one wide
 		t.Fatalf("out = %+v rows = %+v", out, rows)
 	}
@@ -210,7 +210,7 @@ func TestLocateReachedASNIgnoresTarget(t *testing.T) {
 		"router in the AS": {tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "9.9.9.1", "5.6.0.1"), 1},
 		"transit only":     {tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "9.9.9.1"), 0},
 	} {
-		_, out := locate([]traceIn{c.trace}, nil, rules, o)
+		_, out := locate([]traceIn{c.trace}, nil, rules, o, nil)
 		if got := out.Kinds[kindVisitor].ReachedASN; got != c.reached {
 			t.Errorf("%s: reached_asn = %d, want %d", name, got, c.reached)
 		}
@@ -222,7 +222,7 @@ func TestLocateReachedASNIgnoresTarget(t *testing.T) {
 func TestLocateUnknownASN(t *testing.T) {
 	o, rules := locateWorld(t)
 	traces := []traceIn{tr("77.1.1.0/24", kindVisitor, "77.1.1.9", "10.0.0.1", "9.9.9.1")}
-	rows, out := locate(traces, names("9.9.9.1", "be2.ams1.transit.net"), rules, o)
+	rows, out := locate(traces, names("9.9.9.1", "be2.ams1.transit.net"), rules, o, nil)
 	r := rowFor(rows, "77.1.1.0/24", scopeTraced)
 	if r == nil || r.City != "Amsterdam" || r.SameASN != nil {
 		t.Fatalf("row = %+v", r)
@@ -242,13 +242,13 @@ func TestLocateWideVotes(t *testing.T) {
 		prefix := "5.6." + string(rune('1'+i)) + ".0/24"
 		traces = append(traces, tr(prefix, kindVisitor, "5.6."+string(rune('1'+i))+".9", router))
 	}
-	rows, out := locate(traces, ptrs, rules, o)
+	rows, out := locate(traces, ptrs, rules, o, nil)
 	w := rowFor(rows, "5.6.0.0/16", scopeWide)
 	if w == nil || w.City != "Frankfurt" || out.Wide != 1 || out.Votes != 4 || out.Traced != 4 {
 		t.Fatalf("wide = %+v, out = %+v", w, out)
 	}
 	// One against one: a tie gets no wide row, the /24s keep their own.
-	rows, out = locate([]traceIn{traces[0], traces[3]}, ptrs, rules, o)
+	rows, out = locate([]traceIn{traces[0], traces[3]}, ptrs, rules, o, nil)
 	if rowFor(rows, "5.6.0.0/16", scopeWide) != nil || out.WideTies != 1 || out.Wide != 0 || out.Traced != 2 {
 		t.Errorf("tie: rows = %+v, out = %+v", rows, out)
 	}
@@ -263,7 +263,7 @@ func TestLocateWidePrefixes(t *testing.T) {
 		tr("20.9.5.0/24", kindVisitor, "20.9.5.9", "20.9.0.1"), // the same /12, another /16: another row
 		tr("40.3.4.0/24", kindVisitor, "40.3.4.9", "40.3.4.2"), // announced as a /24 itself
 	}
-	rows, _ := locate(traces, ptrs, rules, o)
+	rows, _ := locate(traces, ptrs, rules, o, nil)
 	for prefix, city := range map[string]string{"20.1.0.0/16": "Frankfurt", "20.9.0.0/16": "Munich", "40.3.4.0/24": "London"} {
 		if w := rowFor(rows, prefix, scopeWide); w == nil || w.City != city {
 			t.Errorf("wide row %s = %+v, want %s", prefix, w, city)
@@ -287,7 +287,7 @@ func TestLocateRowOrderIsStable(t *testing.T) {
 		tr("5.6.9.0/24", kindVisitor, "5.6.9.9", "5.6.0.1"),
 		tr("5.6.2.0/24", kindVisitor, "5.6.2.9", "5.6.0.1"),
 	}
-	first, _ := locate(traces, ptrs, rules, o)
+	first, _ := locate(traces, ptrs, rules, o, nil)
 	var got []string
 	for _, r := range first {
 		got = append(got, r.Scope+" "+r.Prefix.String())
@@ -307,17 +307,17 @@ func TestLocateRowOrderIsStable(t *testing.T) {
 func TestLocateNothingToMatch(t *testing.T) {
 	o, rules := locateWorld(t)
 	traces := []traceIn{tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "5.6.0.1")}
-	if rows, out := locate(traces, names("5.6.0.1", "a.fra1.isp.net"), nil, o); len(rows) != 0 || out.Rules != 0 {
+	if rows, out := locate(traces, names("5.6.0.1", "a.fra1.isp.net"), nil, o, nil); len(rows) != 0 || out.Rules != 0 {
 		t.Errorf("no rules: %+v %+v", rows, out)
 	}
-	if rows, _ := locate(traces, nil, rules, o); len(rows) != 0 {
+	if rows, _ := locate(traces, nil, rules, o, nil); len(rows) != 0 {
 		t.Errorf("no names: %+v", rows)
 	}
 	// A name outside the rule's domain is no match.
-	if rows, _ := locate(traces, names("5.6.0.1", "a.fra1.other.net"), rules, o); len(rows) != 0 {
+	if rows, _ := locate(traces, names("5.6.0.1", "a.fra1.other.net"), rules, o, nil); len(rows) != 0 {
 		t.Errorf("wrong domain: %+v", rows)
 	}
-	if rows, out := locate(nil, nil, rules, o); len(rows) != 0 || out.Networks != 0 || out.Kinds[kindVisitor] == nil {
+	if rows, out := locate(nil, nil, rules, o, nil); len(rows) != 0 || out.Networks != 0 || out.Kinds[kindVisitor] == nil {
 		t.Errorf("no traces: %+v %+v", rows, out)
 	}
 }

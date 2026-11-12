@@ -17,8 +17,17 @@ func TestConnectErrorHidesDSN(t *testing.T) {
 			t.Errorf("%q: err = %v", dsn, err)
 		}
 	}
+	for _, dsn := range []string{"s3cr3t-password", "host=h pass=s3cr3t-password x"} {
+		_, err := connectEnsure(context.Background(), dsn)
+		if err == nil || strings.Contains(err.Error(), "s3cr3t") {
+			t.Errorf("connectEnsure %q: err = %v", dsn, err)
+		}
+	}
 	if _, err := connect(context.Background(), ""); err == nil {
 		t.Error("no error without PGSQL")
+	}
+	if _, err := connectEnsure(context.Background(), ""); err == nil {
+		t.Error("connectEnsure: no error without PGSQL")
 	}
 	if err := (&Pipeline{}).CheckPGSQL(); err == nil {
 		t.Error("CheckPGSQL accepts an empty PGSQL")

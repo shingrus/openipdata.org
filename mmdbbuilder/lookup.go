@@ -178,3 +178,86 @@ func extractCountryISO(record map[string]any) string {
 	}
 	return ""
 }
+
+// cityStats counts what writeCities did.
+type cityStats struct {
+	lookups  int // valid IPs looked up
+	withCity int // rows written
+	invalid  int // lines that are not an IP
+	failed   int // lookups or decodes that failed
+}
+
+// writeCities looks up every IP of inPath (one per line; blank lines and #
+// comments are ignored; a line that is not an IP is skipped and counted, never
+// shown) in the ip2geo MMDB and writes ip<TAB>country<TAB>city to outPath for
+// each one that has a non-empty city, through a temporary file and a rename.
+// The country and city are the record's country_code and city_name.
+func writeCities(mmdbPath, inPath, outPath string) (cityStats, error) {
+	var stats cityStats
+	reader, err := maxminddb.Open(mmdbPath)
+	if err != nil {
+		return stats, err
+	}
+	defer reader.Close()
+	in, err := os.Open(inPath)
+	if err != nil {
+		return stats, err
+	}
+	defer in.Close()
+	tmp := outPath + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return stats, err
+	}
+	defer os.Remove(tmp) // no-op after a successful rename
+	w := bufio.NewWriter(out)
+
+	scanner := bufio.NewScanner(in)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		addr, err := netip.ParseAddr(line)
+		if err != nil {
+			stats.invalid++
+			continue
+		}
+		stats.lookups++
+		result := reader.Lookup(addr.Unmap())
+		if result.Err() != nil {
+			stats.failed++
+			continue
+		}
+		if !result.Found() {
+			continue
+		}
+		country, city, err := ourFields(result)
+		if err != nil {
+			stats.failed++
+			continue
+		}
+		// A city holding a tab or line break would break the row; "mmdbbuilder geo"
+		// never writes one.
+		if city == "" || strings.ContainsAny(country+city, "\t\r\n") {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", addr.Unmap(), country, city); err != nil {
+			out.Close()
+			return stats, err
+		}
+		stats.withCity++
+	}
+	if err := scanner.Err(); err != nil {
+		out.Close()
+		return stats, err
+	}
+	if err := w.Flush(); err != nil {
+		out.Close()
+		return stats, err
+	}
+	if err := out.Close(); err != nil {
+		return stats, err
+	}
+	return stats, os.Rename(tmp, outPath)
+}

@@ -9,7 +9,7 @@
 
 - `infra/`: VM provisioning (`init-hatchet-runner-vm.sh`), systemd unit, env template. No Go code.
 - `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`, `hatchet/geofeeds/` for `sync-geofeeds`, `hatchet/geo/` for `build-geo-data`, `hatchet/rdns/` for `resolve-ips`). `hatchet/schema/` creates and upgrades the shared Postgres tables; `hatchet/publish/` uploads artifacts to R2 and GitHub releases (a file that is already there byte-for-byte is not sent again) and downloads the R2 layer files; `hatchet/rirstats/` parses RIR delegated-extended stats and splits address ranges into prefixes; `hatchet/download/` downloads a file unless the local copy is current (the caller passes the HTTP client); `hatchet/outputs/` prunes old output directories and has the small helpers `asn` and `geo` share (last log lines, file size); `hatchet/ipdata/` has what several workflows need about IP space and `public.asn` (public-address check, country-code check, announced prefixes of `public.asn.json`, the `seen_at` filter). Workflows share this code, never each other's downloaded files.
-- `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn`, `geo`).
+- `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn`, `geo`), plus `eval` (scores a geo MMDB) and `lookup` (reads one: a report, or with `-in`/`-out` the city of each IP of a file).
 - No `go.mod` or Go code at the repo root. Each module builds on its own.
 - `hatchet` must not import `mmdbbuilder`; it runs the `mmdbbuilder` binary (and, for `resolve-ips`, `scamper`) found next to its own executable.
 
@@ -66,7 +66,9 @@
 - `resolve-ips` (cron every 30 minutes, tasks `pick-networks` → `trace` → `resolve-names` → `locate`, own `rdns` limit) only reads
   `public.visitor_ips` (DDL only `schema.EnsureVisitorIPs`: `CREATE TABLE IF NOT EXISTS`, so it never locks the table the websites write),
   `public.generated_rules` (read only; a missing table means no rules; a rule without domains applies to every name) and `public.asn` (only the IPv4 prefixes of `json`, extracted in SQL, kept in memory), and runs
-  DDL only for its own tables (`schema.EnsureRDNS`), never `schema.Ensure`. IPv4 only, global unicast only. Visitor IPs and every
+  DDL only for its own tables (`schema.EnsureRDNS`), never `schema.Ensure`. That DDL runs once per workflow run, in the first task
+  (`pick-networks`, which the `run-rdns` command also starts with: `connectEnsure`); `trace`, `resolve-names` and `locate` open their connections
+  with no DDL (`connect`), because `ALTER TABLE ... IF NOT EXISTS` takes an ACCESS EXCLUSIVE lock even when the column exists, and `build-geo-data` reads `public.rdns_geo_layer`. IPv4 only, global unicast only. Visitor IPs and every
   traced IP stay in Postgres and in the batch file under `/var/lib/openipdata/rdns/`: never in Hatchet task inputs, outputs, log
   lines or returned errors (tasks report counts; errors that could quote an IP are replaced by `dbError` or `scrubIPs`).
   `pick-networks` writes the batch file that `trace` reads. `public.network_traces.candidates` (`inet[]`, added by `schema.EnsureRDNS`) holds the candidates of a trace (the target, then the last quarter of the
@@ -77,6 +79,19 @@
   (count and newest timestamp of the traces of the 180-day window, of the usable `ip_ptr_names` and of the current ASNs, and a hash of the `generated_rules` columns, all computed in SQL)
   equals the one saved after the last rebuild and that rebuild is less than 24 hours old; the fingerprint and the rebuild time are in `/var/lib/openipdata/rdns/locate-state.json`
   (`.tmp` plus rename, written only after a committed rebuild; losing it only costs a rebuild). `force_replace` always rebuilds.
+  **MMDB hop fallback**: `locate` reads its own copy of our published ip2geo MMDB from the private R2 bucket (`Pipeline.R2`, the `R2` env setting), never `build-geo-data`'s files on the VM: it
+  stats today's (UTC) dated key `<YYYY-MM-DD>/ip2geo-openipdata-<YYYYMMDD>.mmdb`, else yesterday's, keeps the object as `/var/lib/openipdata/rdns/ip2geo.mmdb` with its ETag in `ip2geo.mmdb.etag`, and downloads it
+  (`publish.R2.DownloadIfChanged`) only when the ETag differs and only when `locate` rebuilds. The ETag of the MMDB that is read (or `none`) is part of the fingerprint, so a new MMDB triggers a rebuild.
+  An R2 outage must not change the rows (a rebuild without the MMDB votes could hit `ErrShrink`): when R2 cannot be used (no R2 setting, a Stat error, no object for both days, or a failed download) the saved copy is
+  read instead if `ip2geo.mmdb` has its ETag beside it, and that saved ETag is in the fingerprint (`mmdb: saved copy` and `mmdb_reason` in the output, a logged warning; after a failed download the fingerprint names the saved copy,
+  so the next run tries R2 again). Only with no usable saved copy, or when `mmdbbuilder lookup` exits non-zero on it (the copy and its ETag are then deleted), is the fallback skipped (`mmdb: skipped`, fingerprint `none`
+  so the next run tries again); `locate` still succeeds.
+  A /24 that no trace of gets a rule match casts ONE wide vote (never a traced row) for the city of the first router hop (never the target itself; traces by kind order, hops closest first, same-ASN hops first,
+  as `matchTrace` tries them) that has a city in the MMDB; no origin ASN, no vote. Rule votes and MMDB votes count the same. `locate` writes the hop IPs (only those of no-match /24s, plus the winning
+  router of rule-matched /24s for the agreement counts `mmdb_compared`/`mmdb_agreed`) to `rdns/mmdb-hops.txt`, runs `mmdbbuilder lookup -db <mmdb> -in <ips> -out <tsv>` (`ip<TAB>country<TAB>city`, only IPs with a city;
+  invalid lines are skipped and counted on stderr, never echoed) and removes both files; the core `locate()` stays pure and gets the hop-to-city map. `public.rdns_geo_layer.method` is `rdns_rule` for traced rows and
+  for a wide row that at least one rule voted for, `mmdb_hop` for a wide row of MMDB votes only; wide rows also hold `rule_votes` and `mmdb_votes` for their city (the columns are added by `schema.EnsureRDNS`).
+  `build-geo-data` reads prefix, country and city by scope and ignores these columns.
 - Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes only `public.geofeed_urls`
   (DDL only through `schema.EnsureGeofeedURLs`, never `schema.Ensure`; its `probe-domains` task only reads
   `public.asn_domain` and `public.asn`) and has its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.
@@ -106,7 +121,7 @@
   `export-rows` reads no ASN table. A feed that only this source found adds no whois blocks and keeps only rows
   inside those prefixes (drop reason `outside_asn`).
 - `build-geo-data` scores each MMDB it builds (`evaluate` task, results in `public.geo_eval`) and `publish` refuses a
-  clear drop against the last published row (`geo.ErrGate`). All MMDB reading is done by `mmdbbuilder eval`.
+  clear drop against the last published row (`geo.ErrGate`). All MMDB reading is done by `mmdbbuilder` (`eval`, `lookup`), never by `hatchet`.
   The holdout leaves out a frozen sample of feeds, read from `public.geofeed_urls` (`id % 10 = 0`, `first_seen_at` before the
   freeze date in `hatchet/geo/holdout.go`); a failed read is an evaluation error, never a different sample. Moving the date moves the score once.
   The IPinfo URL holds `IPINFO_TOKEN`: any error from that request is replaced by a fixed message, never passed on.

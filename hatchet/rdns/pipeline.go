@@ -7,11 +7,17 @@
 // Each Pipeline method is one task; the Hatchet workflow and the local run-rdns
 // command call them in the same order:
 //
-//	PickNetworks  /24s with a visitor and no recent trace -> the batch file
+//	PickNetworks  /24s with a visitor and no recent trace -> the batch file (also the only
+//	              task that runs DDL: it creates and upgrades the tables for the whole run)
 //	Trace         scamper traceroutes of three hosts per /24 -> public.network_traces
 //	ResolveNames  PTR names of the targets and the last hops -> public.ip_ptr_names
-//	Locate        rules + names + announced prefixes -> public.rdns_geo_layer (skipped
-//	              while nothing it reads has changed)
+//	Locate        rules + names + announced prefixes (+ router hop cities from our own
+//	              published ip2geo MMDB) -> public.rdns_geo_layer (skipped while nothing
+//	              it reads has changed)
+//
+// A /24 that no rule matches may still vote for its announced prefix with the city of
+// one of its router hops in our own published ip2geo MMDB (a copy kept from R2, read
+// by mmdbbuilder lookup); see mmdb.go.
 //
 // Visitor IPs (and every traced IP) stay in Postgres and in the batch file on the
 // VM: never in Hatchet task inputs, outputs, log lines or returned errors. Tasks
@@ -39,7 +45,15 @@ type Pipeline struct {
 	Progress func(string)
 	Scamper  string // path of the scamper binary (the worker passes the one next to itself)
 
+	// MMDBBuilder is the mmdbbuilder binary next to the worker, and R2 the setting of the
+	// private bucket that holds the published ip2geo MMDB: locate reads the cities of
+	// router hops from it. Without either the fallback is skipped, not an error.
+	MMDBBuilder string
+	R2          string
+
 	// Tests only.
+	store    objectStore
+	lookup   lookupFunc
 	scamper  scamperFunc
 	intn     func(n int) int
 	resolver *ptrResolver
@@ -69,11 +83,9 @@ func (p *Pipeline) CheckPGSQL() error {
 	return nil
 }
 
-// connect opens a connection and creates the tables resolve-ips writes. Only
-// the statements of schema.EnsureRDNS (its own tables, plus the one ALTER of
-// network_traces) and CREATE TABLE IF NOT EXISTS of visitor_ips run here, never
-// schema.Ensure: its ALTER TABLE statements lock the ASN tables, and visitor_ips
-// belongs to the external websites.
+// connect opens a connection and runs no DDL: ALTER TABLE takes an ACCESS EXCLUSIVE
+// lock even when the column exists, and build-geo-data reads rdns_geo_layer, so the
+// tables are created and upgraded once per run (see connectEnsure), not by every task.
 func connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	if dsn == "" {
 		return nil, errors.New("PGSQL is not set")
@@ -81,6 +93,21 @@ func connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect to Postgres: %w", schema.HideDSN(err))
+	}
+	return conn, nil
+}
+
+// connectEnsure is connect, then creates the tables resolve-ips writes. It is used by
+// the first task of a run only (PickNetworks, which the run-rdns command also starts
+// with); trace, resolve-names and locate follow it in the same run and use connect. Only the
+// statements of schema.EnsureRDNS (its own tables, plus the ALTERs of network_traces and
+// rdns_geo_layer) and CREATE TABLE IF NOT EXISTS of visitor_ips run here, never
+// schema.Ensure: its ALTER TABLE statements lock the ASN tables, and visitor_ips
+// belongs to the external websites.
+func connectEnsure(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	conn, err := connect(ctx, dsn)
+	if err != nil {
+		return nil, err
 	}
 	if err := schema.EnsureVisitorIPs(ctx, conn); err != nil {
 		conn.Close(ctx)

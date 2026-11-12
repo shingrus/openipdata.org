@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -18,6 +19,12 @@ import (
 const (
 	scopeTraced = "traced" // a /24 that a trace located: layer 65-rdns
 	scopeWide   = "wide"   // an announced prefix (at most /16) that traced /24s voted for: layer 35-rdns-wide
+)
+
+// How a row of rdns_geo_layer was found (its method column).
+const (
+	methodRule = "rdns_rule" // a rule matched the PTR name of a router
+	methodMMDB = "mmdb_hop"  // only the city of a router hop in our own ip2geo MMDB (wide rows only)
 )
 
 // maxShrink is the largest drop in row count a replace accepts (10%).
@@ -37,6 +44,10 @@ type geoRow struct {
 	PTR      string     // the router's PTR name; traced rows only
 	Rule     string     // the rule that matched it; traced rows only
 	SameASN  *bool      // traced rows: nil when the target's ASN is unknown
+
+	Method string // methodRule for a traced row; for a wide row methodRule if a rule voted for the city, else methodMMDB
+	// RuleVotes and MMDBVotes count the votes for the city of a wide row by method.
+	RuleVotes, MMDBVotes int
 }
 
 // match is what one trace found: the first candidate, same-ASN ones first, whose
@@ -93,16 +104,32 @@ type LocateOutput struct {
 	Disagreements int `json:"disagreements"` // /24s whose targets named different cities (same-ASN ones)
 	NoASN         int `json:"no_asn"`        // /24s whose target has no origin ASN
 
+	// MMDB says whether the fallback to the router hops' cities in our own published
+	// ip2geo MMDB was used ("used") or not ("skipped", with MMDBReason); empty when
+	// locate did not run. The counts are zero when it was skipped.
+	MMDB           string `json:"mmdb,omitempty"`
+	MMDBReason     string `json:"mmdb_reason,omitempty"`
+	MMDBKey        string `json:"mmdb_key,omitempty"`        // the R2 object used (a date and a file name)
+	MMDBDownloaded bool   `json:"mmdb_downloaded,omitempty"` // the saved copy was out of date and downloaded again
+	MMDBLookups    int    `json:"mmdb_lookups"`              // router IPs looked up in the MMDB
+	MMDBVotes      int    `json:"mmdb_votes"`                // /24s with no rule match whose vote came from an MMDB hop city
+	MMDBCompared   int    `json:"mmdb_compared"`             // rule-matched /24s whose winning router has an MMDB city
+	MMDBAgreed     int    `json:"mmdb_agreed"`               // of those, the MMDB city is the rule's (country and city)
+
 	Kinds map[string]*KindStats `json:"kinds"`
 
 	Previous int `json:"previous"` // rows before the replace
 	Stored   int `json:"stored"`
 }
 
-// matchTrace finds the first candidate of the trace, same-ASN ones first, whose
-// PTR name a rule matches. reached is whether a tail hop among the candidates (not
-// the target, which is trivially in its own ASN) is in the target's ASN.
-func matchTrace(t traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable) (m *match, reached bool) {
+// candidateOrder gives the order in which the candidates of t are tried: the
+// closest to the target first, those in the target's ASN before the others
+// (A router of the target's own network says more about the target than a
+// transit router named after a peering city). Indexes into t.Candidates; 0 is
+// the target itself. known is whether the target has an origin ASN. reached is
+// whether a tail hop among the candidates (not the target, which is trivially in
+// its own ASN) is in the target's ASN.
+func candidateOrder(t traceIn, origin *originTable) (order []int, known, reached bool) {
 	_, targetASN, known := origin.lookup(t.Target)
 	cands := t.Candidates
 	if known {
@@ -113,10 +140,8 @@ func matchTrace(t traceIn, ptrs map[netip.Addr]string, rules []rule, origin *ori
 			}
 		}
 	}
-	order := make([]int, 0, len(cands))
+	order = make([]int, 0, len(cands))
 	if known {
-		// A router of the target's own network says more about the target than a
-		// transit router named after a peering city.
 		for _, same := range []bool{true, false} {
 			for i, c := range cands {
 				if _, asn, ok := origin.lookup(c); (ok && asn == targetASN) == same {
@@ -129,6 +154,16 @@ func matchTrace(t traceIn, ptrs map[netip.Addr]string, rules []rule, origin *ori
 			order = append(order, i)
 		}
 	}
+	return order, known, reached
+}
+
+// matchTrace finds the first candidate of the trace, same-ASN ones first, whose
+// PTR name a rule matches. reached is whether a tail hop among the candidates (not
+// the target, which is trivially in its own ASN) is in the target's ASN.
+func matchTrace(t traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable) (m *match, reached bool) {
+	order, known, reached := candidateOrder(t, origin)
+	_, targetASN, _ := origin.lookup(t.Target)
+	cands := t.Candidates
 	for _, i := range order {
 		ptr := ptrs[cands[i]]
 		if ptr == "" {
@@ -182,6 +217,117 @@ func widePrefix(origin *originTable, p24 netip.Prefix) (netip.Prefix, bool) {
 
 type cityKey struct{ Country, City string }
 
+// tally counts the votes for one city of an announced prefix by method.
+type tally struct{ rule, mmdb int }
+
+func (t *tally) total() int { return t.rule + t.mmdb }
+
+// groupByNetwork groups the traces by /24; the /24s come in address order.
+func groupByNetwork(traces []traceIn) (map[netip.Prefix][]traceIn, []netip.Prefix) {
+	byNet := map[netip.Prefix][]traceIn{}
+	for _, t := range traces {
+		byNet[t.Prefix] = append(byNet[t.Prefix], t)
+	}
+	prefixes := make([]netip.Prefix, 0, len(byNet))
+	for p := range byNet {
+		prefixes = append(prefixes, p)
+	}
+	sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].Addr().Less(prefixes[j].Addr()) })
+	return byNet, prefixes
+}
+
+// pickFinal chooses among the matches of one /24: winner is the traced match
+// (in the target's ASN, or the ASN unknown) closest to the target, an earlier
+// kind on a tie; final is the winner, or else the closest match of a router in
+// another ASN. Both are nil without matches; winner is nil when only other-ASN
+// routers matched.
+func pickFinal(matches []*match) (winner, final *match) {
+	var traceable, others []*match
+	for _, m := range matches {
+		if m.traceable() {
+			traceable = append(traceable, m)
+		} else {
+			others = append(others, m)
+		}
+	}
+	winner = best(traceable)
+	final = winner
+	if final == nil {
+		final = best(others)
+	}
+	return winner, final
+}
+
+// hopsByKind returns the traces of one /24 with the earlier kind (visitor,
+// gateway, random) first.
+func hopsByKind(ts []traceIn) []traceIn {
+	sorted := slices.Clone(ts)
+	slices.SortStableFunc(sorted, func(a, b traceIn) int { return kindIndex(a.Kind) - kindIndex(b.Kind) })
+	return sorted
+}
+
+// mmdbVoteCandidates lists the router hops of the /24's traces in the order the
+// MMDB fallback tries them: the traces by kind, in each the hop candidates
+// (never the target itself) closest first, those in the target's ASN before the
+// others (the order matchTrace tries them). A trace whose target has no origin ASN
+// gives none: such a /24 has no announced prefix to vote for.
+func mmdbVoteCandidates(ts []traceIn, origin *originTable) []netip.Addr {
+	var ips []netip.Addr
+	for _, t := range hopsByKind(ts) {
+		order, known, _ := candidateOrder(t, origin)
+		if !known {
+			continue
+		}
+		for _, i := range order {
+			if i > 0 {
+				ips = append(ips, t.Candidates[i])
+			}
+		}
+	}
+	return ips
+}
+
+// mmdbVote is the vote of a /24 that no rule matched: the city of the first hop
+// of mmdbVoteCandidates that has one in hops.
+func mmdbVote(ts []traceIn, hops map[netip.Addr]cityKey, origin *originTable) (cityKey, bool) {
+	for _, ip := range mmdbVoteCandidates(ts, origin) {
+		if c, ok := hops[ip]; ok {
+			return c, true
+		}
+	}
+	return cityKey{}, false
+}
+
+// hopIPs lists the router IPs locate wants an MMDB city for, each once, in
+// address order, never the target itself: the hops of every /24 that no rule
+// matches (see mmdbVoteCandidates), and the winning router of every /24 that a
+// rule matches, for the agreement count. It repeats the matching of locate.
+func hopIPs(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable) []netip.Addr {
+	byNet, prefixes := groupByNetwork(traces)
+	seen := map[netip.Addr]bool{}
+	for _, p24 := range prefixes {
+		var matches []*match
+		for _, t := range byNet[p24] {
+			if m, _ := matchTrace(t, ptrs, rules, origin); m != nil {
+				matches = append(matches, m)
+			}
+		}
+		if len(matches) == 0 {
+			for _, ip := range mmdbVoteCandidates(byNet[p24], origin) {
+				seen[ip] = true
+			}
+		} else if _, final := pickFinal(matches); final.Rank > 0 {
+			seen[final.Router] = true
+		}
+	}
+	ips := make([]netip.Addr, 0, len(seen))
+	for ip := range seen {
+		ips = append(ips, ip)
+	}
+	sort.Slice(ips, func(i, j int) bool { return ips[i].Less(ips[j]) })
+	return ips
+}
+
 // locate turns the newest trace of every (/24, target kind), the PTR names and
 // the rules into the rows of rdns_geo_layer.
 //
@@ -196,23 +342,22 @@ type cityKey struct{ Country, City string }
 //     router is named after the city it peers in). With no origin ASN there is
 //     no announced prefix and no vote.
 //
-// Per announced prefix the city with the most votes gets a wide row; a tie gets none.
-func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable) ([]geoRow, LocateOutput) {
+// A /24 with no rule match from any trace votes the city of the first router hop
+// that has one in hops (see mmdbVote); that is its only vote and never a traced row.
+// A rule-matched /24 whose winning router (not the target itself) has a city in hops
+// is only compared with it (MMDBCompared, MMDBAgreed). hops may be nil.
+//
+// Per announced prefix the city with the most votes (rule and MMDB votes count
+// the same) gets a wide row; a tie gets none. The row's method is methodRule when
+// a rule voted for the city, else methodMMDB.
+func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable, hops map[netip.Addr]cityKey) ([]geoRow, LocateOutput) {
 	out := newLocateOutput()
 	out.Traces, out.Names, out.Rules = len(traces), len(ptrs), len(rules)
-	byNet := map[netip.Prefix][]traceIn{}
-	for _, t := range traces {
-		byNet[t.Prefix] = append(byNet[t.Prefix], t)
-	}
-	prefixes := make([]netip.Prefix, 0, len(byNet))
-	for p := range byNet {
-		prefixes = append(prefixes, p)
-	}
-	sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].Addr().Less(prefixes[j].Addr()) })
+	byNet, prefixes := groupByNetwork(traces)
 	out.Networks = len(prefixes)
 
 	var rows []geoRow
-	votes := map[netip.Prefix]map[cityKey]int{}
+	votes := map[netip.Prefix]map[cityKey]*tally{}
 	for _, p24 := range prefixes {
 		var matches []*match
 		noASN := false
@@ -238,24 +383,12 @@ func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 			out.NoASN++
 		}
 
-		var traceable, others []*match
+		winner, final := pickFinal(matches)
 		for _, m := range matches {
-			if m.traceable() {
-				traceable = append(traceable, m)
-			} else {
-				others = append(others, m)
-			}
-		}
-		winner := best(traceable)
-		for _, m := range traceable {
-			if !m.sameCity(winner) {
+			if m.traceable() && !m.sameCity(winner) {
 				out.Disagreements++
 				break
 			}
-		}
-		final := winner
-		if final == nil {
-			final = best(others)
 		}
 
 		for _, m := range matches {
@@ -273,7 +406,7 @@ func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 
 		if winner != nil {
 			row := geoRow{Prefix: p24, Scope: scopeTraced, Country: winner.Rule.country, City: winner.Rule.city,
-				RouterIP: winner.Router, PTR: winner.PTR, Rule: winner.Rule.name}
+				RouterIP: winner.Router, PTR: winner.PTR, Rule: winner.Rule.name, Method: methodRule}
 			if winner.ASNKnown {
 				same := winner.SameASN
 				row.SameASN = &same
@@ -281,12 +414,37 @@ func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 			rows = append(rows, row)
 			out.Traced++
 		}
-		if final != nil && final.ASNKnown {
+		var voteKey cityKey
+		var fromMMDB, voting bool
+		switch {
+		case final != nil:
+			voteKey, voting = cityKey{final.Rule.country, final.Rule.city}, final.ASNKnown
+			if final.Rank > 0 { // a router hop, not the target itself
+				if c, ok := hops[final.Router]; ok {
+					out.MMDBCompared++
+					if c == voteKey {
+						out.MMDBAgreed++
+					}
+				}
+			}
+		case len(hops) > 0:
+			voteKey, voting = mmdbVote(byNet[p24], hops, origin)
+			fromMMDB = true
+		}
+		if voting {
 			if wp, ok := widePrefix(origin, p24); ok {
 				if votes[wp] == nil {
-					votes[wp] = map[cityKey]int{}
+					votes[wp] = map[cityKey]*tally{}
 				}
-				votes[wp][cityKey{final.Rule.country, final.Rule.city}]++
+				if votes[wp][voteKey] == nil {
+					votes[wp][voteKey] = &tally{}
+				}
+				if fromMMDB {
+					votes[wp][voteKey].mmdb++
+					out.MMDBVotes++
+				} else {
+					votes[wp][voteKey].rule++
+				}
 				out.Votes++
 			}
 		}
@@ -305,8 +463,8 @@ func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 	for _, wp := range wides {
 		var top cityKey
 		topVotes, tied := 0, false
-		for key, n := range votes[wp] {
-			switch {
+		for key, t := range votes[wp] {
+			switch n := t.total(); {
 			case n > topVotes:
 				top, topVotes, tied = key, n, false
 			case n == topVotes:
@@ -317,7 +475,13 @@ func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *
 			out.WideTies++
 			continue
 		}
-		rows = append(rows, geoRow{Prefix: wp, Scope: scopeWide, Country: top.Country, City: top.City})
+		won := votes[wp][top]
+		method := methodRule
+		if won.rule == 0 {
+			method = methodMMDB
+		}
+		rows = append(rows, geoRow{Prefix: wp, Scope: scopeWide, Country: top.Country, City: top.City,
+			Method: method, RuleVotes: won.rule, MMDBVotes: won.mmdb})
 		out.Wide++
 	}
 	return rows, out
@@ -365,10 +529,20 @@ func (p *Pipeline) clock() time.Time {
 // public.generated_rules and the announced prefixes of public.asn, in one
 // transaction. A shrink of more than 10% is refused (ErrShrink) unless force is set.
 //
-// A run whose inputs look as they did at the last rebuild (see inputsFingerprint),
-// less than a day ago, leaves the table alone and says so (LocateOutput.Skipped);
-// force always rebuilds. The fingerprint is taken before the inputs are read and
-// saved only after the commit, so a change during the run only causes one more rebuild.
+// A run whose inputs look as they did at the last rebuild (see inputsSummary and
+// fingerprintOf), less than a day ago, leaves the table alone and says so
+// (LocateOutput.Skipped); force always rebuilds. The fingerprint is taken before the
+// inputs are read and saved only after the commit, so a change during the run only
+// causes one more rebuild.
+//
+// The inputs include the ETag of our own published ip2geo MMDB in R2 (today's, else
+// yesterday's; see statMMDB). Only a run that rebuilds downloads it. When R2 cannot be
+// used (no R2 setting, no object, a Stat or download error) the saved copy and its saved
+// ETag are used instead (LocateOutput.MMDB "saved copy" and the reason), so an outage
+// neither changes the fingerprint nor the rows. Only without a usable saved copy, or when
+// mmdbbuilder cannot read it, is the router hop fallback skipped with a warning
+// (LocateOutput.MMDB "skipped") and the rebuild goes on without it; the fingerprint then
+// says "none", so the next run tries again.
 func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error) {
 	out := newLocateOutput()
 	conn, err := connect(ctx, p.PGSQL)
@@ -378,7 +552,9 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 	defer conn.Close(ctx)
 
 	statePath := filepath.Join(p.dir(), locateStateFile)
-	fingerprint, err := inputsFingerprint(ctx, conn)
+	ref := p.statMMDB(ctx)
+	summary, err := inputsSummary(ctx, conn)
+	fingerprint := fingerprintOf(summary, ref.etag())
 	if err != nil {
 		// Without it the table is simply rebuilt, as before.
 		p.log("locate: %v; rebuilding", err)
@@ -411,9 +587,28 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		return out, err
 	}
 
+	res, mmdbLookups := skipped(ref.Reason), 0
+	if ref.usable() {
+		ips := hopIPs(traces, ptrs, rules, origin)
+		mmdbLookups = len(ips)
+		res = p.mmdbHops(ctx, ref, ips)
+	}
+
 	backfilled := out.Backfilled
-	rows, out := locate(traces, ptrs, rules, origin)
+	rows, out := locate(traces, ptrs, rules, origin, res.Hops)
 	out.Backfilled = backfilled
+	out.MMDB, out.MMDBReason, out.MMDBDownloaded = res.Status, res.Reason, res.Downloaded
+	if res.Status == statusUsed {
+		out.MMDBKey = ref.Key
+	}
+	if res.Status != statusSkipped {
+		out.MMDBLookups = mmdbLookups
+	}
+	// The fingerprint names the MMDB that was read, so a run that had to use another
+	// (or none) is followed by one that tries R2 again.
+	if fingerprint != "" && res.ETag != ref.etag() {
+		fingerprint = fingerprintOf(summary, res.ETag)
+	}
 	out.RulesSkipped, out.RulesInvalid, out.RulesMissing, out.ASNPrefixes = rstats.Skipped, rstats.Invalid, rstats.NoTable, prefixes
 	if rstats.NoTable {
 		p.log("locate: WARNING public.generated_rules does not exist; no rules, no rows")
@@ -428,6 +623,18 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		if err := writeLocateState(statePath, locateState{Fingerprint: fingerprint, RebuiltAt: p.clock().UTC()}); err != nil {
 			p.log("locate: could not save %s: %v", locateStateFile, err)
 		}
+	}
+	if out.MMDB != statusSkipped {
+		how := "saved copy"
+		if out.MMDBDownloaded {
+			how = "downloaded"
+		}
+		key := out.MMDBKey
+		if key == "" {
+			key = "no R2 object"
+		}
+		p.log("locate: MMDB %s (%s): %d router IPs looked up, %d /24s voted by an MMDB hop city; of %d rule-matched /24s whose router has an MMDB city, %d agree",
+			key, how, out.MMDBLookups, out.MMDBVotes, out.MMDBCompared, out.MMDBAgreed)
 	}
 	p.log("locate: %d traces in %d /24s, %d names, %d rules (%d skipped, %d invalid); %d traced rows, %d wide rows (%d votes, %d ties); %d rows before",
 		out.Traces, out.Networks, out.Names, out.Rules, out.RulesSkipped, out.RulesInvalid, out.Traced, out.Wide, out.Votes, out.WideTies, out.Previous)
@@ -554,6 +761,9 @@ func replaceLayer(ctx context.Context, conn *pgx.Conn, rows []geoRow, force bool
 		ptrs := make([]*string, len(part))
 		ruleNames := make([]*string, len(part))
 		same := make([]*bool, len(part))
+		methods := make([]string, len(part))
+		ruleVotes := make([]*int32, len(part))
+		mmdbVotes := make([]*int32, len(part))
 		for i, r := range part {
 			prefixes[i], scopes[i], countries[i], cities[i] = r.Prefix.String(), r.Scope, r.Country, r.City
 			if r.RouterIP.IsValid() {
@@ -563,13 +773,20 @@ func replaceLayer(ctx context.Context, conn *pgx.Conn, rows []geoRow, force bool
 				ruleNames[i] = &part[i].Rule
 			}
 			same[i] = r.SameASN
+			methods[i] = r.Method
+			if r.Scope == scopeWide {
+				rv, mv := int32(r.RuleVotes), int32(r.MMDBVotes)
+				ruleVotes[i], mmdbVotes[i] = &rv, &mv
+			}
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO public.rdns_geo_layer
-				(prefix, scope, country, city, router_ip, router_ptr, rule_name, same_asn, located_at)
-			SELECT u.prefix::cidr, u.scope, u.country, u.city, u.router_ip::inet, u.router_ptr, u.rule_name, u.same_asn, now()
-			FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::boolean[])
-				AS u(prefix, scope, country, city, router_ip, router_ptr, rule_name, same_asn)`,
-			prefixes, scopes, countries, cities, routerIPs, ptrs, ruleNames, same); err != nil {
+				(prefix, scope, country, city, router_ip, router_ptr, rule_name, same_asn, method, rule_votes, mmdb_votes, located_at)
+			SELECT u.prefix::cidr, u.scope, u.country, u.city, u.router_ip::inet, u.router_ptr, u.rule_name, u.same_asn,
+				u.method, u.rule_votes, u.mmdb_votes, now()
+			FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::boolean[],
+				$9::text[], $10::integer[], $11::integer[])
+				AS u(prefix, scope, country, city, router_ip, router_ptr, rule_name, same_asn, method, rule_votes, mmdb_votes)`,
+			prefixes, scopes, countries, cities, routerIPs, ptrs, ruleNames, same, methods, ruleVotes, mmdbVotes); err != nil {
 			return previous, dbError("replace rdns_geo_layer", err)
 		}
 	}

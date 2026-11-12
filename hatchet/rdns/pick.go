@@ -60,10 +60,11 @@ const pickQuery = `WITH nets AS (
 	LIMIT $1`
 
 // PickNetworks chooses the /24s for this run's trace task and writes them to
-// the batch file.
+// the batch file. As the first task of a run it also creates and upgrades the
+// tables (connectEnsure); the later tasks assume they are there.
 func (p *Pipeline) PickNetworks(ctx context.Context) (PickOutput, error) {
 	var out PickOutput
-	conn, err := connect(ctx, p.PGSQL)
+	conn, err := connectEnsure(ctx, p.PGSQL)
 	if err != nil {
 		return out, err
 	}

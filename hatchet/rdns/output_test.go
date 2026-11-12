@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -19,6 +20,8 @@ func TestOutputsAreCountsOnly(t *testing.T) {
 		TraceOutput{Networks: 1, Targets: 3},
 		NamesOutput{IPs: 4, OK: 2},
 		LocateOutput{Traced: 2, Kinds: map[string]*KindStats{kindVisitor: {Traces: 1}}},
+		withMMDB(statusUsed, "", mmdbKey(time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC))),
+		withMMDB(statusSkipped, reasonStat, ""),
 	} {
 		data, err := json.Marshal(out)
 		if err != nil {
@@ -29,6 +32,11 @@ func TestOutputsAreCountsOnly(t *testing.T) {
 		for name, v := range fields {
 			switch v.(type) {
 			case float64, bool, map[string]any:
+			case string:
+				// The MMDB status, why it was skipped, and the date-named R2 object.
+				if name != "mmdb" && name != "mmdb_reason" && name != "mmdb_key" {
+					t.Errorf("%T field %s is a string", out, name)
+				}
 			default:
 				t.Errorf("%T field %s is %T", out, name, v)
 			}
@@ -50,4 +58,10 @@ func TestDBErrorHidesValues(t *testing.T) {
 	if got := dbError("x", plain); !errors.Is(got, plain) {
 		t.Errorf("err = %v", got)
 	}
+}
+
+func withMMDB(status, reason, key string) LocateOutput {
+	out := newLocateOutput()
+	out.MMDB, out.MMDBReason, out.MMDBKey, out.MMDBLookups, out.MMDBVotes = status, reason, key, 3, 1
+	return out
 }

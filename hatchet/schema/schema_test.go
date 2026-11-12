@@ -111,8 +111,11 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 	}
 	tables := map[string]bool{}
 	for _, sql := range r.sqls {
-		// The one ALTER is on the table that resolve-ips alone writes and reads.
-		alter := strings.Contains(sql, "ALTER") && !strings.HasPrefix(sql, "ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS ")
+		// The ALTERs are on tables that resolve-ips alone writes: network_traces (it also
+		// alone reads it) and rdns_geo_layer (build-geo-data reads it).
+		alter := strings.Contains(sql, "ALTER") &&
+			!strings.HasPrefix(sql, "ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS ") &&
+			!strings.HasPrefix(sql, "ALTER TABLE public.rdns_geo_layer ADD COLUMN IF NOT EXISTS ")
 		if !strings.Contains(sql, "IF NOT EXISTS") || alter || strings.Contains(sql, "visitor_ips") {
 			t.Errorf("unexpected statement: %s", sql)
 		}
@@ -130,6 +133,20 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.sqls, "\n"), "ADD COLUMN IF NOT EXISTS candidates inet[]") {
 		t.Error("network_traces has no candidates column")
+	}
+	var alters []string
+	for _, sql := range r.sqls {
+		if strings.HasPrefix(sql, "ALTER TABLE public.rdns_geo_layer ") {
+			alters = append(alters, sql)
+		}
+	}
+	if len(alters) != 1 {
+		t.Fatalf("ALTER statements of rdns_geo_layer: %q", alters)
+	}
+	for _, col := range []string{"method text", "rule_votes integer", "mmdb_votes integer"} {
+		if !strings.Contains(alters[0], "ADD COLUMN IF NOT EXISTS "+col) {
+			t.Errorf("rdns_geo_layer has no idempotent %q column: %s", col, alters[0])
+		}
 	}
 }
 

@@ -110,6 +110,15 @@ var rdnsStatements = []string{
 		located_at timestamptz NOT NULL DEFAULT now(),
 		PRIMARY KEY (scope, prefix)
 	)`,
+	// method: how the row was found. Traced rows: rdns_rule (a rule matched the router's
+	// PTR name). Wide rows: rdns_rule when at least one vote for the city came from a rule,
+	// else mmdb_hop (every vote came from the city of a router hop in our own published
+	// ip2geo MMDB). rule_votes and mmdb_votes are the votes for the winning city of a wide
+	// row by method (NULL for a traced row). NULL everywhere in rows written before the
+	// columns were added, until the next rebuild. resolve-ips is the only writer of this
+	// table; build-geo-data reads it, so the ALTER waits for a running read at most and
+	// resolve-ips runs it once per run (first task only), not in every task.
+	`ALTER TABLE public.rdns_geo_layer ADD COLUMN IF NOT EXISTS method text, ADD COLUMN IF NOT EXISTS rule_votes integer, ADD COLUMN IF NOT EXISTS mmdb_votes integer`,
 }
 
 // statements are the tables the ASN workflows write (Ensure). geo_eval,
@@ -204,8 +213,9 @@ func EnsureVisitorIPs(ctx context.Context, db Execer) error {
 
 // EnsureRDNS creates public.network_traces, public.ip_ptr_names and
 // public.rdns_geo_layer, the tables resolve-ips writes, and adds the
-// network_traces.candidates column. resolve-ips uses it (with EnsureVisitorIPs)
-// instead of Ensure.
+// network_traces.candidates column and the method and vote columns of rdns_geo_layer.
+// resolve-ips uses it (with EnsureVisitorIPs) instead of Ensure, once per run: its
+// first task runs it (ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column exists).
 func EnsureRDNS(ctx context.Context, db Execer) error {
 	for _, stmt := range rdnsStatements {
 		if _, err := db.Exec(ctx, stmt); err != nil {

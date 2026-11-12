@@ -46,31 +46,40 @@ const (
 		FROM public.generated_rules`
 )
 
-// inputsFingerprint summarizes the inputs of locate; equal text means nothing
-// locate reads has changed. It reads four short summaries and no rows.
-func inputsFingerprint(ctx context.Context, conn *pgx.Conn) (string, error) {
+// inputsSummary summarizes the database inputs of locate: four short texts, no rows.
+func inputsSummary(ctx context.Context, conn *pgx.Conn) ([4]string, error) {
 	var parts [4]string
 	if err := conn.QueryRow(ctx, fingerprintTracesQuery, locateWindow).Scan(&parts[0]); err != nil {
-		return "", dbError("fingerprint traces", err)
+		return parts, dbError("fingerprint traces", err)
 	}
 	if err := conn.QueryRow(ctx, fingerprintNamesQuery).Scan(&parts[1]); err != nil {
-		return "", dbError("fingerprint names", err)
+		return parts, dbError("fingerprint names", err)
 	}
 	var table *string
 	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.generated_rules')::text`).Scan(&table); err != nil {
-		return "", dbError("fingerprint rules", err)
+		return parts, dbError("fingerprint rules", err)
 	}
 	parts[2] = "no table"
 	if table != nil {
 		if err := conn.QueryRow(ctx, fingerprintRulesQuery).Scan(&parts[2]); err != nil {
-			return "", dbError("fingerprint rules", err)
+			return parts, dbError("fingerprint rules", err)
 		}
 	}
 	if err := conn.QueryRow(ctx, fingerprintASNQuery).Scan(&parts[3]); err != nil {
-		return "", dbError("fingerprint asn", err)
+		return parts, dbError("fingerprint asn", err)
 	}
-	data, _ := json.Marshal(parts)
-	return string(data), nil
+	return parts, nil
+}
+
+// fingerprintOf is the fingerprint of the inputs of locate: the summary of the
+// database inputs and the ETag of the MMDB the hop fallback reads (noMMDB when
+// the fallback has none). Equal text means nothing locate reads has changed.
+func fingerprintOf(summary [4]string, mmdbETag string) string {
+	if mmdbETag == "" {
+		mmdbETag = noMMDB
+	}
+	data, _ := json.Marshal([5]string{summary[0], summary[1], summary[2], summary[3], mmdbETag})
+	return string(data)
 }
 
 // canSkip reports whether a locate with these inputs may leave the table as it

@@ -203,12 +203,13 @@ func newGeofeedsPipeline(progress func(string)) *geofeeds.Pipeline {
 	return &geofeeds.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2"), PGSQL: pgsql()}
 }
 
-// newRDNSPipeline reads the environment; progress receives log lines. scamper is
-// the binary next to this one, never one from the PATH (an empty path, when the
-// executable is unknown, makes the trace task fail).
+// newRDNSPipeline reads the environment; progress receives log lines. scamper and
+// mmdbbuilder are the binaries next to this one, never one from the PATH (an empty path, when the
+// executable is unknown, makes the trace task fail and locate skip the MMDB hop fallback).
 func newRDNSPipeline(progress func(string)) *rdns.Pipeline {
 	scamper, _ := nextToExecutable("scamper")
-	return &rdns.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, Scamper: scamper}
+	builder, _ := mmdbBuilder() // empty when unknown: locate then skips the MMDB hop fallback
+	return &rdns.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, Scamper: scamper, MMDBBuilder: builder, R2: env("R2")}
 }
 
 func pgsql() string { return env("PGSQL") }

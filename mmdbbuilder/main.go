@@ -3,6 +3,7 @@
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
 //	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
+//	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, a layer named in -same-country applies only where the country so
@@ -11,6 +12,9 @@
 // layer named in -first-country applies a row only to the addresses where the
 // first layer gives the row's country (a broad row is split); a row with no
 // such address is skipped.
+//
+// lookup with -in and -out reads an ip2geo MMDB for the IPs of a file (one per
+// line) and writes ip<TAB>country<TAB>city for each one that has a city. See lookup.go.
 //
 // eval scores an ip2geo MMDB (IPv4 only) and prints one JSON object. See eval.go.
 package main
@@ -45,6 +49,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
 }
@@ -94,10 +99,28 @@ func runLookup(args []string) {
 	db := flags.String("db", "", "MMDB file to query")
 	ip := flags.String("ip", "", "single IP to look up (overrides -ips and the builtin IPs)")
 	ips := flags.String("ips", "", "file with one IP per line, looked up together with the builtin IPs")
+	in := flags.String("in", "", "file with one IP per line: write each one's city to -out (an ip2geo MMDB)")
+	out := flags.String("out", "", "with -in: output TSV, ip<TAB>country<TAB>city, only for IPs that have a city")
 	flags.Parse(args)
 
-	if *db == "" {
+	if *db == "" || flags.NArg() > 0 {
 		usage()
+	}
+	if *in != "" || *out != "" {
+		if *in == "" || *out == "" || *ip != "" || *ips != "" {
+			usage()
+		}
+		stats, err := writeCities(*db, *in, *out)
+		if stats.invalid > 0 || stats.failed > 0 {
+			// Counts only: the lines themselves may be anything.
+			fmt.Fprintf(os.Stderr, "warning: skipped %d invalid lines, %d failed lookups\n", stats.invalid, stats.failed)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("looked up %d IPs, %d with a city, wrote %s\n", stats.lookups, stats.withCity, *out)
+		return
 	}
 	if err := printLookups(*db, *ip, *ips); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
