@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"openipdata.org/hatchet/ipdata"
 )
 
 func layerRows(t *testing.T, fill func(w *csv.Writer) error) string {
@@ -87,16 +89,6 @@ func TestWriteGeoIPBlocksRows(t *testing.T) {
 	})
 	if got != "prefix,country,region,city,source\n63.176.0.0/13,DE,,,\n45.10.0.0/24,DE,,,\n" || !reflect.DeepEqual(names, map[string]string{"DE": "Germany"}) {
 		t.Errorf("names %v, layer:\n%s", names, got)
-	}
-}
-
-func TestASNPrefixes(t *testing.T) {
-	got := asnPrefixes(`{"asn": 1, "metadata": {}, "prefixes": {"ipv4": ["45.10.0.1/24", "bad"], "ipv6": ["2a00::/32"]}}`)
-	if fmt.Sprint(got) != "[45.10.0.0/24 2a00::/32]" {
-		t.Errorf("prefixes = %v", got)
-	}
-	if asnPrefixes("not json") != nil {
-		t.Error("prefixes from bad json")
 	}
 }
 
@@ -232,7 +224,7 @@ func TestHostingQuery(t *testing.T) {
 			t.Errorf("hostingQuery lacks %q:\n%s", part, hostingQuery)
 		}
 	}
-	if strings.Contains(hostingQuery, "a.country") || !strings.Contains(hostingQuery, seenAtFilter) || !strings.Contains(pdbQuery, seenAtFilter) {
+	if strings.Contains(hostingQuery, "a.country") || !strings.Contains(hostingQuery, ipdata.SeenAtFilter) || !strings.Contains(pdbQuery, ipdata.SeenAtFilter) {
 		t.Errorf("hostingQuery = %s", hostingQuery)
 	}
 	for _, bad := range []string{"INSERT", "UPDATE", "ALTER", "DELETE"} {
@@ -245,8 +237,8 @@ func TestHostingQuery(t *testing.T) {
 // The layer names carry the order, in steps of 10, and the R2 layers are named as
 // sync-geofeeds uploads them.
 func TestLayerNames(t *testing.T) {
-	names := []string{RIRLayer, IPverseLayer, PDBLayer, HostingLayer, IXLayer, WhoisLayer, FeedsLayer}
-	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "30-pdb.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "70-geofeeds.csv.gz"}
+	names := []string{RIRLayer, IPverseLayer, PDBLayer, RDNSWideLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, FeedsLayer}
+	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "30-pdb.csv.gz", "35-rdns-wide.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "65-rdns.csv.gz", "70-geofeeds.csv.gz"}
 	if !reflect.DeepEqual(names, want) || !sort.StringsAreSorted(names) {
 		t.Errorf("layer names = %v", names)
 	}
@@ -275,17 +267,17 @@ func TestGeoArgs(t *testing.T) {
 		}
 		return strings.Join(got, " ")
 	}
-	touchLayers(t, p, FeedsLayer, WhoisLayer, IXLayer, HostingLayer, PDBLayer, IPverseLayer, RIRLayer, NamesFile, "notes.txt", "55-extra.csv.gz")
+	touchLayers(t, p, FeedsLayer, RDNSLayer, WhoisLayer, IXLayer, HostingLayer, RDNSWideLayer, PDBLayer, IPverseLayer, RIRLayer, NamesFile, "notes.txt", "55-extra.csv.gz")
 	os.WriteFile(filepath.Join(p.layersDir(), "60-whois.csv.gz.tmp"), nil, 0o640)
 	prefix := "geo -out out.mmdb -names " + layers + NamesFile
-	want := prefix + " -first-country " + HostingLayer + " -same-country " + PDBLayer + " -within-first " + WhoisLayer + "," + FeedsLayer + " " +
-		strings.Join([]string{layers + RIRLayer, layers + IPverseLayer, layers + PDBLayer, layers + HostingLayer, layers + IXLayer,
-			layers + "55-extra.csv.gz", layers + WhoisLayer, layers + FeedsLayer}, " ")
+	want := prefix + " -first-country " + HostingLayer + " -same-country " + PDBLayer + "," + RDNSWideLayer + "," + RDNSLayer + " -within-first " + WhoisLayer + "," + FeedsLayer + " " +
+		strings.Join([]string{layers + RIRLayer, layers + IPverseLayer, layers + PDBLayer, layers + RDNSWideLayer, layers + HostingLayer, layers + IXLayer,
+			layers + "55-extra.csv.gz", layers + WhoisLayer, layers + RDNSLayer, layers + FeedsLayer}, " ")
 	if got := args(""); got != want {
 		t.Errorf("all layers:\n%s\nwant:\n%s", got, want)
 	}
 	// The holdout build puts its own file in place of the geofeeds one.
-	if got := args("/kept/" + FeedsLayer); !strings.HasSuffix(got, layers+WhoisLayer+" /kept/"+FeedsLayer) || strings.Contains(got, layers+FeedsLayer) {
+	if got := args("/kept/" + FeedsLayer); !strings.HasSuffix(got, layers+RDNSLayer+" /kept/"+FeedsLayer) || strings.Contains(got, layers+FeedsLayer) {
 		t.Errorf("with a kept feeds file: %s", got)
 	}
 
@@ -294,19 +286,21 @@ func TestGeoArgs(t *testing.T) {
 		absent []string
 		flags  string
 	}{
-		{[]string{IXLayer, "55-extra.csv.gz"}, "-first-country " + HostingLayer + " -same-country " + PDBLayer + " -within-first " + WhoisLayer + "," + FeedsLayer},
-		{[]string{HostingLayer}, "-same-country " + PDBLayer + " -within-first " + WhoisLayer + "," + FeedsLayer},
-		{[]string{WhoisLayer}, "-first-country " + HostingLayer + " -same-country " + PDBLayer + " -within-first " + FeedsLayer},
-		{[]string{PDBLayer, HostingLayer, WhoisLayer}, "-within-first " + FeedsLayer},
-		{[]string{PDBLayer, HostingLayer, WhoisLayer, FeedsLayer}, ""},
+		{[]string{IXLayer, "55-extra.csv.gz"}, "-first-country " + HostingLayer + " -same-country " + PDBLayer + "," + RDNSWideLayer + "," + RDNSLayer + " -within-first " + WhoisLayer + "," + FeedsLayer},
+		{[]string{HostingLayer}, "-same-country " + PDBLayer + "," + RDNSWideLayer + "," + RDNSLayer + " -within-first " + WhoisLayer + "," + FeedsLayer},
+		{[]string{WhoisLayer}, "-first-country " + HostingLayer + " -same-country " + PDBLayer + "," + RDNSWideLayer + "," + RDNSLayer + " -within-first " + FeedsLayer},
+		{[]string{RDNSWideLayer, RDNSLayer}, "-first-country " + HostingLayer + " -same-country " + PDBLayer + " -within-first " + WhoisLayer + "," + FeedsLayer},
+		{[]string{PDBLayer, RDNSWideLayer, HostingLayer, WhoisLayer}, "-same-country " + RDNSLayer + " -within-first " + FeedsLayer},
+		{[]string{PDBLayer, RDNSWideLayer, HostingLayer, WhoisLayer, RDNSLayer}, "-within-first " + FeedsLayer},
+		{[]string{PDBLayer, RDNSWideLayer, HostingLayer, WhoisLayer, RDNSLayer, FeedsLayer}, ""},
 	} {
-		touchLayers(t, p, FeedsLayer, WhoisLayer, IXLayer, HostingLayer, PDBLayer, IPverseLayer, RIRLayer, "55-extra.csv.gz")
+		touchLayers(t, p, FeedsLayer, RDNSLayer, WhoisLayer, IXLayer, HostingLayer, RDNSWideLayer, PDBLayer, IPverseLayer, RIRLayer, "55-extra.csv.gz")
 		for _, name := range c.absent {
 			os.Remove(filepath.Join(p.layersDir(), name))
 		}
 		got := args("")
 		var files []string
-		for _, name := range []string{RIRLayer, IPverseLayer, PDBLayer, HostingLayer, IXLayer, "55-extra.csv.gz", WhoisLayer, FeedsLayer} {
+		for _, name := range []string{RIRLayer, IPverseLayer, PDBLayer, RDNSWideLayer, HostingLayer, IXLayer, "55-extra.csv.gz", WhoisLayer, RDNSLayer, FeedsLayer} {
 			if _, err := os.Stat(filepath.Join(p.layersDir(), name)); err == nil {
 				files = append(files, layers+name)
 			}
@@ -440,11 +434,12 @@ func TestDownloadHosting(t *testing.T) {
 func TestSkipLayers(t *testing.T) {
 	for _, bad := range [][]string{{"names.csv"}, {HostingLayer, RIRLayer}, {""}, {FeedsLayer}} {
 		if err := ValidateSkipLayers(bad); err == nil || !strings.Contains(err.Error(), bad[len(bad)-1]) ||
-			!strings.Contains(err.Error(), HostingLayer) || !strings.Contains(err.Error(), IXLayer) || !strings.Contains(err.Error(), WhoisLayer) {
+			!strings.Contains(err.Error(), HostingLayer) || !strings.Contains(err.Error(), IXLayer) || !strings.Contains(err.Error(), WhoisLayer) ||
+			!strings.Contains(err.Error(), RDNSLayer) || !strings.Contains(err.Error(), RDNSWideLayer) {
 			t.Errorf("ValidateSkipLayers(%v) = %v", bad, err)
 		}
 	}
-	if err := ValidateSkipLayers([]string{HostingLayer, IXLayer, WhoisLayer}); err != nil {
+	if err := ValidateSkipLayers([]string{RDNSWideLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer}); err != nil {
 		t.Errorf("ValidateSkipLayers(optional layers) = %v", err)
 	}
 
@@ -485,5 +480,79 @@ func TestSourceSkippedLayersJSON(t *testing.T) {
 	data, _ = json.Marshal(Source{})
 	if strings.Contains(string(data), "skipped_layers") {
 		t.Errorf("json = %s", data)
+	}
+}
+
+// The rDNS layers come from public.rdns_geo_layer by scope: the wide rows are
+// 35-rdns-wide and the traced ones 65-rdns. Both are optional (no rows: skipped
+// with a warning, no file), have no minimum, and both only refine a country.
+func TestDownloadRDNSLayers(t *testing.T) {
+	layers := t.TempDir()
+	rows := map[string]int{rdnsWide: 3, rdnsTraced: 2}
+	var scopes []string
+	write := func(_ context.Context, scope string, w *csv.Writer) (int, error) {
+		scopes = append(scopes, scope)
+		for i := 0; i < rows[scope]; i++ {
+			layerRow(w, fmt.Sprintf("10.%d.0.0/24", i), "DE", "Berlin")
+		}
+		if rows[scope] == 0 {
+			return 0, ErrNoRows
+		}
+		return rows[scope], nil
+	}
+	run := func() (Source, []string) {
+		var logs []string
+		p := &Pipeline{writeRDNS: write, Progress: func(s string) { logs = append(logs, s) }}
+		src := Source{Rows: map[string]int{}}
+		for _, l := range []struct{ name, scope string }{{RDNSWideLayer, rdnsWide}, {RDNSLayer, rdnsTraced}} {
+			err := p.downloadOptional(context.Background(), layers, &src, l.name, 0, "rDNS "+l.scope+" rows", "hint",
+				func(ctx context.Context, w *csv.Writer) (int, error) { return p.writeRDNS(ctx, l.scope, w) })
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		return src, logs
+	}
+	src, _ := run()
+	if len(src.SkippedLayers) != 0 || src.Rows[RDNSWideLayer] != 3 || src.Rows[RDNSLayer] != 2 {
+		t.Fatalf("both scopes: %+v", src)
+	}
+	if got := readGzip(t, filepath.Join(layers, RDNSLayer)); got != "prefix,country,region,city,source\n10.0.0.0/24,DE,,Berlin,\n10.1.0.0/24,DE,,Berlin,\n" {
+		t.Errorf("%s = %q", RDNSLayer, got)
+	}
+
+	rows[rdnsWide] = 0
+	os.Remove(filepath.Join(layers, RDNSWideLayer))
+	src, logs := run()
+	if !reflect.DeepEqual(src.SkippedLayers, []string{RDNSWideLayer}) || src.Rows[RDNSLayer] != 2 || len(logs) != 2 || !strings.Contains(logs[0], "WARNING") {
+		t.Fatalf("no wide rows: %+v %v", src, logs)
+	}
+	if _, err := os.Stat(filepath.Join(layers, RDNSWideLayer)); !os.IsNotExist(err) {
+		t.Errorf("a file for a skipped layer: %v", err)
+	}
+}
+
+func TestRDNSQueryReadsOneScope(t *testing.T) {
+	for _, part := range []string{"FROM public.rdns_geo_layer", "scope = $1", "ORDER BY prefix"} {
+		if !strings.Contains(rdnsQuery, part) {
+			t.Errorf("rdnsQuery lacks %q", part)
+		}
+	}
+	for _, bad := range []string{"INSERT", "UPDATE", "ALTER", "DELETE", "CREATE"} {
+		if strings.Contains(strings.ToUpper(rdnsQuery), bad) {
+			t.Errorf("rdnsQuery contains %s", bad)
+		}
+	}
+	if _, err := writeRDNSRows(context.Background(), "", "other", nil); err == nil {
+		t.Error("an unknown scope was accepted")
+	}
+}
+
+// Both rDNS layers only refine: they never change a country.
+func TestRDNSLayerRules(t *testing.T) {
+	for _, name := range []string{RDNSWideLayer, RDNSLayer} {
+		if layerRules[name] != "-same-country" || !slices.Contains(optionalLayers, name) {
+			t.Errorf("%s: rule %q, optional %v", name, layerRules[name], slices.Contains(optionalLayers, name))
+		}
 	}
 }

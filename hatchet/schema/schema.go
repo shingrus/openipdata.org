@@ -1,8 +1,9 @@
 // Package schema creates and upgrades the Postgres tables the workflows share:
-// public.asn, public.asn_domain, public.asn_geo_pdb, public.geo_ix_pdb, public.geo_eval, and
-// public.geofeed_urls. Each table has one writer (see AGENTS.md); a workflow runs DDL only for
-// tables it writes (Ensure, EnsureGeoEval for the read-only build-geo-data, or EnsureGeofeedURLs
-// for sync-geofeeds).
+// public.asn, public.asn_domain, public.asn_geo_pdb, public.geo_ix_pdb, public.geo_eval,
+// public.geofeed_urls, public.visitor_ips, public.network_traces, public.ip_ptr_names, and
+// public.rdns_geo_layer. Each table has one writer (see AGENTS.md); a workflow runs DDL only for
+// tables it writes (Ensure, EnsureGeoEval for the read-only build-geo-data, EnsureGeofeedURLs
+// for sync-geofeeds, or EnsureVisitorIPs and EnsureRDNS for resolve-ips).
 package schema
 
 import (
@@ -52,9 +53,61 @@ var geofeedURLsStatements = []string{
 	`CREATE INDEX IF NOT EXISTS geofeed_urls_last_checked_at_idx ON public.geofeed_urls USING btree (last_checked_at)`,
 }
 
-// statements are the tables the ASN workflows write (Ensure). geo_eval and
-// geofeed_urls are not here: only their own writers create them
-// (EnsureGeoEval, EnsureGeofeedURLs), so no other workflow takes locks on them.
+// visitorIPsStatement creates public.visitor_ips: the IPs of active visitors, inserted
+// by external websites (resolve-ips only reads it). resolve-ips runs this one statement
+// (EnsureVisitorIPs) so it never locks the table the websites write to: no ALTER, no extra index.
+const visitorIPsStatement = `CREATE TABLE IF NOT EXISTS public.visitor_ips (
+		ip inet PRIMARY KEY,
+		source text NOT NULL,
+		first_seen_at timestamptz NOT NULL DEFAULT now(),
+		last_seen_at timestamptz NOT NULL DEFAULT now()
+	)`
+
+// rdnsStatements create the tables resolve-ips writes (EnsureRDNS).
+var rdnsStatements = []string{
+	// One traceroute of one host in a /24. target_kind: visitor, gateway (.1) or random.
+	// hops is the full path, [{"ttl": 1, "ip": "192.0.2.1", "rtt_ms": 0.4}, ...], with a
+	// null ip for a hop that did not answer. The two newest per (prefix, target_kind) are kept.
+	`CREATE TABLE IF NOT EXISTS public.network_traces (
+		prefix cidr NOT NULL,
+		target_kind text NOT NULL,
+		target inet NOT NULL,
+		traced_at timestamptz NOT NULL DEFAULT now(),
+		hops jsonb NOT NULL,
+		PRIMARY KEY (prefix, target_kind, traced_at)
+	)`,
+	`CREATE INDEX IF NOT EXISTS network_traces_traced_at_idx ON public.network_traces (traced_at)`,
+	// The PTR name of one IP (a hop or a target). status: ok, not_found, or error;
+	// ptr is NULL unless the status is ok.
+	`CREATE TABLE IF NOT EXISTS public.ip_ptr_names (
+		ip inet PRIMARY KEY,
+		ptr text,
+		status text NOT NULL,
+		resolved_at timestamptz NOT NULL DEFAULT now()
+	)`,
+	`CREATE INDEX IF NOT EXISTS ip_ptr_names_resolved_at_idx ON public.ip_ptr_names (resolved_at)`,
+	// One located prefix. scope: traced (a /24 a trace located) or wide (an announced
+	// prefix, never wider than /16, that the traced /24s voted for). A /24 can be
+	// both, hence the key. router_*, rule_name and same_asn describe a traced
+	// row's winning router (same_asn is NULL when the target's ASN was unknown) and are NULL
+	// for a wide row.
+	`CREATE TABLE IF NOT EXISTS public.rdns_geo_layer (
+		prefix cidr NOT NULL,
+		scope text NOT NULL,
+		country text NOT NULL,
+		city text NOT NULL,
+		router_ip inet,
+		router_ptr text,
+		rule_name text,
+		same_asn boolean,
+		located_at timestamptz NOT NULL DEFAULT now(),
+		PRIMARY KEY (scope, prefix)
+	)`,
+}
+
+// statements are the tables the ASN workflows write (Ensure). geo_eval,
+// geofeed_urls and the resolve-ips tables are not here: only their own writers create them
+// (EnsureGeoEval, EnsureGeofeedURLs, EnsureVisitorIPs, EnsureRDNS), so no other workflow takes locks on them.
 var statements = []string{
 	`CREATE TABLE IF NOT EXISTS public.asn (
 		asn BIGINT PRIMARY KEY,
@@ -127,6 +180,26 @@ func EnsureGeoEval(ctx context.Context, db Execer) error {
 // instead of Ensure: it writes no other table.
 func EnsureGeofeedURLs(ctx context.Context, db Execer) error {
 	for _, stmt := range geofeedURLsStatements {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure schema: %w", err)
+		}
+	}
+	return nil
+}
+
+// EnsureVisitorIPs creates public.visitor_ips only (see visitorIPsStatement).
+func EnsureVisitorIPs(ctx context.Context, db Execer) error {
+	if _, err := db.Exec(ctx, visitorIPsStatement); err != nil {
+		return fmt.Errorf("ensure schema: %w", err)
+	}
+	return nil
+}
+
+// EnsureRDNS creates public.network_traces, public.ip_ptr_names and
+// public.rdns_geo_layer, the tables resolve-ips writes. resolve-ips uses it
+// (with EnsureVisitorIPs) instead of Ensure.
+func EnsureRDNS(ctx context.Context, db Execer) error {
+	for _, stmt := range rdnsStatements {
 		if _, err := db.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("ensure schema: %w", err)
 		}

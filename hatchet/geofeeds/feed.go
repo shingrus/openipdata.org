@@ -15,6 +15,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"openipdata.org/hatchet/ipdata"
 )
 
 //go:embed countries.txt
@@ -74,7 +76,7 @@ func parseRow(fields []string) (feedRow, string) {
 	if (addr.Is4() && prefix.Bits() < 8) || (addr.Is6() && prefix.Bits() < 16) {
 		return feedRow{}, rejectTooBroad
 	}
-	if !publicAddr(addr) {
+	if !ipdata.PublicAddr(addr) {
 		return feedRow{}, rejectReserved
 	}
 	row := feedRow{prefix: prefix, country: strings.ToUpper(field(1)), city: field(3)}

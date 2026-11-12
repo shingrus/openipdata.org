@@ -3,14 +3,12 @@ package geo
 import (
 	"context"
 	"encoding/csv"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"openipdata.org/hatchet/ipdata"
 	"openipdata.org/hatchet/schema"
 )
 
@@ -29,12 +27,8 @@ const pdbQuery = `SELECT a.json, upper(btrim(g.country)), btrim(g.city)
 	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
 	WHERE btrim(coalesce(g.city, '')) <> ''
 	  AND upper(btrim(a.country)) = upper(btrim(g.country))
-	  AND ` + seenAtFilter + `
+	  AND ` + ipdata.SeenAtFilter + `
 	ORDER BY a.asn`
-
-// seenAtFilter is the seen_at rule that pdbQuery and hostingQuery share.
-const seenAtFilter = `(a.seen_at > now() - interval '7 days'
-	       OR (a.seen_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.asn WHERE seen_at IS NOT NULL)))`
 
 // hostingQuery picks hosting networks whose PeeringDB facilities are all in
 // one city (sync-peeringdb sets fac_city only then). "Content" is PeeringDB's
@@ -49,7 +43,7 @@ const hostingQuery = `SELECT a.json, upper(btrim(g.fac_country)), btrim(g.fac_ci
 	  AND g.fac_count >= 1
 	  AND btrim(coalesce(g.fac_city, '')) <> ''
 	  AND length(btrim(coalesce(g.fac_country, ''))) = 2
-	  AND ` + seenAtFilter + `
+	  AND ` + ipdata.SeenAtFilter + `
 	ORDER BY a.asn`
 
 // writePDBRows writes every announced prefix of those ASNs as a layer row
@@ -92,8 +86,8 @@ func writeASNPrefixRows(ctx context.Context, conn *pgx.Conn, query string, w *cs
 			return 0, 0, err
 		}
 		n := 0
-		for _, p := range asnPrefixes(raw) {
-			layerRow(w, p.String(), code, city)
+		for _, p := range ipdata.ASNPrefixes(raw) {
+			layerRow(w, p.Masked().String(), code, city)
 			n++
 		}
 		if n > 0 {
@@ -131,27 +125,6 @@ func writeHostingRows(ctx context.Context, dsn string, w *csv.Writer) (int, erro
 		return 0, ErrNoRows
 	}
 	return prefixes, nil
-}
-
-// asnPrefixes reads the announced prefixes from a public.asn json value;
-// unparsable ones are left out.
-func asnPrefixes(raw string) []netip.Prefix {
-	var data struct {
-		Prefixes struct {
-			IPv4 []string `json:"ipv4"`
-			IPv6 []string `json:"ipv6"`
-		} `json:"prefixes"`
-	}
-	if json.Unmarshal([]byte(raw), &data) != nil {
-		return nil
-	}
-	var out []netip.Prefix
-	for _, text := range append(data.Prefixes.IPv4, data.Prefixes.IPv6...) {
-		if p, err := netip.ParsePrefix(strings.TrimSpace(text)); err == nil {
-			out = append(out, p.Masked())
-		}
-	}
-	return out
 }
 
 // ixQuery lists the internet exchange peering LAN prefixes with a 2-letter

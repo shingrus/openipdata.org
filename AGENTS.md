@@ -8,10 +8,10 @@
 ## Layout
 
 - `infra/`: VM provisioning (`init-hatchet-runner-vm.sh`), systemd unit, env template. No Go code.
-- `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`, `hatchet/geofeeds/` for `sync-geofeeds`, `hatchet/geo/` for `build-geo-data`). `hatchet/schema/` creates and upgrades the shared Postgres tables; `hatchet/publish/` uploads artifacts to R2 and GitHub releases; `hatchet/rirstats/` parses RIR delegated-extended stats and splits address ranges into prefixes; `hatchet/download/` downloads a file unless the local copy is current (the caller passes the HTTP client); `hatchet/outputs/` prunes old output directories and has the small helpers `asn` and `geo` share (last log lines, file size). Workflows share this code, never each other's downloaded files.
+- `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`, `hatchet/geofeeds/` for `sync-geofeeds`, `hatchet/geo/` for `build-geo-data`, `hatchet/rdns/` for `resolve-ips`). `hatchet/schema/` creates and upgrades the shared Postgres tables; `hatchet/publish/` uploads artifacts to R2 and GitHub releases; `hatchet/rirstats/` parses RIR delegated-extended stats and splits address ranges into prefixes; `hatchet/download/` downloads a file unless the local copy is current (the caller passes the HTTP client); `hatchet/outputs/` prunes old output directories and has the small helpers `asn` and `geo` share (last log lines, file size); `hatchet/ipdata/` has what several workflows need about IP space and `public.asn` (public-address check, country-code check, announced prefixes of `public.asn.json`, the `seen_at` filter). Workflows share this code, never each other's downloaded files.
 - `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn`, `geo`).
 - No `go.mod` or Go code at the repo root. Each module builds on its own.
-- `hatchet` must not import `mmdbbuilder`; it runs the `mmdbbuilder` binary found next to its own executable.
+- `hatchet` must not import `mmdbbuilder`; it runs the `mmdbbuilder` binary (and, for `resolve-ips`, `scamper`) found next to its own executable.
 
 ## Hatchet terms
 
@@ -20,7 +20,7 @@
 ## VM
 
 - System user/group `openipdata`, no login shell.
-- Binaries: `/opt/openipdata/bin/openipdata-worker` and `/opt/openipdata/bin/mmdbbuilder` (root, 0755).
+- Binaries: `/opt/openipdata/bin/openipdata-worker`, `/opt/openipdata/bin/mmdbbuilder` and `/opt/openipdata/bin/scamper` (root, 0755, not setuid). `scamper` is built by the init script from the pinned upstream tarball with `--disable-scamper-privsep` (the apt package is setuid and cannot start under the unit); `resolve-ips` runs the one next to the worker executable, never one from the PATH. The unit grants only `CAP_NET_RAW` (`AmbientCapabilities`, `CapabilityBoundingSet`), `NoNewPrivileges` stays; the init script runs a smoke trace under those limits.
 - Env file: `/etc/openipdata/worker.env` (root:openipdata, 0640); template in `infra/`.
 - State: `/var/lib/openipdata` (openipdata, 0750); the only writable path for the service.
 - Build cache: `/var/cache/openipdata-build` (root, 0700): pinned Go toolchain plus module/build caches; safe to delete.
@@ -34,7 +34,9 @@
 - Output files (MMDB, SQLite) are rebuilt from scratch each run and written via a `.tmp` file plus rename.
 - One writer per table; every other workflow only reads it:
   `public.asn` ← `build-asn-data`, `public.asn_geo_pdb` ← `sync-peeringdb`, `public.asn_domain` ← `update-asn-domains`,
-  `public.geo_ix_pdb` ← `sync-peeringdb`, `public.geo_eval` ← `build-geo-data`, `public.geofeed_urls` ← `sync-geofeeds`.
+  `public.geo_ix_pdb` ← `sync-peeringdb`, `public.geo_eval` ← `build-geo-data`, `public.geofeed_urls` ← `sync-geofeeds`,
+  `public.visitor_ips` ← external websites (`resolve-ips` only reads it), `public.network_traces`, `public.ip_ptr_names` and
+  `public.rdns_geo_layer` ← `resolve-ips`.
 - Schema changes go in `hatchet/schema` (idempotent `IF NOT EXISTS` statements), never by hand. A workflow runs DDL only
   for tables it writes: `ALTER TABLE` takes an ACCESS EXCLUSIVE lock even when the column exists.
 - Do not delete rows from `public.asn`; ASNs missing from the source are kept for now.
@@ -50,16 +52,25 @@
   city are never written to `50-ix`.
   `asn_geo_pdb.fac_count`/`fac_city`/`fac_country` (facilities only, city set only if all are in one city) feed `40-hosting`.
 - ip2geo layers have ONE format and ONE name in every stage: a gzipped CSV in the geofeed (RFC 8805) layout, header
-  `prefix,country,region,city,source`, named `NN-name.csv.gz` (`10-rir`, `20-ipverse`, `30-pdb`, `40-hosting`, `50-ix`,
-  `60-whois`, `70-geofeeds`; steps of 10, the name is the order). `build-geo-data` `download` empties its layers dir, each
+  `prefix,country,region,city,source`, named `NN-name.csv.gz` (`10-rir`, `20-ipverse`, `30-pdb`, `35-rdns-wide`, `40-hosting`,
+  `50-ix`, `60-whois`, `65-rdns`, `70-geofeeds`; steps of 5 or 10, the name is the order). `build-geo-data` `download` empties its layers dir, each
   source writes its file through the one shared writer (`.tmp` plus rename), and the R2 layers are downloaded as they are.
   The build passes every `*.csv.gz` in the dir, sorted by name, to `mmdbbuilder geo` (one reader, columns found by header);
   there is no per-layer code and no layer list in the build. Special rules live only in `layerRules` (`geo/pipeline.go`),
   one line per layer name; a rule for an absent file is not passed. A new layer is a new file name, not new code.
-  Optional layers (`40-hosting`, `50-ix`, `60-whois`) that are absent are listed in `Source.SkippedLayers` for
-  reporting; an R2 layer (`60-whois`, `70-geofeeds`) that is missing or older than 3 days skips the `HC_PING_GEO` ping.
+  Optional layers (`35-rdns-wide`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns`) that are absent are listed in
+  `Source.SkippedLayers` for reporting (the two rDNS layers are written from `public.rdns_geo_layer` by scope, both
+  with `-same-country`: they add cities, never change a country); an R2 layer (`60-whois`, `70-geofeeds`) that is missing or older than 3 days skips the `HC_PING_GEO` ping.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
+- `resolve-ips` (cron every 30 minutes, tasks `pick-networks` → `trace` → `resolve-names` → `locate`, own `rdns` limit) only reads
+  `public.visitor_ips` (DDL only `schema.EnsureVisitorIPs`: `CREATE TABLE IF NOT EXISTS`, so it never locks the table the websites write),
+  `public.generated_rules` (read only; a missing table means no rules; a rule without domains applies to every name) and `public.asn` (announced prefixes, in memory), and runs
+  DDL only for its own tables (`schema.EnsureRDNS`), never `schema.Ensure`. IPv4 only, global unicast only. Visitor IPs and every
+  traced IP stay in Postgres and in the batch file under `/var/lib/openipdata/rdns/`: never in Hatchet task inputs, outputs, log
+  lines or returned errors (tasks report counts; errors that could quote an IP are replaced by `dbError` or `scrubIPs`).
+  `pick-networks` writes the batch file that `trace` reads. `resolve-names` names the candidates (target and last quarter of the public hops) of the newest trace per prefix and kind of the last 7 days, never replacing an `ok`/`not_found` name by an `error`; `locate` reads only the names of its candidates. `locate` replaces `public.rdns_geo_layer` in one transaction and
+  refuses a shrink of more than 10% when the table had rows (`ErrShrink`; `force_replace` overrides).
 - Workflows that write the ASN tables share the `asn-db` concurrency limit. `sync-geofeeds` writes only `public.geofeed_urls`
   (DDL only through `schema.EnsureGeofeedURLs`, never `schema.Ensure`; its `probe-domains` task only reads
   `public.asn_domain` and `public.asn`) and has its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.

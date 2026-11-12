@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/net/idna"
 
+	"openipdata.org/hatchet/ipdata"
 	"openipdata.org/hatchet/schema"
 )
 
@@ -567,27 +568,16 @@ const domainsQuery = `SELECT asn, domain FROM public.asn_domain WHERE btrim(coal
 // prefixesQuery reads public.asn.json for the given ASNs. Like build-geo-data,
 // it leaves out an ASN that build-asn-data has not seen for 7 days; a NULL
 // seen_at counts only until the first run has stamped some row. Read only.
-const prefixesQuery = `SELECT asn, json FROM public.asn
-	WHERE asn = ANY($1)
-	  AND (seen_at > now() - interval '7 days'
-	       OR (seen_at IS NULL AND NOT EXISTS (SELECT 1 FROM public.asn WHERE seen_at IS NOT NULL)))`
+const prefixesQuery = `SELECT a.asn, a.json FROM public.asn a
+	WHERE a.asn = ANY($1)
+	  AND ` + ipdata.SeenAtFilter
 
 // announcedPrefixes reads the announced prefixes from a public.asn json value.
 // Unparsable ones, and ones broader than any feed row can be, are left out.
 func announcedPrefixes(raw string) []netip.Prefix {
-	var data struct {
-		Prefixes struct {
-			IPv4 []string `json:"ipv4"`
-			IPv6 []string `json:"ipv6"`
-		} `json:"prefixes"`
-	}
-	if json.Unmarshal([]byte(raw), &data) != nil {
-		return nil
-	}
 	var out []netip.Prefix
-	for _, text := range append(data.Prefixes.IPv4, data.Prefixes.IPv6...) {
-		p, err := netip.ParsePrefix(strings.TrimSpace(text))
-		if err != nil || p.Addr().Is4In6() {
+	for _, p := range ipdata.ASNPrefixes(raw) {
+		if p.Addr().Is4In6() {
 			continue
 		}
 		if p.Addr().Is4() && p.Bits() < minAnnounced4 || p.Addr().Is6() && p.Bits() < minAnnounced6 {

@@ -30,12 +30,27 @@ A restart interrupts running tasks, which Hatchet retries, so deploy between run
 |---|---|---|
 | `/opt/openipdata/bin/openipdata-worker` | root `0755` | worker, built from `hatchet/` |
 | `/opt/openipdata/bin/mmdbbuilder` | root `0755` | MMDB builder, built from `mmdbbuilder/`; the worker runs it |
+| `/opt/openipdata/bin/scamper` | root `0755` (not setuid) | traceroute tool of `resolve-ips`, built from the pinned upstream tarball without privilege separation; the worker runs it |
 | `/etc/openipdata/worker.env` | root:openipdata `0640` | secrets and config (template: `openipdata-worker.env.example`) |
-| `/var/lib/openipdata/` | openipdata `0750` | worker state: source clones and the last few builds |
+| `/var/lib/openipdata/` | openipdata `0750` | worker state: source clones, the last few builds, `rdns/` (the trace batch of `resolve-ips`: visitor IPs, so keep it private) |
 | `/var/cache/openipdata-build/` | root `0700` | Go toolchain and module/build caches for the build |
 | `/etc/systemd/system/openipdata-worker.service` | root | runs the worker as `openipdata`; starts once `HATCHET_CLIENT_TOKEN` is set |
 
-Packages: `ca-certificates`, `curl`, `git`.
+Packages: `ca-certificates`, `curl`, `git`, `build-essential` (only to build `scamper`). The apt package `scamper` is removed if installed.
+
+The unit keeps `NoNewPrivileges=true` and grants only `CAP_NET_RAW` (`AmbientCapabilities` and
+`CapabilityBoundingSet`): `scamper` sends ICMP probes over a raw socket as the `openipdata` user.
+Ubuntu's `scamper` package is setuid root with privilege separation (at start it runs mkdir `/var/empty`,
+chroot and setuid) and dies under those limits, so the script builds upstream scamper
+(`SCAMPER_VERSION`, checked against `SCAMPER_SHA256`) with `--disable-scamper-privsep` in
+`/var/cache/openipdata-build` and installs only the binary. It rebuilds only when
+`/opt/openipdata/bin/scamper -v` does not report the pinned version. Without `CAP_NET_RAW` scamper
+prints "could not open ICMP socket" and still exits 0, so after installing the unit the script runs a
+smoke test on every run: `systemd-run` starts one `scamper -O json -c "trace -P icmp-paris" -i 1.1.1.1`
+with the unit's user and limits (keep its `-p` list in step with the unit), and the script fails unless the
+output holds a `trace` with at least one hop. The `trace` task also fails on that socket error or on output
+without any trace, and stores nothing.
+Run the VM with a PTR name and a page that explains the traces; abuse mail will come.
 
 The build uses its own Go (`GO_VERSION`, checked against `GO_SHA256`), kept with the
 module and build caches in `/var/cache/openipdata-build` (root, `0700`, not on `PATH`).

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -242,19 +241,6 @@ func TestFetchFeedFailures(t *testing.T) {
 	res = fetchFeed(ctx, client, server.URL, filepath.Join(dir, "missing", "x.csv"), now)
 	if res.err == nil || res.status != "" {
 		t.Errorf("local error: %+v", res)
-	}
-}
-
-func TestPublicAddr(t *testing.T) {
-	for addr, want := range map[string]bool{
-		"8.8.8.8": true, "193.0.0.1": true,
-		"10.0.0.1": false, "127.0.0.1": false, "169.254.169.254": false, "100.64.0.1": false,
-		"2a00:1450::1": true, "2001:db8::1": false, "2001::1": false, "2001:1::1": false, "2001:200::1": true,
-		"3fff::1": false, "2002::1": false, "::1": false, "0.1.2.3": false, "192.0.0.8": false, "198.18.0.5": false, "240.0.0.1": false, "::ffff:10.0.0.1": false,
-	} {
-		if got := publicAddr(netip.MustParseAddr(addr)); got != want {
-			t.Errorf("publicAddr(%s) = %v, want %v", addr, got, want)
-		}
 	}
 }
 

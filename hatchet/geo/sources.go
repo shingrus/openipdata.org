@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"openipdata.org/hatchet/download"
+	"openipdata.org/hatchet/ipdata"
 	"openipdata.org/hatchet/rirstats"
 )
 
@@ -110,7 +111,7 @@ func writeStatsRows(path string, w *csv.Writer) (int, error) {
 		code := strings.ToUpper(country)
 		// ZZ, EU and AP are not countries: ZZ is "unknown", EU and AP are the
 		// regions some old RIR blocks are tagged with.
-		if !isCountryCode(code) || code == "ZZ" || code == "EU" || code == "AP" {
+		if !ipdata.IsCountryCode(code) || code == "ZZ" || code == "EU" || code == "AP" {
 			code = ""
 		}
 		for _, p := range prefixes {
@@ -119,10 +120,6 @@ func writeStatsRows(path string, w *csv.Writer) (int, error) {
 		blocks++
 	})
 	return blocks, err
-}
-
-func isCountryCode(code string) bool {
-	return len(code) == 2 && code[0] >= 'A' && code[0] <= 'Z' && code[1] >= 'A' && code[1] <= 'Z'
 }
 
 // geoIPBlocksFile is the layout of country/<cc>/<cc>.json in geo-ip-blocks.
@@ -168,7 +165,7 @@ func writeGeoIPBlocksRows(tarball string, w *csv.Writer) (names map[string]strin
 			return nil, 0, fmt.Errorf("%s: %w", hdr.Name, err)
 		}
 		code = strings.ToUpper(data.CountryCode)
-		if !isCountryCode(code) {
+		if !ipdata.IsCountryCode(code) {
 			continue
 		}
 		if name := strings.TrimSpace(data.Country); name != "" {

@@ -7,15 +7,18 @@
 //	openipdata-worker run-domains                # update-asn-domains
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
+//	openipdata-worker run-rdns [-force-replace]  # resolve-ips
 //
 // Environment: PGSQL (Postgres DSN; sync-geofeeds keeps its URL list in
-// public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn),
+// public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn;
+// resolve-ips reads public.visitor_ips, public.generated_rules and public.asn and writes
+// public.network_traces, public.ip_ptr_names and public.rdns_geo_layer),
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
 // HC_PING_GEO (optional), IPINFO_TOKEN (optional, a secret: the IPinfo Lite
 // reference of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
-// mmdbbuilder is expected next to this binary.
+// mmdbbuilder and scamper (resolve-ips; built without privilege separation) are expected next to this binary.
 package main
 
 import (
@@ -38,6 +41,7 @@ import (
 	"openipdata.org/hatchet/geo"
 	"openipdata.org/hatchet/geofeeds"
 	"openipdata.org/hatchet/pdb"
+	"openipdata.org/hatchet/rdns"
 )
 
 // BuildASNInput is the build-asn-data input; cron runs use the zero value.
@@ -75,8 +79,16 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["40-hosting.csv.gz"]; the optional layers are 40-hosting, 50-ix and 60-whois (for manual test runs).
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 35-rdns-wide, 40-hosting, 50-ix, 60-whois
+	// and 65-rdns (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
+}
+
+// ResolveIPsInput is the resolve-ips input; cron runs use the zero value.
+type ResolveIPsInput struct {
+	// ForceReplace replaces public.rdns_geo_layer even if it would have more than 10% fewer
+	// rows than now (for a manual run after checking that the drop is real).
+	ForceReplace bool `json:"force_replace"`
 }
 
 func main() {
@@ -102,8 +114,10 @@ func main() {
 		err = runGeofeeds(ctx, os.Args[2:])
 	case "run-geo":
 		err = runGeo(ctx, os.Args[2:])
+	case "run-rdns":
+		err = runRDNS(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, or run-geo)", command)
+		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-geo, or run-rdns)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -149,12 +163,15 @@ func newGeoPipeline(progress func(string)) (*geo.Pipeline, error) {
 }
 
 // mmdbBuilder is the mmdbbuilder binary next to this one.
-func mmdbBuilder() (string, error) {
+func mmdbBuilder() (string, error) { return nextToExecutable("mmdbbuilder") }
+
+// nextToExecutable is the path of a helper binary in the directory of this one.
+func nextToExecutable(name string) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Dir(exe), "mmdbbuilder"), nil
+	return filepath.Join(filepath.Dir(exe), name), nil
 }
 
 func githubRepo() string {
@@ -184,6 +201,14 @@ func newDomainsPipeline(progress func(string)) *domains.Pipeline {
 // newGeofeedsPipeline reads the environment; progress receives log lines.
 func newGeofeedsPipeline(progress func(string)) *geofeeds.Pipeline {
 	return &geofeeds.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2"), PGSQL: pgsql()}
+}
+
+// newRDNSPipeline reads the environment; progress receives log lines. scamper is
+// the binary next to this one, never one from the PATH (an empty path, when the
+// executable is unknown, makes the trace task fail).
+func newRDNSPipeline(progress func(string)) *rdns.Pipeline {
+	scamper, _ := nextToExecutable("scamper")
+	return &rdns.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, Scamper: scamper}
 }
 
 func pgsql() string { return env("PGSQL") }
@@ -217,6 +242,7 @@ func serve(ctx context.Context) error {
 			updateASNDomainsWorkflow(client),
 			syncGeofeedsWorkflow(client),
 			buildGeoWorkflow(client),
+			resolveIPsWorkflow(client),
 		),
 		hatchet.WithSlots(4),
 	)
@@ -540,6 +566,45 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	return wf
 }
 
+// resolveIPsWorkflow traces visitor /24s and turns router names into cities.
+// Visitor IPs stay in Postgres (and the batch file on the VM): every task
+// returns counts only.
+func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("resolve-ips",
+		hatchet.WithWorkflowDescription("public.visitor_ips -> scamper traces -> PTR names -> public.network_traces, public.ip_ptr_names, public.rdns_geo_layer (reads public.generated_rules and public.asn)"),
+		hatchet.WithWorkflowCron("*/30 * * * *"),
+		// Its own limit: it writes no ASN table, and a run must not overlap the next one.
+		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns")),
+	)
+
+	pick := wf.NewTask("pick-networks", func(ctx hatchet.Context, _ ResolveIPsInput) (rdns.PickOutput, error) {
+		p := newRDNSPipeline(taskLog(ctx))
+		// Only an env change fixes it: no retries.
+		if err := p.CheckPGSQL(); err != nil {
+			return rdns.PickOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		return p.PickNetworks(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(10*time.Minute))...)
+
+	trace := wf.NewTask("trace", func(ctx hatchet.Context, _ ResolveIPsInput) (rdns.TraceOutput, error) {
+		return newRDNSPipeline(taskLog(ctx)).Trace(ctx)
+	}, taskRetry(hatchet.WithParents(pick), hatchet.WithExecutionTimeout(time.Hour))...)
+
+	names := wf.NewTask("resolve-names", func(ctx hatchet.Context, _ ResolveIPsInput) (rdns.NamesOutput, error) {
+		return newRDNSPipeline(taskLog(ctx)).ResolveNames(ctx)
+	}, taskRetry(hatchet.WithParents(trace), hatchet.WithExecutionTimeout(30*time.Minute))...)
+
+	wf.NewTask("locate", func(ctx hatchet.Context, input ResolveIPsInput) (rdns.LocateOutput, error) {
+		out, err := newRDNSPipeline(taskLog(ctx)).Locate(ctx, input.ForceReplace)
+		if errors.Is(err, rdns.ErrShrink) {
+			err = hatchet.NewNonRetryableError(err)
+		}
+		return out, err
+	}, taskRetry(hatchet.WithParents(names), hatchet.WithExecutionTimeout(30*time.Minute))...)
+
+	return wf
+}
+
 // runASN runs the build-asn-data tasks once, in order, without Hatchet.
 func runASN(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-asn", flag.ExitOnError)
@@ -682,5 +747,31 @@ func runGeo(ctx context.Context, args []string) error {
 		return nil
 	}
 	_, err = p.Publish(ctx, src, built.Path, scores, *forcePublish)
+	return err
+}
+
+// runRDNS runs the resolve-ips tasks once, in order, without Hatchet.
+func runRDNS(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-rdns", flag.ExitOnError)
+	forceReplace := flags.Bool("force-replace", false, "replace rdns_geo_layer even if it would have more than 10% fewer rows")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-rdns: unexpected argument %q", flags.Arg(0))
+	}
+
+	p := newRDNSPipeline(cliLog)
+	if err := p.CheckPGSQL(); err != nil {
+		return err
+	}
+	if _, err := p.PickNetworks(ctx); err != nil {
+		return err
+	}
+	if _, err := p.Trace(ctx); err != nil {
+		return err
+	}
+	if _, err := p.ResolveNames(ctx); err != nil {
+		return err
+	}
+	_, err := p.Locate(ctx, *forceReplace)
 	return err
 }

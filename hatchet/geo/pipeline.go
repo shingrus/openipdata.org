@@ -13,6 +13,10 @@
 //	20-ipverse    ipverse/geo-ip-blocks: the country in registration records (IPv4 only)
 //	30-pdb        PeeringDB: country and city of ASNs with one dominant city (Postgres);
 //	              applied only where 10 and 20 gave the same country or none
+//	35-rdns-wide  resolve-ips (Postgres): the city that most /24s of an announced prefix (at
+//	              most /16) got from the PTR names of routers near them; applied only
+//	              where the earlier layers give the same country; skipped while the
+//	              table has no such rows
 //	40-hosting    hosting networks whose PeeringDB facilities are all in one city: that
 //	              city and country for every announced prefix (Postgres); applied only
 //	              where the RIR stats give the same country, so it can only change a
@@ -24,6 +28,9 @@
 //	              place within 25 km of the "geoloc:" point of RIPE, APNIC and AFRINIC
 //	              inetnums; a row broader than one RIR block is skipped; skipped while
 //	              the object is missing
+//	65-rdns       resolve-ips (Postgres): the city of each /24 whose traceroute passed a router
+//	              with a city in its PTR name; applied only where the earlier layers give the
+//	              same country; skipped while the table has no such rows
 //	70-geofeeds   geofeed rows from sync-geofeeds (private R2); a row broader than one
 //	              RIR block is skipped
 //
@@ -77,14 +84,16 @@ const (
 // order. The last two are the files sync-geofeeds uploads to R2, under the
 // same names.
 const (
-	RIRLayer     = "10-rir.csv.gz"
-	IPverseLayer = "20-ipverse.csv.gz"
-	PDBLayer     = "30-pdb.csv.gz"
-	HostingLayer = "40-hosting.csv.gz"
-	IXLayer      = "50-ix.csv.gz"
-	WhoisLayer   = geofeeds.WhoisRowsFile // 60-whois.csv.gz
-	FeedsLayer   = geofeeds.RowsFile      // 70-geofeeds.csv.gz
-	NamesFile    = "names.tsv"            // not a layer
+	RIRLayer      = "10-rir.csv.gz"
+	IPverseLayer  = "20-ipverse.csv.gz"
+	PDBLayer      = "30-pdb.csv.gz"
+	RDNSWideLayer = "35-rdns-wide.csv.gz"
+	HostingLayer  = "40-hosting.csv.gz"
+	IXLayer       = "50-ix.csv.gz"
+	WhoisLayer    = geofeeds.WhoisRowsFile // 60-whois.csv.gz
+	RDNSLayer     = "65-rdns.csv.gz"
+	FeedsLayer    = geofeeds.RowsFile // 70-geofeeds.csv.gz
+	NamesFile     = "names.tsv"       // not a layer
 )
 
 // layerRules is the one place that gives a layer a special rule: the
@@ -94,6 +103,8 @@ const (
 //   - -same-country: the PeeringDB rows only refine. An ASN's city must not
 //     replace more specific networks that the registration data puts in another
 //     country.
+//   - -same-country also holds for both rDNS layers: they add cities and never change a country
+//     (a router name is evidence of a city, not of who holds the block).
 //   - -first-country: a hosting row applies only where the RIR stats (the first
 //     layer) give the row's country, so the layer can only change a country back
 //     to the delegated one; PeeringDB facility lists can be incomplete.
@@ -105,17 +116,19 @@ const (
 // usually right (measured: 4% of geoloc /24s lie in another country than the
 // geofeed truth).
 var layerRules = map[string]string{
-	PDBLayer:     "-same-country",
-	HostingLayer: "-first-country",
-	WhoisLayer:   "-within-first",
-	FeedsLayer:   "-within-first",
+	PDBLayer:      "-same-country",
+	RDNSWideLayer: "-same-country",
+	HostingLayer:  "-first-country",
+	WhoisLayer:    "-within-first",
+	RDNSLayer:     "-same-country",
+	FeedsLayer:    "-within-first",
 }
 
 // optionalLayers may be missing: a run without one is reported in
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{HostingLayer, IXLayer, WhoisLayer}
+var optionalLayers = []string{RDNSWideLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -144,6 +157,7 @@ type Pipeline struct {
 	refURLs      *evalURLs
 	writeIX      func(ctx context.Context, w *csv.Writer) (int, error)
 	writeHosting func(ctx context.Context, w *csv.Writer) (int, error)
+	writeRDNS    func(ctx context.Context, scope string, w *csv.Writer) (int, error)
 	heldOutURLs  func(ctx context.Context) (map[string]bool, error)
 }
 
@@ -225,8 +239,8 @@ func (p *Pipeline) CheckSettings(publishing bool) error {
 }
 
 // Download rebuilds the layer files from scratch: RIR stats and geo-ip-blocks
-// from the web, the PeeringDB rows and exchange prefixes from Postgres, and
-// the whois geoloc and geofeed layers as sync-geofeeds uploaded them to R2.
+// from the web, the PeeringDB rows, exchange prefixes and rDNS rows from Postgres,
+// and the whois geoloc and geofeed layers as sync-geofeeds uploaded them to R2.
 func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) {
 	src := Source{DateTag: now.UTC().Format(dateTagLayout), Rows: map[string]int{}, StatsStatus: map[string]string{},
 		R2Uploaded: map[string]string{}}
@@ -342,7 +356,23 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 		return src, err
 	}
 
-	// 6. and 7. The layers sync-geofeeds uploaded: whois geoloc and geofeeds.
+	// 6. and 7. The rDNS layers resolve-ips wrote: the announced prefixes (wide) and the traced /24s.
+	writeScope := p.writeRDNS
+	if writeScope == nil {
+		writeScope = func(ctx context.Context, scope string, w *csv.Writer) (int, error) {
+			return writeRDNSRows(ctx, p.PGSQL, scope, w)
+		}
+	}
+	for _, l := range []struct{ name, scope string }{{RDNSWideLayer, rdnsWide}, {RDNSLayer, rdnsTraced}} {
+		if err := p.downloadOptional(ctx, layers, &src, l.name, 0, "rDNS "+l.scope+" rows",
+			"has resolve-ips run?", func(ctx context.Context, w *csv.Writer) (int, error) {
+				return writeScope(ctx, l.scope, w)
+			}); err != nil {
+			return src, err
+		}
+	}
+
+	// 8. and 9. The layers sync-geofeeds uploaded: whois geoloc and geofeeds.
 	r2, err := publish.NewR2(p.R2)
 	if err != nil {
 		return src, err

@@ -17,6 +17,10 @@ KillMode=mixed
 TimeoutStopSec=60
 LimitNOFILE=65536
 NoNewPrivileges=true
+# scamper (resolve-ips) sends ICMP probes over a raw socket. Ambient, so the child process
+# gets it too; setuid tools would not work under NoNewPrivileges.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
