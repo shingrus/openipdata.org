@@ -2,7 +2,7 @@
 
 As of 2026-11-10.
 
-Five Hatchet workflows on one VM turn public registry, routing and operator data into two published MMDBs, ip2asn and ip2geo. Postgres holds the shared tables (one writer each); the private R2 bucket carries the large layer files between workflows.
+Six Hatchet workflows on one VM turn public registry, routing, operator and visitor data into two published MMDBs, ip2asn and ip2geo. Postgres holds the shared tables (one writer each); the private R2 bucket carries the large layer files between workflows.
 
 ## At a glance
 
@@ -27,9 +27,14 @@ flowchart LR
   r2 --> geo
   geo --> t_eval[(geo_eval)]
   geo --> pub_geo[/ip2geo MMDB/]
+  visitors[visitors] --> t_vis[(visitor_ips)]
+  t_vis --> rd[resolve-ips<br/>every 30 min]
+  t_asn --> rd
+  rd --> t_rd[(network_traces<br/>ip_ptr_names<br/>rdns_geo_layer)]
+  t_rd --> geo
 ```
 
-The collectors write Postgres tables or private R2 files; only the two builders publish, and `build-geo-data` scores each build before it ships.
+The collectors write Postgres tables or private R2 files (`resolve-ips` traces the networks visitors come from); only the two builders publish, and `build-geo-data` scores each build before it ships.
 
 ## Schedule (UTC)
 
@@ -42,6 +47,7 @@ The morning chain runs PeeringDB → domains → ASN build, so the 06:00 ASN bui
 | 04:00, 16:00 | `update-asn-domains` | `asn-db` |
 | 06:00, 18:00 | `build-asn-data` | `asn-db` |
 | 07:00, 19:00 | `build-geo-data` (decided: every 4 h, not yet switched) | `geo` |
+| every 30 min | `resolve-ips` | `rdns` |
 
 ## Workflows
 
@@ -54,9 +60,11 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `build-asn-data` | `sync-source` → `ingest` → `build-mmdb` + `export-sqlite` → `publish` | `public.asn` (incl. `seen_at`) | `ip2asn-openipdata.mmdb`, `asn.sqlite3` |
 | `sync-geofeeds` | `rdap-lookups` and `probe-domains` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `60-whois` and `70-geofeeds` to private R2 | nothing |
 | `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `ip2geo-openipdata.mmdb` |
+| `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink) | — |
 
 - **`sync-geofeeds`**: finds every geofeed URL (whois, IRR, RDAP, CAIDA, built-in list, ASN websites), fetches and checks each feed, drops rows that fail the ownership check, exports ~6.4M rows (36 MB gz). `discover` also builds the whois geoloc layer.
 - **`build-geo-data`**: builds the MMDB from stacked layers (see ip2geo layers), scores it, and publishes only if the scores did not clearly drop.
+- **`resolve-ips`**: for IPv4 /24s that visitors came from (`public.visitor_ips`, filled by external websites), traces three hosts with `scamper` (built without privilege separation, next to the worker), names the last routers (PTR), and gives the /24 the city that a rule of `public.generated_rules` finds in a router name. Visitor IPs never leave Postgres and the VM: tasks report counts only.
 
 ### Tasks
 
@@ -76,10 +84,14 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `discover` | reads the whois and IRR dumps, saved RDAP results, domain-found feeds, `feeds.txt` and CAIDA's lists; adds every URL to `public.geofeed_urls`; writes the whois blocks that link feeds; builds `60-whois.csv.gz` from `geoloc:` |
 | | `check-feeds` | fetches every due feed, keeps a checked copy of each working one, writes its status to `public.geofeed_urls`, writes the URL lists |
 | | `export-rows` | writes the rows of working feeds that pass the ownership check to `70-geofeeds.csv.gz`; uploads both layers to R2 behind their row-drop gates |
-| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `50-ix` from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2 |
+| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `65-rdns` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2 |
 | | `build-mmdb` | runs `mmdbbuilder geo` on the layers in name order with the rules table → `ip2geo-openipdata-<date>.mmdb` |
 | | `evaluate` | builds the holdout MMDB, scores both with `mmdbbuilder eval` (DB-IP, IPinfo, Atlas probes, holdout), stores a row in `public.geo_eval` |
 | | `publish` | applies the 2-point gate, uploads to R2 and the GitHub release, marks the row published, pings the health check |
+| `resolve-ips` | `pick-networks` | visitor /24s (seen in the last 30 days, no trace in the last 60), most visitor IPs first, up to 1,000 a run; writes them to a batch file on the VM |
+| | `trace` | one `scamper` run (Paris ICMP traceroute) to three hosts per /24: the newest visitor IP, `.1`, a random host; stores the full path, keeps the 2 newest traces per /24 and target kind |
+| | `resolve-names` | PTR of every target and of the last 25% of its public hops, for the newest traces of the last 7 days, unless the answer is fresh (names 30 days, not found 7); system resolver, Cloudflare DoH when it fails; a failed lookup never replaces an old name |
+| | `locate` | applies the rules to the names (target, then last hops; routers of the target's ASN first), gives the /24 a city, votes per announced prefix; replaces `public.rdns_geo_layer` |
 
 ## Data sources
 
@@ -98,6 +110,9 @@ Every external input, grouped by what it feeds. Third-party geo databases are us
 | ASN websites (from `public.asn_domain`) | `sync-geofeeds` `probe-domains` | feeds at the usual paths | budget per run |
 | Operator geofeeds (RFC 8805) | `sync-geofeeds` `check-feeds` | city rows, ~6.4M | backoff 3 d / weekly / monthly |
 | GeoNames `cities1000.zip` | `sync-geofeeds` | city name for whois `geoloc:` points | 7-day age gate |
+| `public.visitor_ips` (external websites insert active users' IPs) | `resolve-ips` | which /24s to trace | every 30 min |
+| `scamper` traceroutes, PTR names (system resolver, Cloudflare DoH) | `resolve-ips` | routers near each visitor /24 and their names | per /24 every 60 days; names 30 / 7 days |
+| `public.generated_rules` (regex rules written outside this repo) | `resolve-ips` | router name → city | read as is |
 | RIR delegated-extended stats (5 RIRs) | `sync-geofeeds`, `build-geo-data` | RDAP block list; country layer | conditional |
 | ipverse/geo-ip-blocks (CC0) | `build-geo-data` | registration country (IPv4) | conditional |
 | **Evaluation only:** DB-IP Lite city, IPinfo Lite (`IPINFO_TOKEN`), RIPE Atlas probe archive `meta-latest` | `build-geo-data` `evaluate` | agreement and accuracy scores | monthly / daily |
@@ -108,15 +123,20 @@ Each table has exactly one writer; data between workflows goes through these tab
 
 | Store | Written by | Read by |
 | --- | --- | --- |
-| `public.asn` | `build-asn-data` | `build-geo-data` (`seen_at`), `sync-geofeeds` `probe-domains` |
+| `public.asn` | `build-asn-data` | `build-geo-data` (`seen_at`), `sync-geofeeds` `probe-domains`, `resolve-ips` `locate` (announced prefixes) |
 | `public.asn_geo_pdb` | `sync-peeringdb` | `build-asn-data` (`asn.sqlite3`), `build-geo-data` |
 | `public.geo_ix_pdb` | `sync-peeringdb` | `build-geo-data` |
 | `public.asn_domain` | `update-asn-domains` | `build-asn-data` (`asn.sqlite3`), `sync-geofeeds` `probe-domains` |
 | `public.geofeed_urls` | `sync-geofeeds` | `build-geo-data` (holdout sample) |
 | `public.geo_eval` | `build-geo-data` | `build-geo-data` (publish gate) |
+| `public.visitor_ips` | external websites | `resolve-ips` |
+| `public.network_traces` | `resolve-ips` | `resolve-ips` |
+| `public.ip_ptr_names` | `resolve-ips` | `resolve-ips` |
+| `public.rdns_geo_layer` | `resolve-ips` | `build-geo-data` (layers `35-rdns-wide`, `65-rdns`) |
 | R2 private `internal/layers/60-whois.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/layers/70-geofeeds.csv.gz` | `sync-geofeeds` | `build-geo-data` |
-| `generated_rules`, `hostname_reviews` (from nossl.sh) | nobody yet | to be adopted as they are by `resolve-ips` |
+| `public.generated_rules` | written outside this repo | `resolve-ips` `locate` (read only) |
+| `hostname_reviews` | written outside this repo | nobody yet |
 
 **Published:** `ip2asn-openipdata.mmdb` and `asn.sqlite3` (R2 date folder + rolling GitHub release), `ip2geo-openipdata.mmdb` (R2 + GitHub release, `releases/latest/download/`).
 
@@ -129,13 +149,15 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | 10 | `10-rir.csv.gz` | RIR delegated stats | country | — (must be first: the guards compare against it) |
 | 20 | `20-ipverse.csv.gz` | ipverse/geo-ip-blocks | country | — |
 | 30 | `30-pdb.csv.gz` | `public.asn_geo_pdb`: ASN's dominant city (≥30% of its presence) | city | same-country (only refines) |
+| 35 | `35-rdns-wide.csv.gz` | `public.rdns_geo_layer`, scope `wide`: the city most traced /24s of an announced prefix (at most /16) got from router names; a trial | city | same-country (only refines) |
 | 40 | `40-hosting.csv.gz` | single-city PeeringDB `Content` networks, non-Global scope | city | first-country (only back to the RIR country) |
 | 50 | `50-ix.csv.gz` | `public.geo_ix_pdb`: exchange peering LANs | city | — |
 | 60 | `60-whois.csv.gz` | whois `geoloc:`, most populous place within 25 km (measured 85.8% within 100 km) | city | within-first |
+| 65 | `65-rdns.csv.gz` | `public.rdns_geo_layer`, scope `traced`: a /24 whose traceroute passed a router with a city in its name | city | same-country (only refines) |
 | 70 | `70-geofeeds.csv.gz` | operator geofeeds | city | within-first |
 
-- Optional layers (40, 50, 60) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
-- Planned: `65-rdns` (from `resolve-ips`) between whois and geofeeds.
+- Optional layers (35, 40, 50, 60, 65) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
+- `35-rdns-wide` sits right after `30-pdb` and `65-rdns` between whois and geofeeds, so every measured layer overwrites the greedy wide rows. `35-rdns-wide` is kept only if `holdout_city_pct` and the Atlas scores do not drop.
 
 ## Evaluation and publish gate
 
@@ -158,8 +180,9 @@ City accuracy by distance (≤100 km, GeoNames) is planned; today city matches a
 | Item | Status | Expected effect |
 | --- | --- | --- |
 | `build-geo-data` every 4 h | decided | results reach users within ~4 h |
-| `visitor_city_pct`: share of visitor /24s in `unknown_ip_networks` (last 30 days, /24 and /48 only, never full IPs) that have a city from a measured layer (`60-whois`, `65-rdns`, `70-geofeeds`) | decided | the 90% target for `resolve-ips`; `city_pct` (whole RIR space) stays as a coverage figure |
-| `resolve-ips`: visitor /24s from nossl.sh `/api/unknown` → traceroute → nearest routers → city → `65-rdns` | design | open: where the Atlas part runs (own workflow or inside `resolve-ips`) |
+| `visitor_city_pct`: share of visitor /24s and /48s in `visitor_ips` (last 30 days) that have a city from a measured layer (`60-whois`, `65-rdns`, `70-geofeeds`) | decided | the 90% target for `resolve-ips`; `city_pct` (whole RIR space) stays as a coverage figure |
+| `resolve-ips` phase 1 (visitor IPs from external websites → traces → router names → `65-rdns`, `35-rdns-wide`) | built, not yet deployed | the traced hosts are a trial: keep only the targets that add answers (`unique wins` in the `locate` output); open: where the Atlas part runs (own workflow or inside `resolve-ips`) |
+| `35-rdns-wide`: greedy rows on the whole announced prefix, also from hops outside the target's ASN | decided, to test | keep only if `holdout_city_pct` and Atlas scores do not drop; big multi-city ISPs are the risk |
 | Atlas routers ≤1 ms from a probe → `atlas_router_locations`; learn and measure rDNS name → city rules | design | ~7,300 located routers per round; ground truth for rules |
 | Atlas probe /24s as data (even ids), odd ids for evaluation | proposed | ~6,500 /24s |
 | Per-feed geofeed accuracy against Atlas probes | proposed | demote clearly wrong feeds below whois/rDNS |

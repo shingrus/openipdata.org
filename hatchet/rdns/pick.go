@@ -33,6 +33,7 @@ type batchEntry struct {
 type PickOutput struct {
 	Eligible int `json:"eligible"` // visitor /24s with no trace in the last 60 days
 	Picked   int `json:"picked"`
+	Limit    int `json:"limit"`    // most /24s one run picks: picked == limit means more wait
 	Visitors int `json:"visitors"` // distinct visitor IPs in the picked /24s
 }
 
@@ -91,14 +92,14 @@ func (p *Pipeline) PickNetworks(ctx context.Context) (PickOutput, error) {
 	if err := rows.Err(); err != nil {
 		return out, dbError("pick networks", err)
 	}
-	out.Picked = len(batch)
+	out.Picked, out.Limit = len(batch), maxNetworksPerRun
 	if err := os.MkdirAll(p.dir(), 0o750); err != nil {
 		return out, err
 	}
 	if err := writeBatch(filepath.Join(p.dir(), batchFile), batch); err != nil {
 		return out, err
 	}
-	p.log("pick-networks: %d /24s wait for a trace, %d picked (%d visitor IPs)", out.Eligible, out.Picked, out.Visitors)
+	p.log("pick-networks: %d /24s wait for a trace, picked %d (limit %d per run), %d visitor IPs", out.Eligible, out.Picked, out.Limit, out.Visitors)
 	return out, nil
 }
 
