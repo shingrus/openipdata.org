@@ -265,10 +265,14 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 // PublishOutput lists where the artifacts went.
 type PublishOutput struct {
 	Skipped         bool     `json:"skipped,omitempty"`
-	R2              []string `json:"r2,omitempty"`
+	R2              []string `json:"r2,omitempty"` // where the files are
 	ReleaseURL      string   `json:"release_url,omitempty"`
 	Bytes           int64    `json:"bytes"` // total size of the published files
 	DurationSeconds float64  `json:"duration_seconds"`
+	// A file that is byte-identical to the one already in place is not sent again:
+	// R2 compares the object's sha256 metadata, the release the asset's digest.
+	R2Unchanged      []string `json:"r2_unchanged,omitempty"`      // the locations of R2 that were left as they were
+	ReleaseUnchanged bool     `json:"release_unchanged,omitempty"` // the release asset was left as it was
 }
 
 // publishers builds the R2 and GitHub clients from the publishing settings.
@@ -292,8 +296,10 @@ func (p *Pipeline) CheckPublish() error {
 }
 
 // Publish uploads the MMDB and asn.sqlite3 to R2 under <YYYY-MM-DD>/, replaces
-// the MMDB on the rolling GitHub release, then pings HCPing if set. Missing
-// settings fail the task, so a misconfiguration cannot go unnoticed.
+// the MMDB on the rolling GitHub release, then pings HCPing if set. A file that is
+// byte-identical to the one already in place is not sent again (an identical file is
+// the published file). Missing settings fail the task, so a misconfiguration
+// cannot go unnoticed.
 func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath string) (PublishOutput, error) {
 	started := time.Now()
 	out := PublishOutput{}
@@ -308,22 +314,31 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath
 
 	folder := date.Format(dateFolderShape)
 	for _, path := range []string{mmdbPath, sqlitePath} {
-		location, err := r2.Upload(ctx, folder+"/"+filepath.Base(path), path)
+		location, status, err := r2.Put(ctx, folder+"/"+filepath.Base(path), path, publish.PutOptions{})
 		if err != nil {
 			return out, err
 		}
-		p.log("publish: %s", location)
+		p.log("publish: %s (%s)", location, status)
 		out.R2 = append(out.R2, location)
+		if status == publish.PutUnchanged {
+			out.R2Unchanged = append(out.R2Unchanged, location)
+		}
 		out.Bytes += outputs.FileSize(path)
 	}
 
 	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB.\n\nBuilt: %s\nSource: %s@%s",
 		date.Format(dateFolderShape), strings.TrimPrefix(sourceRepoURL, "https://github.com/"), src.Commit)
-	out.ReleaseURL, err = release.Replace(ctx, mmdbPath, releaseAsset, body)
+	var replaced bool
+	out.ReleaseURL, replaced, err = release.Replace(ctx, mmdbPath, releaseAsset, body)
 	if err != nil {
 		return out, err
 	}
-	p.log("publish: %s", out.ReleaseURL)
+	out.ReleaseUnchanged = !replaced
+	releaseStatus := "uploaded"
+	if !replaced {
+		releaseStatus = "unchanged"
+	}
+	p.log("publish: %s (%s)", out.ReleaseURL, releaseStatus)
 
 	if err := publish.Ping(ctx, p.HCPing); err != nil {
 		p.log("publish: %v", err) // the uploads succeeded; a missed ping only delays the alert

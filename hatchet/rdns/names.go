@@ -225,6 +225,8 @@ type NamesOutput struct {
 	Errors   int `json:"errors"`    // failed; tried again next run
 	DoH      int `json:"doh"`       // of the lookups, answered through the DoH fallback
 	Pruned   int `json:"pruned"`    // old names removed
+
+	Backfilled int `json:"backfilled,omitempty"` // traces that got their candidates (see backfillCandidates)
 }
 
 // ResolveNames looks up the PTR name of the target and of the last quarter of
@@ -239,6 +241,10 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 	}
 	defer conn.Close(ctx)
 
+	// Traces stored before network_traces.candidates existed get theirs first.
+	if out.Backfilled, err = backfillCandidates(ctx, conn); err != nil {
+		return out, err
+	}
 	traces, err := readTraces(ctx, conn, resolveWindow)
 	if err != nil {
 		return out, err

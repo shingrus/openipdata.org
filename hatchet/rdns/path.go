@@ -75,17 +75,19 @@ func scrubIPs(text string) string {
 	return ipv4Text.ReplaceAllString(strings.TrimSpace(text), "<ip>")
 }
 
-// traceIn is a stored trace: the target and its path.
+// traceIn is a stored trace: the target and its candidates (see candidates), as
+// stored in network_traces.candidates. The path itself is never read back.
 type traceIn struct {
-	Prefix netip.Prefix
-	Kind   string
-	Target netip.Addr
-	Hops   []Hop
+	Prefix     netip.Prefix
+	Kind       string
+	Target     netip.Addr
+	Candidates []netip.Addr // the target first, then the tail hops, closest to the target first
 }
 
 // parseTrace reads a trace from its stored text forms; false when the target
-// is not an IPv4 address (a path that cannot be read is an empty one).
-func parseTrace(prefix, kind, target, hops string) (traceIn, bool) {
+// is not an IPv4 address. A candidate that is not an IPv4 address is left out,
+// and a trace with none is given its target.
+func parseTrace(prefix, kind, target string, cands []string) (traceIn, bool) {
 	t := traceIn{Kind: kind}
 	addr, err := netip.ParseAddr(target)
 	if err != nil || !addr.Unmap().Is4() {
@@ -97,8 +99,29 @@ func parseTrace(prefix, kind, target, hops string) (traceIn, bool) {
 			return t, false
 		}
 	}
-	if json.Unmarshal([]byte(hops), &t.Hops) != nil {
-		t.Hops = nil
+	for _, text := range cands {
+		if a, err := netip.ParseAddr(text); err == nil && a.Unmap().Is4() {
+			t.Candidates = append(t.Candidates, a.Unmap())
+		}
+	}
+	if len(t.Candidates) == 0 {
+		t.Candidates = []netip.Addr{t.Target}
 	}
 	return t, true
+}
+
+// candidatesOfStored computes the candidates of a stored trace from its target and
+// its path (the hops JSON), for the one-time backfill of network_traces.candidates.
+// A target that is not an IPv4 address has none (an empty list); a path that cannot
+// be read is an empty one.
+func candidatesOfStored(target, hops string) []netip.Addr {
+	addr, err := netip.ParseAddr(target)
+	if err != nil || !addr.Unmap().Is4() {
+		return nil
+	}
+	var path []Hop
+	if json.Unmarshal([]byte(hops), &path) != nil {
+		path = nil
+	}
+	return candidates(addr.Unmap(), path)
 }

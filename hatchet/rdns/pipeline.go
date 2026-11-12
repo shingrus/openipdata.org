@@ -10,7 +10,8 @@
 //	PickNetworks  /24s with a visitor and no recent trace -> the batch file
 //	Trace         scamper traceroutes of three hosts per /24 -> public.network_traces
 //	ResolveNames  PTR names of the targets and the last hops -> public.ip_ptr_names
-//	Locate        rules + names + announced prefixes -> public.rdns_geo_layer
+//	Locate        rules + names + announced prefixes -> public.rdns_geo_layer (skipped
+//	              while nothing it reads has changed)
 //
 // Visitor IPs (and every traced IP) stay in Postgres and in the batch file on the
 // VM: never in Hatchet task inputs, outputs, log lines or returned errors. Tasks
@@ -23,6 +24,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"path/filepath"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -41,6 +43,7 @@ type Pipeline struct {
 	scamper  scamperFunc
 	intn     func(n int) int
 	resolver *ptrResolver
+	now      func() time.Time
 }
 
 func (p *Pipeline) dir() string { return filepath.Join(p.DataDir, "rdns") }
@@ -67,8 +70,10 @@ func (p *Pipeline) CheckPGSQL() error {
 }
 
 // connect opens a connection and creates the tables resolve-ips writes. Only
-// CREATE TABLE IF NOT EXISTS runs here, never schema.Ensure: its ALTER TABLE
-// statements lock the ASN tables, and visitor_ips belongs to the external websites.
+// the statements of schema.EnsureRDNS (its own tables, plus the one ALTER of
+// network_traces) and CREATE TABLE IF NOT EXISTS of visitor_ips run here, never
+// schema.Ensure: its ALTER TABLE statements lock the ASN tables, and visitor_ips
+// belongs to the external websites.
 func connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	if dsn == "" {
 		return nil, errors.New("PGSQL is not set")

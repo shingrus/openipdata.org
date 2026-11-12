@@ -56,24 +56,49 @@ func TestCandidates(t *testing.T) {
 }
 
 func TestParseTrace(t *testing.T) {
-	tr, ok := parseTrace("5.6.7.0/24", kindGateway, "5.6.7.1", `[{"ttl":1,"ip":"10.0.0.1","rtt_ms":0.4},{"ttl":2,"ip":null,"rtt_ms":null}]`)
-	if !ok || tr.Kind != kindGateway || tr.Prefix != netip.MustParsePrefix("5.6.7.0/24") || tr.Target != netip.MustParseAddr("5.6.7.1") || len(tr.Hops) != 2 {
+	tr, ok := parseTrace("5.6.7.0/24", kindGateway, "5.6.7.1", []string{"5.6.7.1", "9.9.9.1", "2001:db8::1", "x"})
+	if !ok || tr.Kind != kindGateway || tr.Prefix != netip.MustParsePrefix("5.6.7.0/24") || tr.Target != netip.MustParseAddr("5.6.7.1") ||
+		!reflect.DeepEqual(tr.Candidates, addrs("5.6.7.1", "9.9.9.1")) {
 		t.Fatalf("trace = %+v %v", tr, ok)
 	}
-	if a, ok := tr.Hops[0].addr(); !ok || a != netip.MustParseAddr("10.0.0.1") {
-		t.Errorf("hop 1 = %v %v", a, ok)
-	}
-	if _, ok := tr.Hops[1].addr(); ok {
-		t.Error("a silent hop has an address")
-	}
-	// A path that cannot be read is an empty one; a bad target is not a trace.
-	if tr, ok := parseTrace("5.6.7.0/24", kindVisitor, "5.6.7.9", `not json`); !ok || tr.Hops != nil {
-		t.Errorf("bad path: %+v %v", tr, ok)
+	// A row with no candidates (not backfilled yet) has its target.
+	if tr, ok := parseTrace("5.6.7.0/24", kindVisitor, "5.6.7.9", nil); !ok || !reflect.DeepEqual(tr.Candidates, addrs("5.6.7.9")) {
+		t.Errorf("no candidates: %+v %v", tr, ok)
 	}
 	for _, target := range []string{"", "x", "2001:db8::1"} {
-		if _, ok := parseTrace("5.6.7.0/24", kindVisitor, target, "[]"); ok {
+		if _, ok := parseTrace("5.6.7.0/24", kindVisitor, target, nil); ok {
 			t.Errorf("target %q accepted", target)
 		}
+	}
+	if _, ok := parseTrace("bad", kindVisitor, "5.6.7.9", nil); ok {
+		t.Error("a bad prefix was accepted")
+	}
+}
+
+// The backfill computes the candidates from the stored path, as trace does when it stores them.
+func TestCandidatesOfStored(t *testing.T) {
+	hops := `[{"ttl":1,"ip":"10.0.0.1","rtt_ms":0.4},{"ttl":2,"ip":"9.9.9.1","rtt_ms":2},{"ttl":3,"ip":null,"rtt_ms":null},{"ttl":4,"ip":"5.6.0.1","rtt_ms":3}]`
+	want := candidates(netip.MustParseAddr("5.6.7.9"), []Hop{{TTL: 2, IP: ptr("9.9.9.1")}, {TTL: 4, IP: ptr("5.6.0.1")}})
+	if got := candidatesOfStored("5.6.7.9", hops); !reflect.DeepEqual(got, want) || len(got) != 2 {
+		t.Errorf("candidates = %v, want %v", got, want)
+	}
+	// A path that cannot be read is an empty one; a target that is not IPv4 has no candidates.
+	if got := candidatesOfStored("5.6.7.9", "not json"); !reflect.DeepEqual(got, addrs("5.6.7.9")) {
+		t.Errorf("bad path: %v", got)
+	}
+	if got := candidatesOfStored("2001:db8::1", "[]"); got != nil || joinAddrs(got) != "" {
+		t.Errorf("IPv6 target: %v", got)
+	}
+}
+
+func ptr(s string) *string { return &s }
+
+func TestJoinAddrs(t *testing.T) {
+	if got := joinAddrs(addrs("5.6.7.9", "1.1.1.1")); got != "5.6.7.9,1.1.1.1" {
+		t.Errorf("joinAddrs = %q", got)
+	}
+	if joinAddrs(nil) != "" {
+		t.Error("joinAddrs(nil) is not empty")
 	}
 }
 

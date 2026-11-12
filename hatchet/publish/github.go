@@ -50,18 +50,23 @@ type release struct {
 type asset struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
+	// Digest is "sha256:<hex>", as the API reports it for assets (empty for old ones).
+	Digest string `json:"digest,omitempty"`
 }
 
-// Replace uploads path as assetName with body as the release text (an empty
-// body keeps the current text) and returns the stable download URL. The new file is uploaded under a temporary name, the
-// old asset is renamed aside, the new one takes its name, and only then is the
-// old one deleted. A failed swap puts the old asset back, so the URL is missing
-// only between the two renames.
-func (r *Release) Replace(ctx context.Context, path, assetName, body string) (string, error) {
+// Replace makes assetName hold the file at path, with body as the release text (an
+// empty body keeps the current text), and returns the stable download URL. When
+// the release's current asset of that name reports the same SHA-256 digest as the
+// file, nothing is uploaded and replaced is false. Otherwise the new file is
+// uploaded under a temporary name, the old asset is renamed aside, the new one
+// takes its name, and only then is the old one deleted. A failed swap puts the old
+// asset back, so the URL is missing only between the two renames.
+func (r *Release) Replace(ctx context.Context, path, assetName, body string) (link string, replaced bool, err error) {
 	rel, err := r.ensureRelease(ctx, body)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
+	link = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", r.Repo, url.PathEscape(assetName))
 	tmpName, oldName := assetName+".new", assetName+".old"
 	byName := map[string]asset{}
 	for _, a := range rel.Assets {
@@ -70,39 +75,49 @@ func (r *Release) Replace(ctx context.Context, path, assetName, body string) (st
 	// Clean up after an interrupted run.
 	if a, ok := byName[tmpName]; ok {
 		if err := r.deleteAsset(ctx, a.ID); err != nil {
-			return "", err
+			return "", false, err
 		}
 	}
 	current, hasCurrent := byName[assetName]
 	if a, ok := byName[oldName]; ok {
 		if hasCurrent {
 			if err := r.deleteAsset(ctx, a.ID); err != nil {
-				return "", err
+				return "", false, err
 			}
 		} else {
 			current, hasCurrent = a, true // a failed swap left the only copy aside
 		}
 	}
+	// An asset with no digest (the API did not report one) is replaced as usual.
+	if want, ok := strings.CutPrefix(current.Digest, "sha256:"); ok && hasCurrent && current.Name == assetName {
+		sum, err := FileSHA256(path)
+		if err != nil {
+			return "", false, err
+		}
+		if strings.EqualFold(want, sum) {
+			return link, false, nil
+		}
+	}
 
 	uploaded, err := r.uploadAsset(ctx, rel, path, tmpName)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if hasCurrent && current.Name != oldName {
 		if err := r.renameAsset(ctx, current.ID, oldName); err != nil {
-			return "", err
+			return "", false, err
 		}
 	}
 	if err := r.renameAsset(ctx, uploaded.ID, assetName); err != nil {
 		if hasCurrent {
 			r.renameAsset(ctx, current.ID, assetName) // best effort; the next run also recovers it
 		}
-		return "", err
+		return "", false, err
 	}
 	if hasCurrent {
 		r.deleteAsset(ctx, current.ID) // the new file is live; the next run deletes a leftover
 	}
-	return fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", r.Repo, url.PathEscape(assetName)), nil
+	return link, true, nil
 }
 
 func (r *Release) renameAsset(ctx context.Context, id int64, name string) error {

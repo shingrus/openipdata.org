@@ -77,6 +77,13 @@ var rdnsStatements = []string{
 		PRIMARY KEY (prefix, target_kind, traced_at)
 	)`,
 	`CREATE INDEX IF NOT EXISTS network_traces_traced_at_idx ON public.network_traces (traced_at)`,
+	// candidates: the IPs of the trace that resolve-names and locate look at (the target,
+	// then the last quarter of the public hops, closest first), so they never read hops.
+	// NULL for rows written before the column was added, until resolve-ips fills them.
+	// network_traces has one writer and no other reader, so this ALTER locks nobody.
+	`ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS candidates inet[]`,
+	// The rows still to fill, for the one-time backfill; empty afterwards.
+	`CREATE INDEX IF NOT EXISTS network_traces_no_candidates_idx ON public.network_traces (traced_at) WHERE candidates IS NULL`,
 	// The PTR name of one IP (a hop or a target). status: ok, not_found, or error;
 	// ptr is NULL unless the status is ok.
 	`CREATE TABLE IF NOT EXISTS public.ip_ptr_names (
@@ -196,8 +203,9 @@ func EnsureVisitorIPs(ctx context.Context, db Execer) error {
 }
 
 // EnsureRDNS creates public.network_traces, public.ip_ptr_names and
-// public.rdns_geo_layer, the tables resolve-ips writes. resolve-ips uses it
-// (with EnsureVisitorIPs) instead of Ensure.
+// public.rdns_geo_layer, the tables resolve-ips writes, and adds the
+// network_traces.candidates column. resolve-ips uses it (with EnsureVisitorIPs)
+// instead of Ensure.
 func EnsureRDNS(ctx context.Context, db Execer) error {
 	for _, stmt := range rdnsStatements {
 		if _, err := db.Exec(ctx, stmt); err != nil {

@@ -168,8 +168,11 @@ type Source struct {
 	StatsStatus map[string]string `json:"stats_status"`
 	GeoBlocks   string            `json:"geo_ip_blocks_status"`
 	PDBASNs     int               `json:"pdb_asns"`
-	// R2Uploaded tells when sync-geofeeds uploaded each R2 layer that was downloaded.
+	// R2Uploaded tells when sync-geofeeds uploaded each R2 layer in the build.
 	R2Uploaded map[string]string `json:"r2_layers_uploaded"`
+	// R2Reused lists the R2 layers that were not downloaded because the copy saved by
+	// an earlier run still has the object's ETag.
+	R2Reused []string `json:"r2_layers_reused,omitempty"`
 	// StaleLayers are the R2 layers that were missing or older than rowsMaxAge;
 	// Publish sends no health check ping then.
 	StaleLayers []string `json:"stale_layers,omitempty"`
@@ -377,20 +380,28 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 	if err != nil {
 		return src, err
 	}
-	if err := p.downloadR2Layers(ctx, r2.Download, layers, now, &src); err != nil {
+	if err := p.downloadR2Layers(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
 		return src, err
 	}
 	return src, nil
 }
 
-// downloadR2Layers fetches the R2 layers into the layers directory as they are
-// (no conversion). A missing optional one is skipped with a warning; any other
-// error fails. A layer that is missing or older than rowsMaxAge goes into
-// src.StaleLayers.
-func (p *Pipeline) downloadR2Layers(ctx context.Context, get func(ctx context.Context, key, path string) (time.Time, error),
-	layers string, now time.Time, src *Source) error {
+// r2Fetch is publish.R2.DownloadIfChanged: it saves the object at key to path
+// unless its ETag is etag (then downloaded is false), and says what the object is.
+type r2Fetch func(ctx context.Context, key, path, etag string) (info publish.ObjectInfo, downloaded bool, err error)
+
+// downloadR2Layers puts the R2 layers into the layers directory as they are
+// (no conversion). sync-geofeeds replaces them once a day, so the last download
+// of each stays in downloads (which Download does not empty) with its ETag in
+// <name>.etag beside it: an object with that ETag is not downloaded again, the
+// saved copy is copied into the layers directory (which is rebuilt every run).
+// A missing optional one is skipped with a warning; any other error fails. A layer
+// that is missing or older than rowsMaxAge (by the object's own modified time, also
+// for a reused copy) goes into src.StaleLayers.
+func (p *Pipeline) downloadR2Layers(ctx context.Context, fetch r2Fetch, downloads, layers string, now time.Time, src *Source) error {
 	for _, l := range r2Layers {
-		uploaded, err := get(ctx, l.Key, filepath.Join(layers, l.Name))
+		saved := filepath.Join(downloads, l.Name)
+		info, downloaded, err := fetch(ctx, l.Key, saved, savedETag(saved))
 		if errors.Is(err, publish.ErrNotFound) && slices.Contains(optionalLayers, l.Name) {
 			src.SkippedLayers = append(src.SkippedLayers, l.Name)
 			src.StaleLayers = append(src.StaleLayers, l.Name)
@@ -400,14 +411,72 @@ func (p *Pipeline) downloadR2Layers(ctx context.Context, get func(ctx context.Co
 		if err != nil {
 			return fmt.Errorf("%s (has sync-geofeeds uploaded it?): %w", l.Name, err)
 		}
-		src.R2Uploaded[l.Name] = uploaded.UTC().Format(time.RFC3339)
-		if now.Sub(uploaded) > rowsMaxAge {
+		if downloaded {
+			// The ETag is written after the file: a crash in between only costs one more download.
+			if err := os.WriteFile(saved+etagSuffix+".tmp", []byte(info.ETag), 0o640); err == nil {
+				err = os.Rename(saved+etagSuffix+".tmp", saved+etagSuffix)
+			}
+			if err != nil {
+				os.Remove(saved + etagSuffix)
+				p.log("download: could not save the ETag of %s: %v", l.Name, err)
+			}
+		} else {
+			src.R2Reused = append(src.R2Reused, l.Name)
+		}
+		if err := copyFile(saved, filepath.Join(layers, l.Name)); err != nil {
+			return err
+		}
+		src.R2Uploaded[l.Name] = info.LastModified.UTC().Format(time.RFC3339)
+		if now.Sub(info.LastModified) > rowsMaxAge {
 			src.StaleLayers = append(src.StaleLayers, l.Name)
 			p.log("download: WARNING %s is from %s; is sync-geofeeds failing?", l.Name, src.R2Uploaded[l.Name])
 		}
-		p.log("download: %s uploaded %s", l.Name, src.R2Uploaded[l.Name])
+		how := "downloaded"
+		if !downloaded {
+			how = "unchanged, saved copy used"
+		}
+		p.log("download: %s uploaded %s (%s)", l.Name, src.R2Uploaded[l.Name], how)
 	}
 	return nil
+}
+
+// etagSuffix names the file that holds the ETag of a saved R2 layer.
+const etagSuffix = ".etag"
+
+// savedETag returns the ETag saved for the R2 layer copy at path, or "" when the
+// copy or its ETag is missing: then the layer is downloaded.
+func savedETag(path string) string {
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	data, err := os.ReadFile(path + etagSuffix)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// copyFile copies src to dst through a temporary file.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 // downloadOptional writes an optional layer file. When write returns ErrNoRows
@@ -624,6 +693,10 @@ type PublishOutput struct {
 	ReleaseURL      string  `json:"release_url,omitempty"`
 	Bytes           int64   `json:"bytes"`
 	DurationSeconds float64 `json:"duration_seconds"`
+	// A file that is byte-identical to the one already in place is not sent again:
+	// R2 compares the object's sha256 metadata, the release the asset's digest.
+	R2Unchanged      bool `json:"r2_unchanged,omitempty"`
+	ReleaseUnchanged bool `json:"release_unchanged,omitempty"`
 }
 
 // evalFailure tells why ev cannot be trusted: Evaluate recorded an error, or
@@ -641,7 +714,8 @@ func evalFailure(ev EvalOutput) string {
 // Publish first checks the publish gate against the latest published scores
 // (ErrGate; force skips it), then uploads the MMDB to R2 under <YYYY-MM-DD>/,
 // replaces it on the rolling GitHub release (leaving the release text, which
-// build-asn-data writes), marks ev's row in public.geo_eval as published, and
+// build-asn-data writes), each only when the file there is not already
+// byte-identical (the identical file is the published file), marks ev's row in public.geo_eval as published, and
 // pings HCPing if set and no R2 layer is missing or stale. A failed evaluation
 // (ev.Error, or no stored row) is refused with ErrGate before anything else
 // unless force is set; the row is then not marked, as there is none.
@@ -671,15 +745,23 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string, ev 
 	} else if err := p.CheckGate(ctx, ev); err != nil {
 		return out, err
 	}
-	if out.R2, err = r2.Upload(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(mmdbPath), mmdbPath); err != nil {
+	var r2Status publish.PutStatus
+	if out.R2, r2Status, err = r2.Put(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(mmdbPath), mmdbPath, publish.PutOptions{}); err != nil {
 		return out, err
 	}
-	p.log("publish: %s", out.R2)
+	out.R2Unchanged = r2Status == publish.PutUnchanged
+	p.log("publish: %s (%s)", out.R2, r2Status)
 	out.Bytes = outputs.FileSize(mmdbPath)
-	if out.ReleaseURL, err = release.Replace(ctx, mmdbPath, releaseAsset, ""); err != nil {
+	var replaced bool
+	if out.ReleaseURL, replaced, err = release.Replace(ctx, mmdbPath, releaseAsset, ""); err != nil {
 		return out, err
 	}
-	p.log("publish: %s", out.ReleaseURL)
+	out.ReleaseUnchanged = !replaced
+	releaseStatus := "uploaded"
+	if !replaced {
+		releaseStatus = "unchanged"
+	}
+	p.log("publish: %s (%s)", out.ReleaseURL, releaseStatus)
 	if ev.ID == 0 {
 		p.log("publish: no scores row to mark as published")
 	} else if err := p.markPublished(ctx, ev.ID); err != nil {

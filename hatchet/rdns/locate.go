@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -60,7 +62,7 @@ func (m *match) sameCity(o *match) bool {
 // KindStats says how well one target kind did.
 type KindStats struct {
 	Traces     int `json:"traces"`
-	ReachedASN int `json:"reached_asn"` // the path has a router in the target's ASN
+	ReachedASN int `json:"reached_asn"` // a tail hop candidate (not the target itself) is in the target's ASN
 	Located    int `json:"located"`     // a rule matched a name on the path
 	UniqueWins int `json:"unique_wins"` // located, and no other target of the /24 was
 	Compared   int `json:"compared"`    // located, and another target of the /24 was too
@@ -69,6 +71,11 @@ type KindStats struct {
 
 // LocateOutput counts what locate read, found and stored.
 type LocateOutput struct {
+	// Skipped: nothing locate reads changed since the last rebuild (less than a day
+	// ago), so the table was left as it is and every count is zero.
+	Skipped    bool `json:"skipped,omitempty"`
+	Backfilled int  `json:"backfilled,omitempty"` // traces that got their candidates (see backfillCandidates)
+
 	Traces   int `json:"traces"`
 	Networks int `json:"networks"` // /24s with a trace
 	Names    int `json:"names"`    // PTR names read
@@ -93,21 +100,19 @@ type LocateOutput struct {
 }
 
 // matchTrace finds the first candidate of the trace, same-ASN ones first, whose
-// PTR name a rule matches. reached is whether any router on the path (or the
-// target) is in the target's ASN.
+// PTR name a rule matches. reached is whether a tail hop among the candidates (not
+// the target, which is trivially in its own ASN) is in the target's ASN.
 func matchTrace(t traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable) (m *match, reached bool) {
 	_, targetASN, known := origin.lookup(t.Target)
+	cands := t.Candidates
 	if known {
-		for _, h := range t.Hops {
-			if a, ok := h.addr(); ok {
-				if _, asn, ok := origin.lookup(a); ok && asn == targetASN {
-					reached = true
-					break
-				}
+		for _, c := range cands[min(1, len(cands)):] {
+			if _, asn, ok := origin.lookup(c); ok && asn == targetASN {
+				reached = true
+				break
 			}
 		}
 	}
-	cands := candidates(t.Target, t.Hops)
 	order := make([]int, 0, len(cands))
 	if known {
 		// A router of the target's own network says more about the target than a
@@ -193,10 +198,8 @@ type cityKey struct{ Country, City string }
 //
 // Per announced prefix the city with the most votes gets a wide row; a tie gets none.
 func locate(traces []traceIn, ptrs map[netip.Addr]string, rules []rule, origin *originTable) ([]geoRow, LocateOutput) {
-	out := LocateOutput{Traces: len(traces), Names: len(ptrs), Rules: len(rules), Kinds: map[string]*KindStats{}}
-	for _, k := range kindOrder {
-		out.Kinds[k] = &KindStats{}
-	}
+	out := newLocateOutput()
+	out.Traces, out.Names, out.Rules = len(traces), len(ptrs), len(rules)
 	byNet := map[netip.Prefix][]traceIn{}
 	for _, t := range traces {
 		byNet[t.Prefix] = append(byNet[t.Prefix], t)
@@ -333,24 +336,63 @@ func checkShrink(previous, rows int) error {
 const locateWindow = "180 days"
 
 // tracesQuery reads the newest trace of each (prefix, target kind) younger than
-// $1 (an interval, as text). Read only.
-const tracesQuery = `SELECT DISTINCT ON (prefix, target_kind) prefix::text, target_kind, host(target), hops::text
+// $1 (an interval, as text): its candidates, never its path (hops). A row not
+// backfilled yet reads as no candidates, and parseTrace gives it its target. Read only.
+const tracesQuery = `SELECT DISTINCT ON (prefix, target_kind) prefix::text, target_kind, host(target),
+		ARRAY(SELECT host(c) FROM unnest(candidates) WITH ORDINALITY AS u(c, n) ORDER BY n)
 	FROM public.network_traces
 	WHERE traced_at > now() - $1::text::interval
 	ORDER BY prefix, target_kind, traced_at DESC`
 
-// Locate rebuilds public.rdns_geo_layer from the traces younger than 180 days,
-// the PTR names, the rules of public.generated_rules and the announced prefixes of
-// public.asn, in one transaction. A shrink of more than 10% is refused
-// (ErrShrink) unless force is set.
+// newLocateOutput is an output with every kind present, all counts zero.
+func newLocateOutput() LocateOutput {
+	out := LocateOutput{Kinds: map[string]*KindStats{}}
+	for _, k := range kindOrder {
+		out.Kinds[k] = &KindStats{}
+	}
+	return out
+}
+
+func (p *Pipeline) clock() time.Time {
+	if p.now != nil {
+		return p.now()
+	}
+	return time.Now()
+}
+
+// Locate rebuilds public.rdns_geo_layer from the traces younger than 180 days
+// (their candidates, never their paths), the PTR names, the rules of
+// public.generated_rules and the announced prefixes of public.asn, in one
+// transaction. A shrink of more than 10% is refused (ErrShrink) unless force is set.
+//
+// A run whose inputs look as they did at the last rebuild (see inputsFingerprint),
+// less than a day ago, leaves the table alone and says so (LocateOutput.Skipped);
+// force always rebuilds. The fingerprint is taken before the inputs are read and
+// saved only after the commit, so a change during the run only causes one more rebuild.
 func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error) {
-	var out LocateOutput
+	out := newLocateOutput()
 	conn, err := connect(ctx, p.PGSQL)
 	if err != nil {
 		return out, err
 	}
 	defer conn.Close(ctx)
 
+	statePath := filepath.Join(p.dir(), locateStateFile)
+	fingerprint, err := inputsFingerprint(ctx, conn)
+	if err != nil {
+		// Without it the table is simply rebuilt, as before.
+		p.log("locate: %v; rebuilding", err)
+		fingerprint = ""
+	}
+	if !force && fingerprint != "" && readLocateState(statePath).canSkip(fingerprint, p.clock()) {
+		out.Skipped = true
+		p.log("locate: skipped, no trace, name, rule or ASN changed since the last rebuild")
+		return out, nil
+	}
+
+	if out.Backfilled, err = backfillCandidates(ctx, conn); err != nil {
+		return out, err
+	}
 	rules, rstats, err := loadRules(ctx, conn)
 	if err != nil {
 		return out, dbError("read rules", err)
@@ -369,7 +411,9 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		return out, err
 	}
 
+	backfilled := out.Backfilled
 	rows, out := locate(traces, ptrs, rules, origin)
+	out.Backfilled = backfilled
 	out.RulesSkipped, out.RulesInvalid, out.RulesMissing, out.ASNPrefixes = rstats.Skipped, rstats.Invalid, rstats.NoTable, prefixes
 	if rstats.NoTable {
 		p.log("locate: WARNING public.generated_rules does not exist; no rules, no rows")
@@ -379,6 +423,12 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		return out, err
 	}
 	out.Stored = len(rows)
+	if fingerprint != "" {
+		// Only the next skip is lost when this fails: the layer itself is stored.
+		if err := writeLocateState(statePath, locateState{Fingerprint: fingerprint, RebuiltAt: p.clock().UTC()}); err != nil {
+			p.log("locate: could not save %s: %v", locateStateFile, err)
+		}
+	}
 	p.log("locate: %d traces in %d /24s, %d names, %d rules (%d skipped, %d invalid); %d traced rows, %d wide rows (%d votes, %d ties); %d rows before",
 		out.Traces, out.Networks, out.Names, out.Rules, out.RulesSkipped, out.RulesInvalid, out.Traced, out.Wide, out.Votes, out.WideTies, out.Previous)
 	for _, k := range kindOrder {
@@ -399,11 +449,12 @@ func readTraces(ctx context.Context, conn *pgx.Conn, window string) ([]traceIn, 
 	defer rows.Close()
 	var traces []traceIn
 	for rows.Next() {
-		var prefix, kind, target, hops string
-		if err := rows.Scan(&prefix, &kind, &target, &hops); err != nil {
+		var prefix, kind, target string
+		var cands []string
+		if err := rows.Scan(&prefix, &kind, &target, &cands); err != nil {
 			return nil, dbError("read traces", err)
 		}
-		if t, ok := parseTrace(prefix, kind, target, hops); ok && t.Prefix.IsValid() {
+		if t, ok := parseTrace(prefix, kind, target, cands); ok && t.Prefix.IsValid() {
 			traces = append(traces, t)
 		}
 	}
@@ -418,7 +469,7 @@ func readTraces(ctx context.Context, conn *pgx.Conn, window string) ([]traceIn, 
 func candidateIPs(traces []traceIn) []netip.Addr {
 	seen := map[netip.Addr]bool{}
 	for _, t := range traces {
-		for _, ip := range candidates(t.Target, t.Hops) {
+		for _, ip := range t.Candidates {
 			if ipdata.PublicV4(ip) {
 				seen[ip] = true
 			}

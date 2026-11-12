@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"openipdata.org/hatchet/publish"
 )
 
 const testBlocks = "source,prefix,url\n" +
@@ -154,6 +156,48 @@ func TestUploadGate(t *testing.T) {
 	os.WriteFile(statePath, []byte(`{"rows":`), 0o640)
 	if err := p.uploadRows(context.Background(), nil, "unused", false, out); !errors.Is(err, ErrGate) {
 		t.Errorf("damaged upload.json: %v", err)
+	}
+}
+
+// The rows file is sent unless R2 already holds the same bytes: then only its upload
+// time is renewed (build-geo-data treats an object older than 3 days as stale). The state
+// file is written either way; force_upload always sends the bytes.
+func TestUploadRowsSkipsIdenticalFile(t *testing.T) {
+	p := &Pipeline{DataDir: t.TempDir()}
+	os.MkdirAll(p.dir(), 0o750)
+	var gotKey string
+	var gotOpts publish.PutOptions
+	status := publish.PutUploaded
+	upload := func(_ context.Context, key, path string, opts publish.PutOptions) (string, publish.PutStatus, error) {
+		gotKey, gotOpts = key, opts
+		return "r2://bucket/" + key, status, nil
+	}
+	statePath := filepath.Join(p.dir(), uploadFile)
+	try := func(force bool) *ExportOutput {
+		out := &ExportOutput{Rows: minFirstUpload, Feeds: minFeeds}
+		if err := p.uploadRows(context.Background(), upload, "rows.csv.gz", force, out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	out := try(false)
+	if !out.Uploaded || out.Refreshed || gotKey != RowsKey || !gotOpts.Refresh || gotOpts.Force {
+		t.Errorf("new file: %+v key %q opts %+v", out, gotKey, gotOpts)
+	}
+	os.Remove(statePath)
+	status = publish.PutRefreshed
+	out = try(false)
+	if out.Uploaded || !out.Refreshed {
+		t.Errorf("same file: %+v", out)
+	}
+	if data, _ := os.ReadFile(statePath); !strings.Contains(string(data), `"rows":1000000`) {
+		t.Errorf("%s = %s", uploadFile, data)
+	}
+	// force_upload is passed on: the bytes are sent again.
+	status = publish.PutUploaded
+	if out = try(true); !out.Uploaded || !gotOpts.Force {
+		t.Errorf("forced: %+v opts %+v", out, gotOpts)
 	}
 }
 

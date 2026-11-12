@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -180,6 +181,13 @@ func TestTraceBatch(t *testing.T) {
 	if r := byTarget["5.6.7.9"]; r.Kind != kindVisitor || r.Prefix != "5.6.7.0/24" || !strings.Contains(string(r.Hops), `"ip":"5.6.7.9"`) {
 		t.Errorf("visitor row = %+v", r)
 	}
+	// The candidates are stored with the path: the target, then the tail hops of the public ones.
+	if r := byTarget["5.6.7.9"]; !reflect.DeepEqual(r.Candidates, addrs("5.6.7.9", "5.6.0.1")) {
+		t.Errorf("visitor candidates = %v", r.Candidates)
+	}
+	if r := byTarget["20.30.40.200"]; !reflect.DeepEqual(r.Candidates, addrs("20.30.40.200")) {
+		t.Errorf("silent candidates = %v", r.Candidates)
+	}
 	if r := byTarget["20.30.40.200"]; string(r.Hops) != "[]" || r.Kind != kindVisitor {
 		t.Errorf("a target without a result must be stored with an empty path: %+v", r)
 	}
@@ -239,5 +247,17 @@ func TestScamperSocketFailure(t *testing.T) {
 	}
 	if err := runScamper(context.Background(), fake, "/nonexistent/targets", filepath.Join(dir, "out"), scamperPPS); err != nil {
 		t.Errorf("clean run: %v", err)
+	}
+}
+
+// storeTraces writes the candidates beside the path, and the backfill fills only rows that have none.
+func TestTraceStatementsUseCandidates(t *testing.T) {
+	for _, part := range []string{"candidates", "string_to_array(u.cands, ',')::inet[]"} {
+		if !strings.Contains(backfillSQL, part) {
+			t.Errorf("backfillSQL lacks %q", part)
+		}
+	}
+	if !strings.Contains(backfillSQL, "t.candidates IS NULL") || !strings.Contains(backfillQuery, "WHERE candidates IS NULL") {
+		t.Error("the backfill must touch only rows without candidates")
 	}
 }

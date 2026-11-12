@@ -74,3 +74,22 @@ func TestWidePrefix(t *testing.T) {
 		}
 	}
 }
+
+// The prefixes come as text from Postgres: spaces are ignored, IPv6 and junk are left out.
+func TestAddPrefixes(t *testing.T) {
+	o := newOriginTable()
+	n := o.addPrefixes(100, []string{"5.6.0.0/16", " 8.8.8.0/24 ", "bad", "2001:db8::/32", "5.6.7.9/24"})
+	if n != 3 {
+		t.Errorf("added %d, want 3", n)
+	}
+	if p, asn, ok := o.lookup(netip.MustParseAddr("8.8.8.8")); !ok || asn != 100 || p.String() != "8.8.8.0/24" {
+		t.Errorf("lookup = %v %d %v", p, asn, ok)
+	}
+	// Not masked as written: it still announces its network.
+	if p, _, ok := o.lookup(netip.MustParseAddr("5.6.7.1")); !ok || p.String() != "5.6.7.0/24" {
+		t.Errorf("unmasked prefix: %v %v", p, ok)
+	}
+	if o.addPrefixes(1, nil) != 0 {
+		t.Error("no prefixes added none")
+	}
+}

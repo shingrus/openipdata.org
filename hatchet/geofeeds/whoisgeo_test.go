@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"openipdata.org/hatchet/publish"
 )
 
 func TestParseGeoloc(t *testing.T) {
@@ -470,9 +472,9 @@ func TestUploadWhois(t *testing.T) {
 	p := &Pipeline{DataDir: t.TempDir()}
 	os.MkdirAll(p.dir(), 0o750)
 	var keys []string
-	upload := func(ctx context.Context, key, path string) (string, error) {
+	upload := func(ctx context.Context, key, path string, _ publish.PutOptions) (string, publish.PutStatus, error) {
 		keys = append(keys, key)
-		return "r2://bucket/" + key, nil
+		return "r2://bucket/" + key, publish.PutUploaded, nil
 	}
 	statePath := filepath.Join(p.dir(), whoisUploadFile)
 
@@ -506,7 +508,9 @@ func TestUploadWhois(t *testing.T) {
 	}
 	// An upload error is a skip too.
 	writeRowsFile(t, p, 3)
-	failing := func(context.Context, string, string) (string, error) { return "", errors.New("R2 is down") }
+	failing := func(context.Context, string, string, publish.PutOptions) (string, publish.PutStatus, error) {
+		return "", "", errors.New("R2 is down")
+	}
 	if out := p.uploadWhois(context.Background(), failing, true); out.Uploaded || out.Skipped != "R2 is down" {
 		t.Errorf("failing upload: %+v", out)
 	}
@@ -518,11 +522,34 @@ func TestUploadWhois(t *testing.T) {
 	}
 }
 
+// The same file as R2 holds is not sent again, and the output says so.
+func TestUploadWhoisRefreshesIdenticalFile(t *testing.T) {
+	p := &Pipeline{DataDir: t.TempDir()}
+	os.MkdirAll(p.dir(), 0o750)
+	writeRowsFile(t, p, 3)
+	var gotOpts publish.PutOptions
+	upload := func(_ context.Context, key, path string, opts publish.PutOptions) (string, publish.PutStatus, error) {
+		gotOpts = opts
+		return "r2://bucket/" + key, publish.PutRefreshed, nil
+	}
+	out := p.uploadWhois(context.Background(), upload, true)
+	if out.Uploaded || !out.Refreshed || out.Skipped != "" || !gotOpts.Refresh || !gotOpts.Force {
+		t.Errorf("out = %+v opts %+v", out, gotOpts)
+	}
+	// The upload state is still recorded: the object is fresh.
+	if data, _ := os.ReadFile(filepath.Join(p.dir(), whoisUploadFile)); !strings.Contains(string(data), `"rows":3`) {
+		t.Errorf("%s = %s", whoisUploadFile, data)
+	}
+}
+
 func TestUploadWhoisGate(t *testing.T) {
 	p := &Pipeline{DataDir: t.TempDir()}
 	os.MkdirAll(p.dir(), 0o750)
 	var uploads int
-	upload := func(context.Context, string, string) (string, error) { uploads++; return "r2://x", nil }
+	upload := func(context.Context, string, string, publish.PutOptions) (string, publish.PutStatus, error) {
+		uploads++
+		return "r2://x", publish.PutUploaded, nil
+	}
 	try := func(rows int, force bool) WhoisUploadOutput {
 		writeRowsFile(t, p, rows)
 		return p.uploadWhois(context.Background(), upload, force)

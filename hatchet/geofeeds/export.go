@@ -63,7 +63,8 @@ type ExportOutput struct {
 	UnreadableFeeds int               `json:"unreadable_feeds,omitempty"` // stored copies that could not be read; skipped
 	BroadRows       int               `json:"broad_rows,omitempty"`       // rows kept although they span a block of another owner
 	Bytes           int64             `json:"bytes"`
-	Uploaded        bool              `json:"uploaded"`
+	Uploaded        bool              `json:"uploaded"`            // the rows file was sent
+	Refreshed       bool              `json:"refreshed,omitempty"` // R2 already had this exact file: only its upload time was renewed
 	PreviousRows    int               `json:"previous_rows,omitempty"`
 	Whois           WhoisUploadOutput `json:"whois"` // never fails the task: see WhoisUploadOutput.Skipped
 	DurationSeconds float64           `json:"duration_seconds"`
@@ -391,17 +392,17 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 		out.Rows, out.Feeds, out.Dropped, out.BroadRows, out.MissingFeeds, out.UnreadableFeeds, out.Bytes)
 
 	// The whois geoloc rows are separate: whatever goes wrong with them leaves the geofeed rows alone.
-	var whoisUpload uploadFunc
+	var put uploadFunc
 	if upload {
-		whoisUpload = r2.Upload
+		put = r2.Put
 	}
-	out.Whois = p.uploadWhois(ctx, whoisUpload, force)
+	out.Whois = p.uploadWhois(ctx, put, force)
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
 
 	if upload {
-		if err := p.uploadRows(ctx, r2, path, force, &out); err != nil {
+		if err := p.uploadRows(ctx, put, path, force, &out); err != nil {
 			return out, err
 		}
 	}
@@ -477,9 +478,10 @@ type uploaded struct {
 	Rows int    `json:"rows"`
 }
 
-// uploadRows checks the gate (unless force), uploads the rows file, and
+// uploadRows checks the gate (unless force), puts the rows file in R2 (sending the
+// bytes only when R2 does not already hold this exact file, see putLayer), and
 // records the upload.
-func (p *Pipeline) uploadRows(ctx context.Context, r2 *publish.R2, path string, force bool, out *ExportOutput) error {
+func (p *Pipeline) uploadRows(ctx context.Context, upload uploadFunc, path string, force bool, out *ExportOutput) error {
 	statePath := filepath.Join(p.dir(), uploadFile)
 	var last uploaded
 	data, err := os.ReadFile(statePath)
@@ -502,12 +504,12 @@ func (p *Pipeline) uploadRows(ctx context.Context, r2 *publish.R2, path string, 
 	case last.Rows == 0 && out.Rows < minFirstUpload:
 		return fmt.Errorf("%w: %d rows, fewer than %d", ErrGate, out.Rows, minFirstUpload)
 	}
-	location, err := r2.Upload(ctx, RowsKey, path)
+	location, status, err := putLayer(ctx, upload, RowsKey, path, force)
 	if err != nil {
 		return err
 	}
-	p.log("export: uploaded %s", location)
-	out.Uploaded = true
+	out.Uploaded, out.Refreshed = status == publish.PutUploaded, status != publish.PutUploaded
+	p.log("export: %s %s", status, location)
 	data, _ = json.Marshal(uploaded{Date: p.clock().UTC().Format(time.RFC3339), Rows: out.Rows})
 	return writeFileAtomic(statePath, data)
 }

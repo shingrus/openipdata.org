@@ -177,6 +177,9 @@ type traceRow struct {
 	Kind   string
 	Target string
 	Hops   []byte // JSON
+	// Candidates are the IPs of the path that get named and matched (see candidates):
+	// stored beside the path, so later tasks never read it.
+	Candidates []netip.Addr
 }
 
 // TraceOutput counts the traces of a run.
@@ -304,9 +307,20 @@ func (p *Pipeline) traceBatch(ctx context.Context, batch []batchTarget, out Trac
 		if err != nil {
 			return nil, out, err
 		}
-		rows = append(rows, traceRow{Prefix: t.Prefix.String(), Kind: t.Kind, Target: t.Addr.String(), Hops: data})
+		rows = append(rows, traceRow{Prefix: t.Prefix.String(), Kind: t.Kind, Target: t.Addr.String(), Hops: data,
+			Candidates: candidates(t.Addr, hops)})
 	}
 	return rows, out, nil
+}
+
+// joinAddrs is the comma-separated text of addrs, which string_to_array turns back
+// into the array (an array of arrays cannot go through unnest).
+func joinAddrs(addrs []netip.Addr) string {
+	texts := make([]string, len(addrs))
+	for i, a := range addrs {
+		texts[i] = a.String()
+	}
+	return strings.Join(texts, ",")
 }
 
 // storeTraces inserts the rows in one transaction and removes the traces of the
@@ -318,7 +332,7 @@ func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.T
 		return 0, dbError("store traces", err)
 	}
 	defer tx.Rollback(ctx)
-	var prefixes, kinds, targets, hops []string
+	var prefixes, kinds, targets, hops, cands []string
 	seen := map[string]bool{}
 	var touched []string
 	for _, r := range rows {
@@ -326,16 +340,17 @@ func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.T
 		kinds = append(kinds, r.Kind)
 		targets = append(targets, r.Target)
 		hops = append(hops, string(r.Hops))
+		cands = append(cands, joinAddrs(r.Candidates))
 		if !seen[r.Prefix] {
 			seen[r.Prefix] = true
 			touched = append(touched, r.Prefix)
 		}
 	}
 	sort.Strings(touched)
-	if _, err := tx.Exec(ctx, `INSERT INTO public.network_traces (prefix, target_kind, target, traced_at, hops)
-		SELECT u.prefix::cidr, u.kind, u.target::inet, $5::timestamptz, u.hops::jsonb
-		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS u(prefix, kind, target, hops)`,
-		prefixes, kinds, targets, hops, at); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO public.network_traces (prefix, target_kind, target, traced_at, hops, candidates)
+		SELECT u.prefix::cidr, u.kind, u.target::inet, $6::timestamptz, u.hops::jsonb, string_to_array(u.cands, ',')::inet[]
+		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) AS u(prefix, kind, target, hops, cands)`,
+		prefixes, kinds, targets, hops, cands, at); err != nil {
 		return 0, dbError("store traces", err)
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM public.network_traces t USING (

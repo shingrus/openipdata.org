@@ -111,7 +111,9 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 	}
 	tables := map[string]bool{}
 	for _, sql := range r.sqls {
-		if !strings.Contains(sql, "IF NOT EXISTS") || strings.Contains(sql, "ALTER") || strings.Contains(sql, "visitor_ips") {
+		// The one ALTER is on the table that resolve-ips alone writes and reads.
+		alter := strings.Contains(sql, "ALTER") && !strings.HasPrefix(sql, "ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS ")
+		if !strings.Contains(sql, "IF NOT EXISTS") || alter || strings.Contains(sql, "visitor_ips") {
 			t.Errorf("unexpected statement: %s", sql)
 		}
 		for _, table := range []string{"network_traces", "ip_ptr_names", "rdns_geo_layer"} {
@@ -125,6 +127,9 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(r.sqls, "\n"), "PRIMARY KEY (prefix, target_kind, traced_at)") {
 		t.Error("network_traces has no (prefix, target_kind, traced_at) key")
+	}
+	if !strings.Contains(strings.Join(r.sqls, "\n"), "ADD COLUMN IF NOT EXISTS candidates inet[]") {
+		t.Error("network_traces has no candidates column")
 	}
 }
 

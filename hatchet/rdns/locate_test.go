@@ -31,7 +31,8 @@ func locateWorld(t *testing.T) (*originTable, []rule) {
 }
 
 func tr(prefix, kind, target string, hops ...string) traceIn {
-	return traceIn{Prefix: netip.MustParsePrefix(prefix), Kind: kind, Target: netip.MustParseAddr(target), Hops: hopsOf(hops...)}
+	t := netip.MustParseAddr(target)
+	return traceIn{Prefix: netip.MustParsePrefix(prefix), Kind: kind, Target: t, Candidates: candidates(t, hopsOf(hops...))}
 }
 
 func names(pairs ...string) map[netip.Addr]string {
@@ -197,6 +198,25 @@ func TestLocateKindStats(t *testing.T) {
 	}
 }
 
+// reached_asn counts tail hop candidates in the target's ASN: the target itself does not count.
+func TestLocateReachedASNIgnoresTarget(t *testing.T) {
+	o, rules := locateWorld(t)
+	for name, c := range map[string]struct {
+		trace   traceIn
+		reached int
+	}{
+		"only the target":  {tr("5.6.7.0/24", kindVisitor, "5.6.7.9"), 0},
+		"target replied":   {tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "9.9.9.1", "5.6.7.9"), 0},
+		"router in the AS": {tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "9.9.9.1", "5.6.0.1"), 1},
+		"transit only":     {tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "9.9.9.1"), 0},
+	} {
+		_, out := locate([]traceIn{c.trace}, nil, rules, o)
+		if got := out.Kinds[kindVisitor].ReachedASN; got != c.reached {
+			t.Errorf("%s: reached_asn = %d, want %d", name, got, c.reached)
+		}
+	}
+}
+
 // With no origin ASN for the target the first match gives a traced row (same_asn
 // unknown) but there is no announced prefix to vote for.
 func TestLocateUnknownASN(t *testing.T) {
@@ -324,14 +344,23 @@ func TestCheckShrink(t *testing.T) {
 }
 
 func TestTracesQueryReadsOnly(t *testing.T) {
-	for _, part := range []string{"DISTINCT ON (prefix, target_kind)", "$1::text::interval", "ORDER BY prefix, target_kind, traced_at DESC"} {
+	for _, part := range []string{"DISTINCT ON (prefix, target_kind)", "$1::text::interval", "ORDER BY prefix, target_kind, traced_at DESC", "candidates"} {
 		if !contains(tracesQuery, part) {
 			t.Errorf("tracesQuery lacks %q", part)
 		}
 	}
-	// public.asn is only read, with the seen_at rule of the other readers.
-	if !contains(originQuery, "FROM public.asn a") || !contains(originQuery, ipdata.SeenAtFilter) {
+	// The path is never read back, except once by the backfill.
+	if contains(tracesQuery, "hops") {
+		t.Errorf("tracesQuery reads the path: %s", tracesQuery)
+	}
+	// public.asn is only read, with the seen_at rule of the other readers, and only its IPv4 prefixes.
+	if !contains(originQuery, "FROM public.asn a") || !contains(originQuery, ipdata.SeenAtFilter) ||
+		!contains(originQuery, "{prefixes,ipv4}") || contains(originQuery, "a.json,") || contains(originQuery, ", a.json ") {
 		t.Errorf("originQuery = %s", originQuery)
+	}
+	// The fallback for a damaged json value keeps the same current-ASN rule.
+	if !contains(originFallbackQuery, "FROM public.asn a") || !contains(originFallbackQuery, ipdata.SeenAtFilter) {
+		t.Errorf("originFallbackQuery = %s", originFallbackQuery)
 	}
 	for _, part := range []string{"public.ip_ptr_names", "ip = ANY ($1::text[]::inet[])", "status = 'ok'"} {
 		if !contains(namesQuery, part) {
@@ -341,7 +370,7 @@ func TestTracesQueryReadsOnly(t *testing.T) {
 	if locateWindow != "180 days" || resolveWindow != "7 days" {
 		t.Errorf("windows: locate %s, resolve-names %s", locateWindow, resolveWindow)
 	}
-	for _, q := range []string{tracesQuery, originQuery, namesQuery} {
+	for _, q := range []string{tracesQuery, originQuery, originFallbackQuery, namesQuery, fingerprintTracesQuery, fingerprintNamesQuery, fingerprintASNQuery, fingerprintRulesQuery} {
 		for _, bad := range []string{"INSERT", "UPDATE", "ALTER", "DELETE", "CREATE"} {
 			if contains(upper(q), bad) {
 				t.Errorf("%s contains %s", q, bad)

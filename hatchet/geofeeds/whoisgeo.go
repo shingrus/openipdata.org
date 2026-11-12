@@ -21,6 +21,7 @@ import (
 
 	"openipdata.org/hatchet/download"
 	"openipdata.org/hatchet/outputs"
+	"openipdata.org/hatchet/publish"
 	"openipdata.org/hatchet/rirstats"
 )
 
@@ -389,16 +390,25 @@ func writeWhoisRows(path string, blocks []geolocBlock, places placeIndex, droppe
 
 // WhoisUploadOutput is the whois geoloc part of the export-rows result.
 type WhoisUploadOutput struct {
-	Rows         int  `json:"rows"` // rows in the file
-	Uploaded     bool `json:"uploaded"`
+	Rows         int  `json:"rows"`                // rows in the file
+	Uploaded     bool `json:"uploaded"`            // the file was sent
+	Refreshed    bool `json:"refreshed,omitempty"` // R2 already had this exact file: only its upload time was renewed
 	PreviousRows int  `json:"previous_rows,omitempty"`
 	// Skipped says why the file was not uploaded. The geofeed rows are not
 	// affected: a problem with the whois rows never fails export-rows.
 	Skipped string `json:"skipped,omitempty"`
 }
 
-// uploadFunc is publish.R2.Upload.
-type uploadFunc func(ctx context.Context, key, path string) (string, error)
+// uploadFunc is publish.R2.Put.
+type uploadFunc func(ctx context.Context, key, path string, opts publish.PutOptions) (string, publish.PutStatus, error)
+
+// putLayer puts the layer file at key. An object that already holds the same bytes
+// (its sha256 metadata) is not sent again; its upload time is renewed instead, because
+// build-geo-data treats an object older than 3 days as stale and an unchanged but
+// freshly built file must look fresh. force sends the bytes anyway.
+func putLayer(ctx context.Context, upload uploadFunc, key, path string, force bool) (location string, status publish.PutStatus, err error) {
+	return upload(ctx, key, path, publish.PutOptions{Force: force, Refresh: true})
+}
 
 // uploadWhois puts the whois rows file that discover wrote at WhoisRowsKey,
 // if upload is not nil. It never fails: a problem ends in the result's
@@ -428,12 +438,12 @@ func (p *Pipeline) uploadWhois(ctx context.Context, upload uploadFunc, force boo
 	if err := p.checkWhoisUpload(info.ModTime(), force, &out); err != nil {
 		return skip("%v", err)
 	}
-	location, err := upload(ctx, WhoisRowsKey, path)
+	location, status, err := putLayer(ctx, upload, WhoisRowsKey, path, force)
 	if err != nil {
 		return skip("%v", err)
 	}
-	p.log("export: uploaded %s", location)
-	out.Uploaded = true
+	out.Uploaded, out.Refreshed = status == publish.PutUploaded, status != publish.PutUploaded
+	p.log("export: %s %s", status, location)
 	data, _ := json.Marshal(uploaded{Date: p.clock().UTC().Format(time.RFC3339), Rows: out.Rows})
 	if err := writeFileAtomic(filepath.Join(p.dir(), whoisUploadFile), data); err != nil {
 		return skip("%v", err)
