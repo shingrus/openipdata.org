@@ -13,6 +13,7 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 | `infra/` | VM provisioning script, systemd unit, env template |
 | `hatchet/` | `openipdata-worker`: the Hatchet worker; one folder per workflow |
 | `mmdbbuilder/` | `mmdbbuilder`: standalone MMDB build tool |
+| `tools/llm-codes-test/` | scratch LLM comparison for rDNS city codes, with results ([README](tools/llm-codes-test/README.md)) |
 
 Shared code in `hatchet/`: `schema/` (Postgres tables), `publish/` (R2 and GitHub
 releases), `rirstats/` (RIR delegated-extended stats parsing, address range to
