@@ -1,13 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 470" width="720" height="470" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12">
 <style>.ink{fill:#52514e}.mut{fill:#898781}.grid{stroke:#e1e0d9}.lead{fill:#2a78d6}.oth{fill:#888780}.ring{stroke:#ffffff}@media (prefers-color-scheme: dark){.ink{fill:#c3c2b7}.grid{stroke:#3a3a37}.lead{fill:#3987e5}.ring{stroke:#0d1117}}</style>
 <text x="70" y="22" class="ink" font-size="14">LLM city-code test: coverage vs. held-out quality (50 domains, Nov 2026)</text>
-<line x1="115.0" y1="40" x2="115.0" y2="400" class="grid"/><text x="115.0" y="418" text-anchor="middle" class="ink">20%</text>
-<line x1="205.0" y1="40" x2="205.0" y2="400" class="grid"/><text x="205.0" y="418" text-anchor="middle" class="ink">30%</text>
-<line x1="295.0" y1="40" x2="295.0" y2="400" class="grid"/><text x="295.0" y="418" text-anchor="middle" class="ink">40%</text>
-<line x1="385.0" y1="40" x2="385.0" y2="400" class="grid"/><text x="385.0" y="418" text-anchor="middle" class="ink">50%</text>
-<line x1="475.0" y1="40" x2="475.0" y2="400" class="grid"/><text x="475.0" y="418" text-anchor="middle" class="ink">60%</text>
-<line x1="565.0" y1="40" x2="565.0" y2="400" class="grid"/><text x="565.0" y="418" text-anchor="middle" class="ink">70%</text>
-<line x1="655.0" y1="40" x2="655.0" y2="400" class="grid"/><text x="655.0" y="418" text-anchor="middle" class="ink">80%</text>
+<line x1="70.0" y1="40" x2="70.0" y2="400" class="grid"/><text x="70.0" y="418" text-anchor="middle" class="ink">0%</text>
+<line x1="144.1" y1="40" x2="144.1" y2="400" class="grid"/><text x="144.1" y="418" text-anchor="middle" class="ink">10%</text>
+<line x1="218.2" y1="40" x2="218.2" y2="400" class="grid"/><text x="218.2" y="418" text-anchor="middle" class="ink">20%</text>
+<line x1="292.4" y1="40" x2="292.4" y2="400" class="grid"/><text x="292.4" y="418" text-anchor="middle" class="ink">30%</text>
+<line x1="366.5" y1="40" x2="366.5" y2="400" class="grid"/><text x="366.5" y="418" text-anchor="middle" class="ink">40%</text>
+<line x1="440.6" y1="40" x2="440.6" y2="400" class="grid"/><text x="440.6" y="418" text-anchor="middle" class="ink">50%</text>
+<line x1="514.7" y1="40" x2="514.7" y2="400" class="grid"/><text x="514.7" y="418" text-anchor="middle" class="ink">60%</text>
+<line x1="588.8" y1="40" x2="588.8" y2="400" class="grid"/><text x="588.8" y="418" text-anchor="middle" class="ink">70%</text>
+<line x1="662.9" y1="40" x2="662.9" y2="400" class="grid"/><text x="662.9" y="418" text-anchor="middle" class="ink">80%</text>
 <line x1="70" y1="400.0" x2="700" y2="400.0" class="grid"/><text x="62" y="404.0" text-anchor="end" class="ink">45%</text>
 <line x1="70" y1="340.0" x2="700" y2="340.0" class="grid"/><text x="62" y="344.0" text-anchor="end" class="ink">50%</text>
 <line x1="70" y1="280.0" x2="700" y2="280.0" class="grid"/><text x="62" y="284.0" text-anchor="end" class="ink">55%</text>
@@ -15,27 +17,31 @@
 <line x1="70" y1="160.0" x2="700" y2="160.0" class="grid"/><text x="62" y="164.0" text-anchor="end" class="ink">65%</text>
 <line x1="70" y1="100.0" x2="700" y2="100.0" class="grid"/><text x="62" y="104.0" text-anchor="end" class="ink">70%</text>
 <line x1="70" y1="40.0" x2="700" y2="40.0" class="grid"/><text x="62" y="44.0" text-anchor="end" class="ink">75%</text>
-<line x1="637.0" y1="40" x2="637.0" y2="400" stroke="#898781" stroke-width="1.5" stroke-dasharray="5 4"/><text x="631.0" y="54" text-anchor="end" class="mut">ceiling 78%: 39 of 50 domains have a city</text>
-<circle cx="583.0" cy="163.6" r="7" class="lead ring" stroke-width="2"/>
-<text x="594.0" y="167.6" text-anchor="start" class="ink">gpt-6.1-terra</text>
-<circle cx="439.0" cy="138.4" r="7" class="lead ring" stroke-width="2"/>
-<text x="450.0" y="142.4" text-anchor="start" class="ink">gpt-6-luna</text>
-<circle cx="313.0" cy="182.8" r="7" class="oth ring" stroke-width="2"/>
-<text x="324.0" y="186.8" text-anchor="start" class="ink">mistral-small</text>
-<circle cx="313.0" cy="275.2" r="7" class="oth ring" stroke-width="2"/>
-<text x="324.0" y="279.2" text-anchor="start" class="ink">haiku-5.5</text>
-<circle cx="259.0" cy="239.2" r="7" class="oth ring" stroke-width="2"/>
-<text x="270.0" y="243.2" text-anchor="start" class="ink">minimax-m3.1</text>
-<circle cx="241.0" cy="313.6" r="7" class="oth ring" stroke-width="2"/>
-<text x="252.0" y="317.6" text-anchor="start" class="ink">glm-5.3</text>
-<circle cx="187.0" cy="174.4" r="7" class="oth ring" stroke-width="2"/>
-<text x="187.0" y="162.4" text-anchor="middle" class="ink">sonnet-5.5</text>
-<circle cx="187.0" cy="205.6" r="7" class="oth ring" stroke-width="2"/>
-<text x="198.0" y="209.6" text-anchor="start" class="ink">deepseek-v4</text>
-<circle cx="187.0" cy="220.0" r="7" class="oth ring" stroke-width="2"/>
-<text x="187.0" y="241.0" text-anchor="middle" class="ink">gpt-oss-120b</text>
-<circle cx="151.0" cy="193.6" r="7" class="oth ring" stroke-width="2"/>
-<text x="140.0" y="197.6" text-anchor="end" class="ink">gemini-flash-lite</text>
+<line x1="648.1" y1="40" x2="648.1" y2="400" stroke="#898781" stroke-width="1.5" stroke-dasharray="5 4"/><text x="642.1" y="54" text-anchor="end" class="mut">ceiling 78%: 39 of 50 domains have a city</text>
+<circle cx="603.6" cy="163.6" r="7" class="lead ring" stroke-width="2"/>
+<text x="614.6" y="167.6" text-anchor="start" class="ink">gpt-6.1-terra</text>
+<circle cx="485.1" cy="138.4" r="7" class="lead ring" stroke-width="2"/>
+<text x="496.1" y="142.4" text-anchor="start" class="ink">gpt-6-luna</text>
+<circle cx="381.3" cy="182.8" r="7" class="oth ring" stroke-width="2"/>
+<text x="392.3" y="186.8" text-anchor="start" class="ink">mistral-small</text>
+<circle cx="381.3" cy="275.2" r="7" class="oth ring" stroke-width="2"/>
+<text x="392.3" y="279.2" text-anchor="start" class="ink">haiku-5.5</text>
+<circle cx="366.5" cy="234.4" r="7" class="oth ring" stroke-width="2"/>
+<text x="377.5" y="238.4" text-anchor="start" class="ink">deepseek-v4-pro</text>
+<circle cx="336.8" cy="239.2" r="7" class="oth ring" stroke-width="2"/>
+<text x="336.8" y="260.2" text-anchor="middle" class="ink">minimax-m3.1</text>
+<circle cx="322.0" cy="313.6" r="7" class="oth ring" stroke-width="2"/>
+<text x="333.0" y="317.6" text-anchor="start" class="ink">glm-5.3</text>
+<circle cx="277.5" cy="174.4" r="7" class="oth ring" stroke-width="2"/>
+<text x="277.5" y="162.4" text-anchor="middle" class="ink">sonnet-5.5</text>
+<circle cx="277.5" cy="205.6" r="7" class="oth ring" stroke-width="2"/>
+<text x="288.5" y="209.6" text-anchor="start" class="ink">deepseek-v4-flash</text>
+<circle cx="277.5" cy="220.0" r="7" class="oth ring" stroke-width="2"/>
+<text x="277.5" y="241.0" text-anchor="middle" class="ink">gpt-oss-120b</text>
+<circle cx="247.9" cy="193.6" r="7" class="oth ring" stroke-width="2"/>
+<text x="241.9" y="183.6" text-anchor="end" class="ink">gemini-flash-lite</text>
+<circle cx="218.2" cy="200.8" r="7" class="oth ring" stroke-width="2"/>
+<text x="207.2" y="204.8" text-anchor="end" class="ink">gemini-3.8-flash</text>
 <text x="385.0" y="438" text-anchor="middle" class="ink">Usable answers, % of 50 domains</text>
 <text transform="translate(18 220.0) rotate(-90)" text-anchor="middle" class="ink">Held-out names decoded %</text>
 <text x="70" y="462" class="mut" font-size="11">Not shown: qwen3.8-flash (3 passes, 34 request errors), qwen3.7-flash and nemotron-3-ultra:free (1 pass each).</text>

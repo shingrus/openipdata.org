@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 432" width="720" height="432" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="12">
+<style>.ink{fill:#52514e}.mut{fill:#898781}.grid{stroke:#e1e0d9}.lead{fill:#2a78d6}.oth{fill:#888780}.ring{stroke:#ffffff}@media (prefers-color-scheme: dark){.ink{fill:#c3c2b7}.grid{stroke:#3a3a37}.lead{fill:#3987e5}.ring{stroke:#0d1117}}</style>
+<text x="10" y="22" class="ink" font-size="14">Same city as GPT-6.1 Terra, on the tokens both models decoded</text>
+<line x1="140.0" y1="44" x2="140.0" y2="380" class="grid"/><text x="140.0" y="398" text-anchor="middle" class="ink">80%</text>
+<line x1="255.0" y1="44" x2="255.0" y2="380" class="grid"/><text x="255.0" y="398" text-anchor="middle" class="ink">85%</text>
+<line x1="370.0" y1="44" x2="370.0" y2="380" class="grid"/><text x="370.0" y="398" text-anchor="middle" class="ink">90%</text>
+<line x1="485.0" y1="44" x2="485.0" y2="380" class="grid"/><text x="485.0" y="398" text-anchor="middle" class="ink">95%</text>
+<line x1="600.0" y1="44" x2="600.0" y2="380" class="grid"/><text x="600.0" y="398" text-anchor="middle" class="ink">100%</text>
+<text x="132" y="69" text-anchor="end" class="ink">sonnet-5.5</text>
+<rect x="140" y="55" width="437.0" height="20" rx="3" class="oth"/>
+<text x="583.0" y="69" class="ink">99.0%  (603 tokens)</text>
+<text x="132" y="99" text-anchor="end" class="ink">deepseek-v4-pro</text>
+<rect x="140" y="85" width="425.5" height="20" rx="3" class="oth"/>
+<text x="571.5" y="99" class="ink">98.5%  (468 tokens)</text>
+<text x="132" y="129" text-anchor="end" class="ink">haiku-5.5</text>
+<rect x="140" y="115" width="423.2" height="20" rx="3" class="oth"/>
+<text x="569.2" y="129" class="ink">98.4%  (579 tokens)</text>
+<text x="132" y="159" text-anchor="end" class="ink">gpt-6-luna</text>
+<rect x="140" y="145" width="420.9" height="20" rx="3" class="lead"/>
+<text x="566.9" y="159" class="ink">98.3%  (578 tokens)</text>
+<text x="132" y="189" text-anchor="end" class="ink">gemini-3.8-flash</text>
+<rect x="140" y="175" width="372.6" height="20" rx="3" class="oth"/>
+<text x="518.6" y="189" class="ink">96.2%  (860 tokens)</text>
+<text x="132" y="219" text-anchor="end" class="ink">gemini-flash-lite</text>
+<rect x="140" y="205" width="294.4" height="20" rx="3" class="oth"/>
+<text x="440.4" y="219" class="ink">92.8%  (566 tokens)</text>
+<text x="132" y="249" text-anchor="end" class="ink">gpt-oss-120b</text>
+<rect x="140" y="235" width="262.2" height="20" rx="3" class="oth"/>
+<text x="408.2" y="249" class="ink">91.4%  (523 tokens)</text>
+<text x="132" y="279" text-anchor="end" class="ink">glm-5.3</text>
+<rect x="140" y="265" width="243.8" height="20" rx="3" class="oth"/>
+<text x="389.8" y="279" class="ink">90.6%  (597 tokens)</text>
+<text x="132" y="309" text-anchor="end" class="ink">mistral-small</text>
+<rect x="140" y="295" width="188.6" height="20" rx="3" class="oth"/>
+<text x="334.6" y="309" class="ink">88.2%  (532 tokens)</text>
+<text x="132" y="339" text-anchor="end" class="ink">minimax-m3.1</text>
+<rect x="140" y="325" width="85.1" height="20" rx="3" class="oth"/>
+<text x="231.1" y="339" class="ink">83.7%  (553 tokens)</text>
+<text x="132" y="369" text-anchor="end" class="ink">deepseek-v4-flash</text>
+<rect x="140" y="355" width="59.8" height="20" rx="3" class="oth"/>
+<text x="205.8" y="369" class="ink">82.6%  (367 tokens)</text>
+<text x="10" y="424" class="mut" font-size="11">Axis starts at 80%. Nemotron (21 tokens) and Qwen 3.8 (49) left out: too few to compare.</text>
+</svg>
