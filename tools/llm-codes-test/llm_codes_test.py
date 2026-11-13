@@ -121,7 +121,9 @@ def load_rules(path):
             except json.JSONDecodeError:
                 continue
             for token, p in places.items():
-                if isinstance(p, dict):
+                if isinstance(p, list) and len(p) >= 2:  # stored as ["JP", "Gifu"]
+                    rules[parts[0]][token] = (p[0], p[1])
+                elif isinstance(p, dict):
                     rules[parts[0]][token] = (p.get("country", ""), p.get("city", ""))
     return rules
 
