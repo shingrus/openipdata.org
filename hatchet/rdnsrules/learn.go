@@ -30,6 +30,50 @@ func init() {
 		border bdr csr dist ags cpe nas nat fw lb vpn mpls ospf bgp`) {
 		roleTokens[t] = true
 	}
+	// Common network and product words: GeoNames knows tiny places called `ip`, `pool`,
+	// `sub`, `isp`, ...
+	for _, t := range strings.Fields(`ip ips pool sub isp net nets static dynamic dyn dsl adsl vdsl ppp pppoe
+		cable mobile mob res resi biz bus business inf infra cust customer client host hosted user users
+		home dial ftth fttx fiber fibre broadband bb lte gprs nat cgn cgnat vpn wifi wlan red rev reverse
+		dns mail www gw gateway srv server cloud cdn vps dedi dedicated colo dc`) {
+		roleTokens[t] = true
+	}
+	// US state and Canadian province codes (`al`, `il`, `ma`, ... are tiny places elsewhere).
+	for _, t := range strings.Fields(`al ak az ar ca co ct de dc fl ga hi id il in ia ks ky la me md ma mi mn ms mo
+		mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy
+		ab bc mb nb nl ns nt nu on pe qc sk yt`) {
+		roleTokens[t] = true
+	}
+}
+
+// domesticShare and domesticMinAgree: when at least this share of a domain's routers with a
+// known country are in one country, the operator is domestic and a rule must mostly agree.
+const (
+	domesticShare    = 0.8
+	domesticMinAgree = 0.7
+	// MinTokenValues is how many distinct decoded token values an extraction needs: a token that
+	// is the same in every name is a router role, not a place.
+	MinTokenValues = 2
+)
+
+// isDomestic reports whether at least domesticShare of the names with a known country are in
+// one country.
+func isDomestic(names []Name) bool {
+	counts := map[string]int{}
+	known := 0
+	for _, n := range names {
+		if n.Country == "" {
+			continue
+		}
+		known++
+		counts[strings.ToUpper(n.Country)]++
+	}
+	for _, c := range counts {
+		if known > 0 && float64(c) >= domesticShare*float64(known) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanLabels reports whether every label left of the registered domain consists
@@ -177,6 +221,9 @@ func extractionPattern(domain string, e extraction) string {
 }
 
 func resolveToken(token string, dict Dictionaries, dictionary string) (Place, bool) {
+	if roleTokens[token] {
+		return Place{}, false // stop list: never decoded from any dictionary
+	}
 	p, ok := dict[dictionary][token]
 	return p, ok && p.Country != "" && p.City != ""
 }
@@ -230,6 +277,7 @@ func learnDomainRanks(domain string, names []Name, dict Dictionaries, overrides 
 			}
 		}
 	}
+	domestic := isDomestic(ordered)
 	var out []Candidate
 	taken := map[string]bool{} // names (lower case) some better rank already decodes
 	for rank := 1; rank <= MaxRank; rank++ {
@@ -245,7 +293,7 @@ func learnDomainRanks(domain string, names []Name, dict Dictionaries, overrides 
 		if len(active) < MinSupport {
 			break
 		}
-		best, decodedPTRs, found := bestExtraction(domain, ordered, active, maxLabels, maxTokens, dict, overrides)
+		best, decodedPTRs, found := bestExtraction(domain, ordered, active, maxLabels, maxTokens, domestic, dict, overrides)
 		if !found {
 			break
 		}
@@ -264,7 +312,7 @@ func ptrKey(ptr string) string { return strings.ToLower(strings.TrimSuffix(ptr, 
 // bestExtraction tries every (label, token, dictionary) combination on the active names
 // and returns the best supported one with the set of names it decodes. all is every name
 // of the domain, which the generated regex must agree with.
-func bestExtraction(domain string, all, active []Name, maxLabels, maxTokens int, dict Dictionaries, overrides map[string]Code) (Candidate, map[string]bool, bool) {
+func bestExtraction(domain string, all, active []Name, maxLabels, maxTokens int, domestic bool, dict Dictionaries, overrides map[string]Code) (Candidate, map[string]bool, bool) {
 	var best Candidate
 	var bestDecoded map[string]bool
 	found := false
@@ -302,13 +350,16 @@ func bestExtraction(domain string, all, active []Name, maxLabels, maxTokens int,
 						}
 					}
 				}
-				if decoded < MinSupport || len(decodedPTRs) < MinSupport {
+				if decoded < MinSupport || len(decodedPTRs) < MinSupport || len(places) < MinTokenValues {
 					continue
 				}
 				var agree *float64
 				if knownCountries > 0 {
 					x := float64(agrees) / float64(knownCountries)
 					agree = &x
+				}
+				if domestic && (agree == nil || *agree < domesticMinAgree) {
+					continue
 				}
 				c := Candidate{Domain: domain, Pattern: extractionPattern(domain, e), Dictionary: dn, Scope: Scope{LabelFromRight: label, TokenFromLeft: token, Dictionary: dn}, Names: len(active), Decoded: decoded, Distinct: len(distinct), CountryAgree: agree, Places: places}
 				if !patternAgrees(c.Pattern, all, domain, e) {
@@ -324,11 +375,6 @@ func bestExtraction(domain string, all, active []Name, maxLabels, maxTokens int,
 }
 
 func better(a, b Candidate) bool {
-	// A token that is the same in every decoded name is usually a router role,
-	// not a place: combinations with two or more token values come first.
-	if am, bm := len(a.Places) >= 2, len(b.Places) >= 2; am != bm {
-		return am
-	}
 	if a.Decoded != b.Decoded {
 		return a.Decoded > b.Decoded
 	}

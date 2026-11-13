@@ -439,11 +439,17 @@ Learns extraction rules per registered router domain from the last 180 days of t
 of every traced IP (the target, the candidates and every public answering hop, `network_traces.hop_ips`;
 each IP once) and the dictionaries below. Up to 3 extractions per domain: rank 1 is the best on all
 names, rank 2 the best on the names rank 1 does not decode, rank 3 likewise on what is left; each must
-meet the floor of 3 distinct IPs with distinct decodable names on those names. Country agreement is
-diagnostic, not a gate. OurAirports, UN/LOCODE and GeoNames dictionaries have their own monthly cache
+meet the floor of 3 distinct IPs with distinct decodable names on those names, with at least 2 distinct
+decoded token values (no single-valued rules). A stop list (router roles, network/product words such as
+`ip`, `pool`, `sub`, `isp`, and all US state and Canadian province codes) is never decoded from any
+dictionary; GeoNames only gives tokens of 4+ letters and places of at least 15,000 people. For a domestic
+operator (at least 80% of its routers with a known country in one country) a rule also needs a country
+agreement of at least 0.7; global carriers are ungated. OurAirports, UN/LOCODE and GeoNames dictionaries have their own monthly cache
 under `rdnsrules/dictionaries/`. Rules and their resolved token-to-city mappings are published
 atomically in `public.rdns_city_rules` (one row per `(domain, rank)`); a failed refresh keeps the old
-rules, and a rank the learner no longer finds keeps its last row. Scoped manual/LLM overrides of any
+rules. A stored learned row that a run no longer reproduces is kept while its domain has no current names
+(`lost_support`); when the domain has current names it is retired (`retired`): marked `rejected`, its
+version remembered so it cannot return unchanged (manual/LLM rows are never retired). Scoped manual/LLM overrides of any
 rank of a domain apply to whichever rank now has their extraction; a version withdrawn at one rank
 cannot come back at another.
 

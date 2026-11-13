@@ -12,6 +12,16 @@ Greedy candidate v1 implemented, 2026-11-13. The "Greedier v1.1" section below (
 
 Kept as they are: `-same-country` on both rDNS layers, the role-token stop list, the 10x GeoNames population rule, the 3-router floor.
 
+## Fixes after the first run (2026-11-13; these override the sections below)
+
+The first production run (2,631 domains, 801 rules) showed mostly junk: GeoNames decoded common words and US state codes as tiny places (`ip` → Ip RO, `sub` → Surabaya, `ma` → Wiang Pa Pao), single-valued rules were all wrong, and domestic US operators had country agreement 0. Global carriers' IATA rules (Cogent, he.net, cdn77, twelve99) and comcast city positions were good.
+
+1. **Stop list.** The role-token list also holds all US state and Canadian province codes (incl. `dc`) and common network/product words (`ip`, `pool`, `sub`, `isp`, `net`, `res`, `biz`, `inf`, `cable`, `mobile`, `red`, `rev`, `dns`, `cloud`, `colo`, ...). They resolve in no dictionary, so even airport codes like `sub` and `isp` are blocked. Scoped manual/LLM overrides still can map them.
+2. **GeoNames limits.** Only tokens of 4+ letters and places of at least 15,000 people, applied after the 10x namesake rule, to the dictionary and its per-country aliases.
+3. **No single-valued rules.** An extraction needs at least 2 distinct decoded token values at every rank; the old "single-valued wins if nothing else" path is gone (a one-city operator gets no rule).
+4. **Domestic gate.** If at least 80% of a domain's names with a known country are in one country, a rule for the domain needs `country_agree` >= 0.7 (none known = no rule). Domains with no country at 80% (global carriers) are ungated.
+5. **Retiring superseded learned rows.** A stored rule the learner no longer finds is kept only when the domain has no current names (`lost_support`). For a domain with current names, a stored `origin = learned` row at a rank the run did not write is marked `rejected` and its version added to `rejected_versions` (`retired` in the output), so the old junk leaves on the next run and cannot return unchanged. A row whose content moved to another rank is a stale duplicate and is deleted. Manual/LLM rows are never retired. `locate` is unaffected: candidate rows are volatile and its shrink guard counts only sticky rows.
+
 ## Goal
 
 Learn one rule per operator domain that turns router names into cities, from the names we already have and public place-code lists. No LLM, no paid API in v1. An LLM can later propose operator-specific mappings.

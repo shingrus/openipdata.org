@@ -64,6 +64,7 @@ type Output struct {
 	Unsupported     int     `json:"unsupported"`   // observed domains that did not reach the support floor
 	LostSupport     int     `json:"lost_support"`  // stored rules whose domain has no current names (kept as they are)
 	NamesSkipped    int     `json:"names_skipped"` // names with a label outside [a-z0-9-], never learned from
+	Retired         int     `json:"retired"`       // learned rows of domains with current names that this run no longer reproduces (now rejected)
 	Rejected        int     `json:"rejected"`
 	DurationSeconds float64 `json:"duration_seconds"`
 }
@@ -224,11 +225,15 @@ func (p *Pipeline) Learn(ctx context.Context) (Output, error) {
 		}
 	}
 	out.Candidates = len(candidates)
-	if err = storeCandidates(ctx, conn, candidates, &out); err != nil {
+	observed := make(map[string]bool, len(byDomain))
+	for d := range byDomain {
+		observed[d] = true
+	}
+	if err = storeRules(ctx, conn, candidates, observed, &out); err != nil {
 		return out, err
 	}
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
-	p.log("learn-rdns-rules: %d domains, %d rules (%d of rank 2 or 3), %d updated, %d unchanged, %d unsupported, %d lost support, %d names skipped", out.Domains, out.Candidates, out.ExtraRanks, out.Updated, out.Unchanged, out.Unsupported, out.LostSupport, out.NamesSkipped)
+	p.log("learn-rdns-rules: %d domains, %d rules (%d of rank 2 or 3), %d updated, %d unchanged, %d unsupported, %d lost support, %d retired, %d names skipped", out.Domains, out.Candidates, out.ExtraRanks, out.Updated, out.Unchanged, out.Unsupported, out.LostSupport, out.Retired, out.NamesSkipped)
 	return out, nil
 }
 
@@ -421,14 +426,19 @@ func readDomainRules(ctx context.Context, tx pgx.Tx, domain string) ([]storedRul
 	return out, nil
 }
 
-// storeCandidates writes the learned rows, one per (domain, rank), in one transaction.
-// Rows of ranks the learner did not produce this time stay as they are (loss of support
-// is not proof that a rule is wrong).
 func storeCandidates(ctx context.Context, conn *pgx.Conn, candidates []Candidate, out *Output) error {
-	if len(candidates) == 0 {
-		return nil
-	}
-	var updatedCount, unchangedCount int
+	return storeRules(ctx, conn, candidates, nil, out)
+}
+
+// storeRules writes the learned rows, one per (domain, rank), in one transaction.
+// observed is the set of domains that have current names. A stored row of a domain that is
+// not observed stays as it is (absence of names is not proof that a rule is wrong). For an
+// observed domain, a stored `origin = learned` row at a rank this run did not write is
+// retired: marked rejected, its version added to rejected_versions so it cannot come back
+// unchanged (a row whose content moved to another rank is a stale duplicate and is deleted).
+// Manual and LLM rows are never retired.
+func storeRules(ctx context.Context, conn *pgx.Conn, candidates []Candidate, observed map[string]bool, out *Output) error {
+	var updatedCount, unchangedCount, retiredCount int
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return safeDBError("begin city rules update", err)
@@ -436,6 +446,11 @@ func storeCandidates(ctx context.Context, conn *pgx.Conn, candidates []Candidate
 	defer tx.Rollback(ctx)
 	byDomain := map[string][]Candidate{}
 	var domains []string
+	var retireOnly []string
+	for d := range observed {
+		retireOnly = append(retireOnly, d)
+	}
+	slices.Sort(retireOnly)
 	for _, c := range candidates {
 		if c.Rank == 0 {
 			c.Rank = 1
@@ -444,6 +459,11 @@ func storeCandidates(ctx context.Context, conn *pgx.Conn, candidates []Candidate
 			domains = append(domains, c.Domain)
 		}
 		byDomain[c.Domain] = append(byDomain[c.Domain], c)
+	}
+	for _, d := range retireOnly {
+		if _, ok := byDomain[d]; !ok {
+			domains = append(domains, d)
+		}
 	}
 	for _, domain := range domains {
 		olds, err := readDomainRules(ctx, tx, domain)
@@ -465,6 +485,8 @@ func storeCandidates(ctx context.Context, conn *pgx.Conn, candidates []Candidate
 				rejectedAll = appendUnique(rejectedAll, v)
 			}
 		}
+		written := map[int]bool{}       // ranks written (or deliberately skipped) by this run
+		reproduced := map[string]bool{} // versions this run reproduces at any rank
 		for _, c := range byDomain[domain] {
 			var old storedRule
 			var haveOld bool
@@ -483,6 +505,8 @@ func storeCandidates(ctx context.Context, conn *pgx.Conn, candidates []Candidate
 				unchangedCount++
 				continue
 			}
+			written[c.Rank] = true
+			reproduced[c.Version] = true
 			// The row that already holds this content (the extraction may have moved to another
 			// rank) keeps its status and measurements; else the row of the same rank is replaced.
 			for _, o := range olds {
@@ -537,12 +561,32 @@ func storeCandidates(ctx context.Context, conn *pgx.Conn, candidates []Candidate
 				return safeDBError("write city rule", err)
 			}
 		}
+		if !observed[domain] {
+			continue
+		}
+		for _, o := range olds {
+			if o.Origin != "learned" || o.Status == "rejected" || written[o.Rank] {
+				continue
+			}
+			if reproduced[o.Version] {
+				// Same content now lives at another rank: drop the stale duplicate.
+				if _, err = tx.Exec(ctx, `DELETE FROM public.rdns_city_rules WHERE domain=$1 AND rank=$2`, domain, o.Rank); err != nil {
+					return safeDBError("delete moved city rule", err)
+				}
+				continue
+			}
+			if _, err = tx.Exec(ctx, `UPDATE public.rdns_city_rules SET status='rejected',rejected_versions=$3 WHERE domain=$1 AND rank=$2`, domain, o.Rank, appendUnique(append([]string{}, o.Rejected...), o.Version)); err != nil {
+				return safeDBError("retire city rule", err)
+			}
+			retiredCount++
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return safeDBError("commit city rules update", err)
 	}
 	out.Updated += updatedCount
 	out.Unchanged += unchangedCount
+	out.Retired += retiredCount
 	return nil
 }
 

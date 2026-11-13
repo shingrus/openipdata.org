@@ -85,8 +85,9 @@ func TestExtractionPatternTokenOneAdjacentLetterDigitRuns(t *testing.T) {
 }
 
 func TestManualCodeOverridesOnlyMatchingScope(t *testing.T) {
-	names := []Name{{IP: "1", PTR: "msk-m9-p1.ip.example.net"}, {IP: "2", PTR: "msk-m8-p2.ip.example.net"}, {IP: "3", PTR: "msk-m7-p3.ip.example.net"}}
-	codes := map[string]Code{"msk": {Country: "RU", City: "Moscow", Origin: "manual", Scope: Scope{LabelFromRight: 2, TokenFromLeft: 1, Dictionary: "iata"}}}
+	names := []Name{{IP: "1", PTR: "msk-m9-p1.ip.example.net"}, {IP: "2", PTR: "msk-m8-p2.ip.example.net"}, {IP: "3", PTR: "kzn-m7-p3.ip.example.net"}}
+	sc := Scope{LabelFromRight: 2, TokenFromLeft: 1, Dictionary: "iata"}
+	codes := map[string]Code{"msk": {Country: "RU", City: "Moscow", Origin: "manual", Scope: sc}, "kzn": {Country: "RU", City: "Kazan", Origin: "manual", Scope: sc}}
 	c, ok := learnDomainCodes("example.net", names, Dictionaries{}, codes)
 	if !ok {
 		t.Fatal("manual override should support the observed token")
@@ -94,7 +95,8 @@ func TestManualCodeOverridesOnlyMatchingScope(t *testing.T) {
 	if c.Dictionary != "iata" || c.Places["msk"] != (Place{Country: "RU", City: "Moscow"}) {
 		t.Fatalf("override not applied: %+v", c)
 	}
-	wrong := map[string]Code{"msk": {Country: "RU", City: "Moscow", Origin: "manual", Scope: Scope{LabelFromRight: 1, TokenFromLeft: 1, Dictionary: "iata"}}}
+	wsc := Scope{LabelFromRight: 1, TokenFromLeft: 1, Dictionary: "iata"}
+	wrong := map[string]Code{"msk": {Country: "RU", City: "Moscow", Origin: "manual", Scope: wsc}, "kzn": {Country: "RU", City: "Kazan", Origin: "manual", Scope: wsc}}
 	if _, ok := learnDomainCodes("example.net", names, Dictionaries{}, wrong); ok {
 		t.Fatal("override at a different extraction scope must not be reused")
 	}
@@ -231,16 +233,149 @@ func TestRoleTokenDoesNotBeatLocationToken(t *testing.T) {
 	}
 }
 
-func TestOneCityOperatorStillLearned(t *testing.T) {
+func TestSingleValuedExtractionGetsNoRule(t *testing.T) {
+	// A one-token column is a role, even a one-city operator gets no rule.
 	dict := Dictionaries{"iata": {"fra": {Country: "DE", City: "Frankfurt"}}}
 	names := []Name{
 		{IP: "192.0.2.1", PTR: "r1.fra1.example.net"},
 		{IP: "192.0.2.2", PTR: "r2.fra1.example.net"},
 		{IP: "192.0.2.3", PTR: "r3.fra2.example.net"},
 	}
-	c, ok := learnDomain("example.net", names, dict)
-	if !ok || len(c.Places) != 1 || c.Places["fra"].City != "Frankfurt" {
-		t.Fatalf("one-city rule lost: %+v ok=%v", c, ok)
+	if c, ok := learnDomain("example.net", names, dict); ok {
+		t.Fatalf("single-valued rule learned: %+v", c)
+	}
+}
+
+func TestMyvzwConstantSubGetsNoRule(t *testing.T) {
+	dict := Dictionaries{"geonames": {"sub": {Country: "ID", City: "Surabaya"}}}
+	var names []Name
+	for i := 1; i <= 6; i++ {
+		names = append(names, Name{IP: fmt.Sprintf("192.0.2.%d", i), PTR: fmt.Sprintf("sub%d.sub.myvzw.com", i), Country: "US"})
+	}
+	if c, ok := learnDomain("myvzw.com", names, dict); ok {
+		t.Fatalf("rule for a constant word: %+v", c)
+	}
+	delete(roleTokens, "sub") // not even without the stop list
+	defer func() { roleTokens["sub"] = true }()
+	if c, ok := learnDomain("myvzw.com", names, dict); ok {
+		t.Fatalf("single-valued rule without stop list: %+v", c)
+	}
+}
+
+func TestStopListCoversWordsAndRegions(t *testing.T) {
+	for _, w := range strings.Fields("ip ips pool sub isp net static dsl ppp cable mobile res biz bus inf cust host home ftth lte red rev dns gw cloud cdn dedi colo dc al il ma mi la dc ny tx ca on qc bc ab") {
+		if !roleTokens[w] {
+			t.Errorf("%q is not in the stop list", w)
+		}
+	}
+	for _, w := range []string{"boston", "denver", "fra", "lhr", "orem"} {
+		if roleTokens[w] {
+			t.Errorf("%q must not be a stop word", w)
+		}
+	}
+}
+
+func TestComcastStateCodesAreSkippedCityPositionLearned(t *testing.T) {
+	dict := Dictionaries{"geonames": {
+		"boston": {Country: "US", City: "Boston"}, "denver": {Country: "US", City: "Denver"},
+		"orem": {Country: "US", City: "Orem"}, "ogden": {Country: "US", City: "Ogden"},
+		// what the real dictionary used to say about the state codes
+		"ma": {Country: "TH", City: "Wiang Pa Pao"}, "co": {Country: "CO", City: "Co"}, "ut": {Country: "TH", City: "Ut"},
+		"il": {Country: "KE", City: "Il"}, "la": {Country: "XX", City: "La"}, "mi": {Country: "CN", City: "Qingpingjie"},
+	}}
+	pairs := [][2]string{{"boston", "ma"}, {"denver", "co"}, {"orem", "ut"}, {"ogden", "ut"}, {"boston", "ma"}, {"denver", "co"}}
+	var names []Name
+	for i, p := range pairs {
+		names = append(names, Name{IP: fmt.Sprintf("192.0.2.%d", i+1), PTR: fmt.Sprintf("ae%d-ar01.%s.%s.comcast.net", i, p[0], p[1]), Country: "US"})
+	}
+	c, ok := learnDomain("comcast.net", names, dict)
+	if !ok || c.Dictionary != "geonames" || c.Scope.LabelFromRight != 2 || len(c.Places) != 4 || c.Places["boston"].City != "Boston" {
+		t.Fatalf("city position not learned: %+v ok=%v", c, ok)
+	}
+	if _, bad := c.Places["ma"]; bad {
+		t.Fatal("state code decoded")
+	}
+}
+
+func TestDomesticOperatorNeedsCountryAgreement(t *testing.T) {
+	// Spectrum-like: every router is in the US but the tokens decode abroad.
+	dict := Dictionaries{"iata": {"biz": {Country: "DE", City: "Bizcity"}, "inf": {Country: "FR", City: "Infville"}, "xyz": {Country: "DE", City: "Xyzburg"}}}
+	var names []Name
+	for i, tok := range []string{"xyz", "xyz", "abc", "xyz", "xyz"} {
+		names = append(names, Name{IP: fmt.Sprintf("192.0.2.%d", i+1), PTR: fmt.Sprintf("r%d.%s.spectrum.com", i, tok), Country: "US"})
+	}
+	dict["iata"]["abc"] = Place{Country: "FR", City: "Abcville"}
+	if !isDomestic(names) {
+		t.Fatal("domestic not detected")
+	}
+	if c, ok := learnDomain("spectrum.com", names, dict); ok {
+		t.Fatalf("domestic rule with country_agree 0: %+v", c)
+	}
+	// The same decode in a domestic operator that agrees passes.
+	dict["iata"]["xyz"], dict["iata"]["abc"] = Place{Country: "US", City: "Xyz"}, Place{Country: "US", City: "Abc"}
+	if c, ok := learnDomain("spectrum.com", names, dict); !ok || c.CountryAgree == nil || *c.CountryAgree != 1 {
+		t.Fatalf("agreeing domestic rule dropped: %+v ok=%v", c, ok)
+	}
+}
+
+func TestGlobalCarrierStaysUngated(t *testing.T) {
+	dict := Dictionaries{"iata": {"fra": {Country: "DE", City: "Frankfurt"}, "lon": {Country: "GB", City: "London"}, "ams": {Country: "NL", City: "Amsterdam"}, "jfk": {Country: "US", City: "New York"}}}
+	// Router countries are the carrier's: half US, the rest scattered; agreement is 0.5.
+	ctry := []string{"US", "US", "US", "DE", "NL", "GB"}
+	toks := []string{"fra", "lon", "ams", "fra", "jfk", "lon"}
+	var names []Name
+	for i := range toks {
+		names = append(names, Name{IP: fmt.Sprintf("192.0.2.%d", i+1), PTR: fmt.Sprintf("be%d.ccr41.%s03.atlas.cogentco.com", i, toks[i]), Country: ctry[i]})
+	}
+	if isDomestic(names) {
+		t.Fatal("global carrier called domestic")
+	}
+	if c, ok := learnDomain("cogentco.com", names, dict); !ok || c.Scope.LabelFromRight != 2 {
+		t.Fatalf("Cogent-like rule lost: %+v ok=%v", c, ok)
+	}
+}
+
+func TestGeoNamesMinimumTokenAndPopulation(t *testing.T) {
+	b := citiesZip(t, [][3]string{
+		{"Ip", "RO", "20000"}, {"Pool", "GB", "30000"}, {"Sub", "ID", "50000"},
+		{"Orem", "US", "98000"}, {"Boston", "US", "650000"}, {"Smallville", "US", "14999"}, {"Exactville", "US", "15000"},
+		{"Frankfurt am Main", "DE", "750000"},
+	})
+	m, aliases, err := parseGeoNamesWithAliases(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"ip", "sub", "smallville"} {
+		if _, ok := m[w]; ok {
+			t.Errorf("%q resolves", w)
+		}
+		if _, ok := aliases[cityAlias{"US", w}]; ok {
+			t.Errorf("alias %q resolves", w)
+		}
+	}
+	// "pool" (4 letters, pop 30000) passes the size rules; the stop list is what blocks it.
+	for _, w := range []string{"pool", "orem", "boston", "exactville", "frankfurtammain"} {
+		if _, ok := m[w]; !ok {
+			t.Errorf("%q lost", w)
+		}
+	}
+}
+
+func TestGeoNamesPopulationAfterNamesakeRule(t *testing.T) {
+	// Two small namesakes stay unresolved; a dominant one below the floor is dropped, not promoted.
+	b := citiesZip(t, [][3]string{{"Lakeview", "US", "12000"}, {"Lakeview", "CA", "500"}, {"Lakeside", "US", "40000"}, {"Lakeside", "CA", "40000"}, {"Bigtown", "US", "20000"}})
+	m, _, err := parseGeoNamesWithAliases(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["lakeview"]; ok {
+		t.Error("dominant namesake below the population floor resolved")
+	}
+	if _, ok := m["lakeside"]; ok {
+		t.Error("ambiguous namesake resolved")
+	}
+	if _, ok := m["bigtown"]; !ok {
+		t.Error("plain place lost")
 	}
 }
 

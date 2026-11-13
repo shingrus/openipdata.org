@@ -532,3 +532,91 @@ func TestOldRuleTableLayoutDetectedPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Superseded learned rows are retired only for domains that have current names; manual rows
+// and rows of domains without names stay; a retired version cannot come back unchanged; a row
+// whose content moved to another rank is a stale duplicate and is deleted.
+func TestStoreRetiresSupersededLearnedRowsPostgres(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, _ := testDB(t, "rdnsrules_retire_it")
+	if err := schema.EnsureRDNSCityRules(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(domain string, rank int, token, city string) Candidate {
+		c := Candidate{Domain: domain, Rank: rank, Pattern: `^([a-z]+)\.` + strings.ReplaceAll(domain, ".", `\.`) + `$`, Dictionary: "iata",
+			Scope: Scope{LabelFromRight: 1, TokenFromLeft: rank, Dictionary: "iata"}, Names: 5, Decoded: 3, Distinct: 2,
+			Places: map[string]Place{token: {Country: "US", City: city}, token + "x": {Country: "US", City: city + "x"}}}
+		c.Version = version(c.Pattern, c.Dictionary, c.Places)
+		return c
+	}
+	junk, nonames, manual, moved1 := mk("junk.example", 1, "sub", "Surabaya"), mk("nonames.example", 1, "ip", "Ip"), mk("manual.example", 1, "ma", "Halle"), mk("move.example", 1, "aaa", "A")
+	moved2 := mk("move.example", 2, "bbb", "B")
+	out := Output{}
+	if err := storeCandidates(ctx, conn, []Candidate{junk, nonames, manual, moved1, moved2}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `UPDATE public.rdns_city_rules SET origin='manual' WHERE domain='manual.example'`); err != nil {
+		t.Fatal(err)
+	}
+	good := mk("junk.example", 1, "fra", "Frankfurt")
+	// move.example: the content of rank 2 is now the best (rank 1); rank 1's old content is gone.
+	nowRank1 := moved2
+	nowRank1.Rank = 1
+	observed := map[string]bool{"junk.example": true, "manual.example": true, "move.example": true} // nonames.example is not observed
+	out = Output{}
+	if err := storeRules(ctx, conn, []Candidate{good, nowRank1}, observed, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Retired != 0 {
+		t.Fatalf("a replaced rank is not retired: %+v", out)
+	}
+	count := func(domain string) int {
+		var n int
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.rdns_city_rules WHERE domain=$1`, domain).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count("move.example"); n != 1 {
+		t.Fatalf("stale duplicate of the moved row kept: %d rows", n)
+	}
+	// A domain with names whose learned row is no longer found: retired, and it stays out.
+	out = Output{}
+	if err := storeRules(ctx, conn, nil, observed, &out); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var rejected []string
+	check := func(domain, wantStatus string, wantRejected int) {
+		t.Helper()
+		if err := conn.QueryRow(ctx, `SELECT status,rejected_versions FROM public.rdns_city_rules WHERE domain=$1 AND rank=1`, domain).Scan(&status, &rejected); err != nil {
+			t.Fatal(err)
+		}
+		if status != wantStatus || len(rejected) != wantRejected {
+			t.Fatalf("%s: status=%s rejected=%v", domain, status, rejected)
+		}
+	}
+	if out.Retired != 2 { // junk.example (the good row) and move.example
+		t.Fatalf("retired: %+v", out)
+	}
+	check("junk.example", "rejected", 1)
+	check("move.example", "rejected", 1)
+	check("manual.example", "candidate", 0)  // manual origin, never retired
+	check("nonames.example", "candidate", 0) // no current names: kept
+	// Retiring again does nothing, and the retired version cannot return unchanged.
+	out = Output{}
+	if err := storeRules(ctx, conn, []Candidate{good}, observed, &out); err != nil {
+		t.Fatal(err)
+	}
+	check("junk.example", "rejected", 1)
+	if out.Retired != 0 || out.Updated != 0 {
+		t.Fatalf("revived or re-retired: %+v", out)
+	}
+	// An unobserved domain with a stored learned row stays whatever the run produced for others.
+	out = Output{}
+	if err := storeRules(ctx, conn, nil, map[string]bool{"other.example": true}, &out); err != nil || out.Retired != 0 {
+		t.Fatalf("%+v %v", out, err)
+	}
+	check("nonames.example", "candidate", 0)
+}

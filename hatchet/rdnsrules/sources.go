@@ -175,6 +175,13 @@ type popPlace struct {
 	pop   int64
 }
 
+// Only tokens of at least geoNamesMinToken letters and places of at least geoNamesMinPop
+// people are decoded from GeoNames: shorter or smaller ones are common words (`ip`, `pool`).
+const (
+	geoNamesMinToken = 4
+	geoNamesMinPop   = 15000
+)
+
 // popIndex collects the places of each key with their population (an identical
 // place is kept once, with its largest population).
 type popIndex[K comparable] map[K][]popPlace
@@ -192,11 +199,15 @@ func (x popIndex[K]) add(key K, p Place, pop int64) {
 	x[key] = append(list, popPlace{p, pop})
 }
 
-func (x popIndex[K]) resolve() map[K]Place {
+// resolve returns the place of each key (see dominance) and, when minPop > 0, drops the keys
+// whose resolved place has a smaller population, after the namesake rule.
+func (x popIndex[K]) resolve(minPop int64) map[K]Place {
 	out := make(map[K]Place, len(x))
 	for key, list := range x {
 		if len(list) == 1 {
-			out[key] = list[0].place
+			if list[0].pop >= minPop {
+				out[key] = list[0].place
+			}
 			continue
 		}
 		top, second := popPlace{pop: -1}, int64(-1)
@@ -207,7 +218,7 @@ func (x popIndex[K]) resolve() map[K]Place {
 				second = c.pop
 			}
 		}
-		if top.pop > 0 && top.pop >= dominance*second {
+		if top.pop > 0 && top.pop >= dominance*second && top.pop >= minPop {
 			out[key] = top.place
 		}
 	}
@@ -264,14 +275,14 @@ func parseGeoNamesWithAliases(b []byte) (map[string]Place, map[cityAlias]Place, 
 		aliases = append(aliases, strings.Split(cols[3], ",")...)
 		for _, alias := range aliases {
 			token := sourceNameToken(alias)
-			if token == "" {
+			if len(token) < geoNamesMinToken {
 				continue
 			}
 			global.add(token, place, pop)
 			byCountryPop.add(cityAlias{country: country, token: token}, place, pop)
 		}
 	}
-	m, byCountry := global.resolve(), byCountryPop.resolve()
+	m, byCountry := global.resolve(geoNamesMinPop), byCountryPop.resolve(geoNamesMinPop)
 	if valid == 0 || len(m) == 0 {
 		return nil, nil, fmt.Errorf("empty GeoNames dictionary")
 	}
