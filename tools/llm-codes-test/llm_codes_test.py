@@ -13,8 +13,21 @@ Domains WITH a learned rule are controls (we know the answer); the others are th
 Answers are saved in out/<model>.jsonl; a (model, domain) already there is not asked again,
 so a rerun costs nothing and an interrupted run continues.
 """
-import argparse, concurrent.futures as cf, json, os, random, re, sys, time, unicodedata, urllib.error, urllib.request, zipfile
+import argparse, concurrent.futures as cf, json, os, random, re, sys, threading, time, unicodedata, urllib.error, urllib.request, zipfile
 from collections import Counter, defaultdict
+
+_log_lock = threading.Lock()
+LOG_FILE = os.path.join("out", "run.log")
+
+
+def log(msg):
+    """Prints a timestamped line to stderr and appends it to out/run.log."""
+    line = time.strftime("%H:%M:%S ") + msg
+    with _log_lock:
+        print(line, file=sys.stderr, flush=True)
+        os.makedirs("out", exist_ok=True)
+        with open(LOG_FILE, "a") as f:
+            f.write(line + "\n")
 
 # Copied from hatchet/rdnsrules/learn.go roleTokens: an LLM rule may still use them (scoped
 # overrides can), they are only counted.
@@ -67,6 +80,12 @@ def registered_domain(host):
 def fold(s):
     s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def same_city(a, b):
+    """Same city when the folded names are equal or one starts the other ("frankfurt" / "frankfurt am main")."""
+    a, b = fold(a), fold(b)
+    return bool(a) and bool(b) and (a == b or a.startswith(b + " ") or b.startswith(a + " "))
 
 
 def load_names(path):
@@ -127,7 +146,7 @@ def load_geonames(path):
     return known
 
 
-def ask(model, prompt, key, timeout):
+def ask(model, prompt, key, timeout, label=""):
     body = {"model": model, "temperature": 0, "max_tokens": 4000,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"}, "usage": {"include": True}}
@@ -143,20 +162,25 @@ def ask(model, prompt, key, timeout):
         except urllib.error.HTTPError as e:
             msg = e.read()[:300].decode("utf-8", "replace")
             if e.code in (429, 500, 502, 503, 504) and attempt < 3:
-                time.sleep(5 * (attempt + 1) ** 2)
+                wait = 5 * (attempt + 1) ** 2
+                log(f"  {label}: HTTP {e.code} after {time.time() - t0:.1f}s, retry {attempt + 1}/3 in {wait}s: {msg}")
+                time.sleep(wait)
                 continue
-            return {"error": f"HTTP {e.code}: {msg}", "seconds": time.time() - t0}
+            return {"error": f"HTTP {e.code}: {msg}", "seconds": round(time.time() - t0, 1)}
         except Exception as e:  # timeouts, connection resets
             if attempt < 3:
+                log(f"  {label}: {type(e).__name__} after {time.time() - t0:.1f}s, retry {attempt + 1}/3 in 5s: {e}")
                 time.sleep(5)
                 continue
-            return {"error": type(e).__name__, "seconds": time.time() - t0}
+            return {"error": f"{type(e).__name__}: {e}", "seconds": round(time.time() - t0, 1)}
     if "error" in data:
-        return {"error": str(data["error"])[:300], "seconds": time.time() - t0}
+        return {"error": str(data["error"])[:300], "seconds": round(time.time() - t0, 1)}
     usage = data.get("usage") or {}
-    text = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    choice = (data.get("choices") or [{}])[0]
+    text = choice.get("message", {}).get("content") or ""
     return {"text": text, "seconds": round(time.time() - t0, 1), "cost": usage.get("cost") or 0,
-            "in": usage.get("prompt_tokens"), "out": usage.get("completion_tokens")}
+            "in": usage.get("prompt_tokens"), "out": usage.get("completion_tokens"),
+            "finish": choice.get("finish_reason"), "provider": data.get("provider")}
 
 
 def parse(text):
@@ -173,6 +197,7 @@ def check(answer, names, sample, truth, geonames):
     """Scores one answer. names: all names of the domain; sample: those sent."""
     r = {"json": answer is not None}
     if answer is None:
+        r["passed"], r["fail_reasons"] = False, ["answer is not JSON"]
         return r
     codes = {str(k).lower(): v for k, v in (answer.get("codes") or {}).items() if isinstance(v, dict)}
     r["location"] = bool(answer.get("location"))
@@ -184,16 +209,21 @@ def check(answer, names, sample, truth, geonames):
         r["unknown_city"] = sorted(t for t, v in codes.items() if (v.get("country"), fold(v.get("city"))) not in geonames)
     pattern = answer.get("regex") or ""
     r["regex_ok"] = False
-    if pattern and not RE2_UNSUPPORTED.search(pattern):
+    if pattern and RE2_UNSUPPORTED.search(pattern):
+        r["regex_error"] = "uses a construct RE2 has not (lookaround, backreference, possessive)"
+    elif pattern:
         try:
             rx = re.compile(pattern if pattern.startswith("(?i)") else "(?i)" + pattern)
             r["regex_ok"] = rx.groups == 1
-        except re.error:
-            pass
+            if rx.groups != 1:
+                r["regex_error"] = f"{rx.groups} capture groups"
+        except re.error as e:
+            r["regex_error"] = f"does not compile: {e}"
     if r["regex_ok"]:
         sent = set(sample)
         dec = held = held_dec = 0
-        used = Counter()
+        used, unknown = Counter(), Counter()
+        examples, unmatched = [], []
         for n in names:
             m = rx.fullmatch(n)
             tok = m.group(1).lower() if m and m.group(1) else None
@@ -201,6 +231,12 @@ def check(answer, names, sample, truth, geonames):
             dec += ok
             if ok:
                 used[tok] += 1
+                if len(examples) < 5 and used[tok] == 1:
+                    examples.append(f"{n} -> {tok} -> {codes[tok].get('country')} {codes[tok].get('city')}")
+            elif tok:
+                unknown[tok] += 1
+            elif len(unmatched) < 5:
+                unmatched.append(n)
             if n not in sent:
                 held += 1
                 held_dec += ok
@@ -208,13 +244,33 @@ def check(answer, names, sample, truth, geonames):
         r["holdout_names"] = held
         r["holdout_decoded_pct"] = round(100 * held_dec / held, 1) if held else None
         r["used_tokens"] = len(used)
-    r["passed"] = bool(r["regex_ok"] and r.get("used_tokens", 0) >= 2 and r["bad_country"] == 0
-                       and r.get("decoded_pct", 0) >= 20)
+        r["unused_codes"] = sorted(t for t in codes if t not in used)
+        r["matched_no_code"] = sum(unknown.values())
+        r["top_captured_no_code"] = [f"{t}x{c}" for t, c in unknown.most_common(10)]
+        r["no_match_names"] = sum(1 for n in names if not rx.fullmatch(n))
+        r["examples"] = examples
+        r["no_match_examples"] = unmatched
+    reasons = []
+    if not pattern:
+        reasons.append("no regex")
+    elif not r["regex_ok"]:
+        reasons.append("regex does not compile, is not RE2 or has not exactly 1 group")
+    if r["regex_ok"] and r.get("used_tokens", 0) < 2:
+        reasons.append(f"only {r.get('used_tokens', 0)} decoded token(s) used in the names")
+    if r["bad_country"]:
+        reasons.append(f"{r['bad_country']} country code(s) not ISO alpha-2")
+    if r["regex_ok"] and r.get("decoded_pct", 0) < 20:
+        reasons.append(f"decodes only {r.get('decoded_pct', 0)}% of the names")
+    r["fail_reasons"] = reasons
+    r["passed"] = not reasons
     if truth:
         same = [t for t in codes if t in truth]
         r["truth_tokens"] = len(same)
         r["truth_country_ok"] = sum(1 for t in same if codes[t].get("country") == truth[t][0])
-        r["truth_city_ok"] = sum(1 for t in same if fold(codes[t].get("city")) == fold(truth[t][1]))
+        r["truth_city_ok"] = sum(1 for t in same if same_city(codes[t].get("city"), truth[t][1]))
+        r["truth_mismatches"] = [f"{t}: model {codes[t].get('country')} {codes[t].get('city')} / ours {truth[t][0]} {truth[t][1]}"
+                                 for t in same if not same_city(codes[t].get("city"), truth[t][1])][:10]
+        r["truth_missed"] = len([t for t in truth if t not in codes])
     return r
 
 
@@ -244,15 +300,19 @@ def run_model(model, domains, names, rules, key, args, geonames):
     done = load_done(model)
     todo = [d for d in domains if d not in done]
     spent = sum(r.get("cost") or 0 for r in done.values())
-    print(f"{model}: {len(done)} saved, {len(todo)} to ask", file=sys.stderr)
+    log(f"=== {model}: {len(done)} domains already answered (${spent:.4f}, not asked again), "
+        f"{len(todo)} to ask, {args.parallel} in parallel, budget ${args.max_cost}")
     os.makedirs("out", exist_ok=True)
+    t_model = time.time()
 
     def one(d):
         rnd = random.Random(d)
         all_names = names[d]
         sample = sorted(rnd.sample(all_names, min(args.sample, len(all_names))))
         prompt = PROMPT.format(domain=d, n=len(sample), total=len(all_names), names="\n".join(sample))
-        res = ask(model, prompt, key, args.timeout)
+        kind = "control" if d in rules else "test"
+        log(f"-> {model} {d} ({kind}): sending {len(sample)} of {len(all_names)} names, {len(prompt)} chars")
+        res = ask(model, prompt, key, args.timeout, label=f"{model} {d}")
         row = {"domain": d, "control": d in rules, "names": len(all_names), **res}
         if "error" not in res:
             answer = parse(res["text"])
@@ -260,23 +320,64 @@ def run_model(model, domains, names, rules, key, args, geonames):
             row["check"] = check(answer, all_names, sample, rules.get(d), geonames)
         return row
 
+    def show(row):
+        d, c, a = row["domain"], row.get("check", {}), row.get("answer") or {}
+        if "error" in row:
+            log(f"<- {model} {d}: ERROR after {row.get('seconds')}s: {row['error']} (not saved, asked again next run)")
+            return
+        log(f"<- {model} {d}: {row['seconds']}s, {row.get('in')} in / {row.get('out')} out tokens, ${row.get('cost') or 0:.5f}, "
+            f"finish={row.get('finish')}, provider={row.get('provider')}")
+        if not c.get("json"):
+            log(f"   not JSON, raw answer starts: {row.get('text', '')[:400]!r}")
+        else:
+            log(f"   location={a.get('location')} regex={a.get('regex')!r}")
+            if a.get("comment"):
+                log(f"   comment: {str(a['comment'])[:300]}")
+            if c.get("regex_error"):
+                log(f"   regex: {c['regex_error']}")
+            log(f"   codes {c.get('codes')} ({c.get('distinct_cities')} distinct cities), used in names {c.get('used_tokens', '-')}, "
+                f"names decoded {c.get('decoded_pct', '-')}% (held-out: {str(c['holdout_decoded_pct']) + '% of ' + str(c['holdout_names']) if c.get('holdout_decoded_pct') is not None else 'none, all names were sent'})")
+            if "no_match_names" in c:
+                log(f"   regex misses {c['no_match_names']} names; {c['matched_no_code']} matched with a token that has no code")
+            for e in c.get("examples", []):
+                log(f"   ok    {e}")
+            for n in c.get("no_match_examples", []):
+                log(f"   miss  {n}")
+            if c.get("top_captured_no_code"):
+                log(f"   captured but not decoded: {', '.join(c['top_captured_no_code'])}")
+            if c.get("unused_codes"):
+                log(f"   codes never captured by the regex: {', '.join(c['unused_codes'][:20])}")
+            if c.get("stop_tokens"):
+                log(f"   stop-list tokens decoded: {', '.join(c['stop_tokens'])}")
+            if c.get("unknown_city"):
+                log(f"   cities not in GeoNames: {', '.join(c['unknown_city'][:20])}")
+            if "truth_tokens" in c:
+                log(f"   control: {c['truth_tokens']} tokens shared with our rule, city right {c['truth_city_ok']}, "
+                    f"country right {c['truth_country_ok']}, our tokens the model left out {c['truth_missed']}")
+                for mm in c.get("truth_mismatches", []):
+                    log(f"   differs {mm}")
+        log(f"   {'PASS' if c.get('passed') else 'FAIL: ' + '; '.join(c.get('fail_reasons', []))}")
+
     with cf.ThreadPoolExecutor(args.parallel) as pool, open(out_path(model), "a") as f:
         futures = {}
         for d in todo:
             futures[pool.submit(one, d)] = d
+        n = 0
         for fut in cf.as_completed(futures):
             row = fut.result()
-            f.write(json.dumps(row) + "\n")
-            f.flush()
+            n += 1
+            if "error" not in row:
+                f.write(json.dumps(row) + "\n")
+                f.flush()
             spent += row.get("cost") or 0
-            c = row.get("check", {})
-            status = row.get("error") or ("passed" if c.get("passed") else "failed")
-            print(f"  {row['domain']:32s} {status:8.60s} {c.get('decoded_pct', '-')}% ${row.get('cost', 0):.4f}", file=sys.stderr)
+            show(row)
+            log(f"   [{model} {n}/{len(todo)}, spent ${spent:.4f} of ${args.max_cost}, {time.time() - t_model:.0f}s]")
             if spent > args.max_cost:
-                print(f"{model}: budget ${args.max_cost} reached, stopping", file=sys.stderr)
+                log(f"{model}: budget ${args.max_cost} reached, cancelling the {len(todo) - n} domains not asked yet")
                 for other in futures:
                     other.cancel()
                 break
+    log(f"=== {model}: done in {time.time() - t_model:.0f}s, ${spent:.4f} in total")
 
 
 def report(models, domains):
@@ -342,20 +443,28 @@ def main():
     args = p.parse_args()
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
+    log(f"start: models {', '.join(models)}")
     names, skipped = load_names(args.names)
+    log(f"{args.names}: {sum(map(len, names.values()))} router names in {len(names)} domains, "
+        f"{skipped} names skipped (a label outside [a-z0-9-])")
     rules = load_rules(args.rules)
+    log(f"{args.rules}: {len(rules)} domains with a learned rule, {sum(map(len, rules.values()))} tokens")
     test, control = pick_domains(names, rules, args.test, args.control, args.min_names)
     domains = test + control
+    big = sum(1 for d in names if len(names[d]) >= args.min_names)
+    log(f"{big} domains have at least {args.min_names} names; picked {len(test)} test (no rule) and {len(control)} control (with a rule)")
+    for d in domains:
+        log(f"  {'control' if d in rules else 'test   '} {len(names[d]):6d} names  {d}  e.g. {names[d][len(names[d]) // 2]}")
     if args.list:
-        print(f"{sum(map(len, names.values()))} names, {len(names)} domains, {skipped} skipped (label outside [a-z0-9-]), {len(rules)} domains with rules")
-        for d in domains:
-            print(f"{'control' if d in rules else 'test   '} {len(names[d]):6d} {d}  e.g. {names[d][len(names[d]) // 2]}")
         return
     if not args.report:
         key = os.environ.get("OPENROUTER_TEST_API_KEY")
         if not key:
             sys.exit("set OPENROUTER_TEST_API_KEY")
         geonames = load_geonames(args.geonames)
+        log(f"GeoNames: {len(geonames)} (country, name) pairs from {args.geonames}" if geonames is not None
+            else "GeoNames: not given, cities are not checked (--geonames)")
+        log(f"answers go to out/<model>.jsonl, this log to {LOG_FILE}")
         for m in models:
             run_model(m, domains, names, rules, key, args, geonames)
     report(models, set(domains))
