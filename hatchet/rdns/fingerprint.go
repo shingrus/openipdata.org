@@ -44,6 +44,8 @@ const (
 	fingerprintRulesQuery = `SELECT count(*)::text || ':' || coalesce(md5(string_agg(concat_ws(E'\x1f', name, pattern, domains_json::text, country, city), E'\x1e'
 			ORDER BY lower(name), name)), '')
 		FROM public.generated_rules`
+	fingerprintCityRulesQuery = `SELECT count(*)::text || ':' || coalesce(md5(string_agg(concat_ws(E'\x1f', domain, rank::text, pattern, dictionary, places::text, version, status), E'\x1e'
+			ORDER BY lower(domain), domain, rank)), '') FROM public.rdns_city_rules`
 )
 
 // inputsSummary summarizes the database inputs of locate: four short texts, no rows.
@@ -65,6 +67,17 @@ func inputsSummary(ctx context.Context, conn *pgx.Conn) ([4]string, error) {
 			return parts, dbError("fingerprint rules", err)
 		}
 	}
+	var cityTable *string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.rdns_city_rules')::text`).Scan(&cityTable); err != nil {
+		return parts, dbError("fingerprint candidate rules", err)
+	}
+	cityFingerprint := "no table"
+	if cityTable != nil {
+		if err := conn.QueryRow(ctx, fingerprintCityRulesQuery).Scan(&cityFingerprint); err != nil {
+			return parts, dbError("fingerprint candidate rules", err)
+		}
+	}
+	parts[2] += "|candidate:" + cityFingerprint
 	if err := conn.QueryRow(ctx, fingerprintASNQuery).Scan(&parts[3]); err != nil {
 		return parts, dbError("fingerprint asn", err)
 	}

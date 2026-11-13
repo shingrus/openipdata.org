@@ -1,8 +1,8 @@
 # openipdata pipeline and data sources
 
-As of 2026-11-10.
+As of 2026-11-13.
 
-Six Hatchet workflows on one VM turn public registry, routing, operator and visitor data into two published MMDBs, ip2asn and ip2geo. Postgres holds the shared tables (one writer each); the private R2 bucket carries the large layer files between workflows.
+Seven Hatchet workflows on one VM turn public registry, routing, operator and visitor data into two published MMDBs, ip2asn and ip2geo. Postgres holds the shared tables (one writer each); the private R2 bucket carries the large layer files between workflows.
 
 ## At a glance
 
@@ -32,6 +32,11 @@ flowchart LR
   t_asn --> rd
   rd --> t_rd[(network_traces<br/>ip_ptr_names<br/>rdns_geo_layer)]
   t_rd --> geo
+  places[OurAirports, UN/LOCODE<br/>GeoNames] --> learn[learn-rdns-rules<br/>daily 05:00]
+  t_rd --> learn
+  t_asn --> learn
+  learn --> t_rules[(rdns_city_rules)]
+  t_rules --> rd
 ```
 
 The collectors write Postgres tables or private R2 files (`resolve-ips` traces the networks visitors come from); only the two builders publish, and `build-geo-data` scores each build before it ships.
@@ -48,6 +53,7 @@ The morning chain runs PeeringDB → domains → ASN build, so the 06:00 ASN bui
 | 06:00, 18:00 | `build-asn-data` | `asn-db` |
 | 07:00, 19:00 | `build-geo-data` (decided: every 4 h, not yet switched) | `geo` |
 | every 30 min | `resolve-ips` | `rdns` |
+| daily 05:00 | `learn-rdns-rules` | `rdns-rules` |
 
 ## Workflows
 
@@ -60,7 +66,8 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `build-asn-data` | `sync-source` → `ingest` → `build-mmdb` + `export-sqlite` → `publish` | `public.asn` (incl. `seen_at`) | `ip2asn-openipdata.mmdb`, `asn.sqlite3` |
 | `sync-geofeeds` | `rdap-lookups` and `probe-domains` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `60-whois` and `70-geofeeds` to private R2 | nothing |
 | `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `ip2geo-openipdata.mmdb` |
-| `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink) | — |
+| `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink of the sticky traced rows; candidate and wide rows are only counted) | — |
+| `learn-rdns-rules` | `learn` | `public.rdns_city_rules` (atomic rule/mapping updates) | — |
 
 - **`sync-geofeeds`**: finds every geofeed URL (whois, IRR, RDAP, CAIDA, built-in list, ASN websites), fetches and checks each feed, drops rows that fail the ownership check, exports ~6.4M rows (36 MB gz). `discover` also builds the whois geoloc layer.
 - **`build-geo-data`**: builds the MMDB from stacked layers (see ip2geo layers), scores it, and publishes only if the scores did not clearly drop.
@@ -90,8 +97,9 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `publish` | applies the 2-point gate, uploads to R2 and the GitHub release, marks the row published, pings the health check |
 | `resolve-ips` | `pick-networks` | visitor /24s (seen in the last 30 days, no trace in the last 60), most visitor IPs first, up to 1,000 a run; writes them to a batch file on the VM |
 | | `trace` | one `scamper` run (Paris ICMP traceroute) to three hosts per /24: the newest visitor IP, `.1`, a random host; stores the full path, keeps the 2 newest traces per /24 and target kind |
-| | `resolve-names` | PTR of every target and of the last 25% of its public hops, for the newest traces of the last 7 days, unless the answer is fresh (names 30 days, not found 7); system resolver, Cloudflare DoH when it fails; a failed lookup never replaces an old name |
-| | `locate` | applies the rules to the names (target, then last hops; routers of the target's ASN first), gives the /24 a city, votes per announced prefix; replaces `public.rdns_geo_layer` |
+| | `resolve-names` | PTR of every target and of every public answering hop (`hop_ips`); fresh names wait 30 days, not found 7; errors wait 1, 2, then 7 days and preserve stored answers; up to 500 due failures remain eligible beyond the normal 7-day trace window; counts timeouts, SERVFAIL and other failures separately |
+| | `locate` | existing rules and carried traced rows first; then learned candidate rules (target name first, then router hops; ranks in order), which give a wide vote and a non-sticky `candidate_rule` traced row that never marks the /24 located; MMDB hop fallback last; one vote per /24; replaces `public.rdns_geo_layer` |
+| `learn-rdns-rules` | `learn` | learns up to 3 rules (ranks) per domain from target and hop names, each with at least 3 distinct named IPs on the names better ranks do not decode; materializes token mappings in Postgres; rejection input withdraws current versions without downloads |
 
 ## Data sources
 
@@ -110,6 +118,7 @@ Every external input, grouped by what it feeds. Third-party geo databases are us
 | ASN websites (from `public.asn_domain`) | `sync-geofeeds` `probe-domains` | feeds at the usual paths | budget per run |
 | Operator geofeeds (RFC 8805) | `sync-geofeeds` `check-feeds` | city rows, ~6.4M | backoff 3 d / weekly / monthly |
 | GeoNames `cities1000.zip` | `sync-geofeeds` | city name for whois `geoloc:` points | 7-day age gate |
+| OurAirports, UNECE UN/LOCODE, GeoNames `cities1000.zip` | `learn-rdns-rules` | city-token dictionaries (own caches) | monthly, conditional |
 | `public.visitor_ips` (external websites insert active users' IPs) | `resolve-ips` | which /24s to trace | every 30 min |
 | `scamper` traceroutes, PTR names (system resolver, Cloudflare DoH) | `resolve-ips` | routers near each visitor /24 and their names | per /24 every 60 days; names 30 / 7 days |
 | `public.generated_rules` (regex rules written outside this repo) | `resolve-ips` | router name → city | read as is |
@@ -130,8 +139,9 @@ Each table has exactly one writer; data between workflows goes through these tab
 | `public.geofeed_urls` | `sync-geofeeds` | `build-geo-data` (holdout sample) |
 | `public.geo_eval` | `build-geo-data` | `build-geo-data` (publish gate) |
 | `public.visitor_ips` | external websites | `resolve-ips` |
-| `public.network_traces` | `resolve-ips` | `resolve-ips` |
-| `public.ip_ptr_names` | `resolve-ips` | `resolve-ips` |
+| `public.network_traces` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
+| `public.ip_ptr_names` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
+| `public.rdns_city_rules` | `learn-rdns-rules` | `resolve-ips` (candidate rules: wide votes and non-sticky traced rows) |
 | `public.rdns_geo_layer` | `resolve-ips` | `build-geo-data` (layers `35-rdns-wide`, `65-rdns`) |
 | R2 private `internal/layers/60-whois.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/layers/70-geofeeds.csv.gz` | `sync-geofeeds` | `build-geo-data` |

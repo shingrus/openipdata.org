@@ -3,6 +3,7 @@ package rdns
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -44,11 +45,16 @@ func newTestDB(t *testing.T) string {
 	if _, err := admin.Exec(ctx, `CREATE DATABASE `+name); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := admin.Exec(ctx, `ALTER DATABASE `+name+` SET timezone TO 'UTC'`); err != nil {
+		t.Fatal(err)
+	}
 	u, err := url.Parse(base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	u.Path = "/" + name
+	// Schedule fixtures advance calendar-day intervals in SQL. Pin the session to
+	// UTC so DST cannot make a 150-day retry look like 149 days of elapsed time.
 	t.Cleanup(func() {
 		admin.Exec(ctx, `DROP DATABASE `+name+` WITH (FORCE)`)
 		admin.Close(ctx)
@@ -236,7 +242,9 @@ func (w *itWorld) wantState(prefix, status string, attempts, wantDays int) *netS
 	}
 	gotDays := 0
 	if s.Next != nil {
-		gotDays = int(s.Next.Sub(s.Last).Round(time.Hour) / (24 * time.Hour))
+		// PostgreSQL calendar-day intervals across daylight-saving changes can be
+		// an hour shorter or longer than an exact multiple of 24 hours.
+		gotDays = int(s.Next.Sub(s.Last).Round(24*time.Hour) / (24 * time.Hour))
 	}
 	if s.Status != status || s.Attempts != attempts || gotDays != wantDays || (wantDays == 0) != (s.Next == nil) {
 		w.t.Fatalf("%s: status %s attempts %d next after %d days (nil=%v), want %s %d %d", prefix, s.Status, s.Attempts, gotDays, s.Next == nil, status, attempts, wantDays)
@@ -575,5 +583,186 @@ func TestIntegrationPickOrderAndLimit(t *testing.T) {
 	// New ones: most visitors first, a private /24 never; due ones: the oldest next_trace_at first.
 	if string(data) != want {
 		t.Errorf("batch file:\n%s\nwant\n%s", data, want)
+	}
+}
+
+func TestIntegrationLocateCandidateRuleWideVote(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := schema.EnsureRDNS(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.EnsureRDNSCityRules(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(`INSERT INTO public.rdns_city_rules (domain, pattern, dictionary, places, version, status)
+		VALUES ('transit.net', '^be2\.([a-z]+)[0-9]*\.transit\.net$', 'codes', '{"xyz":["NL","Amsterdam"]}', 'v1', 'candidate')`)
+	w.exec(`INSERT INTO public.network_traces (prefix, target_kind, target, candidates, hops)
+		VALUES ('5.6.8.0/24', 'visitor', '5.6.8.9', ARRAY['5.6.8.9'::inet, '9.9.0.2'::inet], '[]')`)
+	w.exec(`INSERT INTO public.ip_ptr_names (ip, ptr, status) VALUES ('9.9.0.2', 'be2.xyz1.transit.net', 'ok')`)
+
+	out, err := w.p.Locate(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var city, method string
+	var candidates, mmdb int
+	if err := w.conn.QueryRow(ctx, `SELECT city, method, candidate_votes, mmdb_votes FROM public.rdns_geo_layer WHERE prefix = '5.6.0.0/16' AND scope = 'wide'`).Scan(&city, &method, &candidates, &mmdb); err != nil {
+		t.Fatal(err)
+	}
+	if city != "Amsterdam" || method != methodCandidate || candidates != 1 || mmdb != 0 || out.CandidateVotes != 1 {
+		t.Fatalf("wide row city=%s method=%s candidate=%d mmdb=%d output=%+v", city, method, candidates, mmdb, out)
+	}
+	var traced int
+	if err := w.conn.QueryRow(ctx, `SELECT count(*) FROM public.rdns_geo_layer WHERE prefix = '5.6.8.0/24' AND scope = 'traced'`).Scan(&traced); err != nil || traced != 0 {
+		t.Fatalf("candidate created a traced row: count=%d err=%v", traced, err)
+	}
+
+	// An effective map/version change invalidates the saved fingerprint and changes
+	// the candidate's wide result immediately.
+	w.exec(`UPDATE public.rdns_city_rules SET places = '{"xyz":["BE","Brussels"]}', version = 'v2' WHERE domain = 'transit.net'`)
+	out, err = w.p.Locate(ctx, false)
+	if err != nil || out.Skipped {
+		t.Fatalf("remap did not rebuild: out=%+v err=%v", out, err)
+	}
+	if err := w.conn.QueryRow(ctx, `SELECT city FROM public.rdns_geo_layer WHERE prefix = '5.6.0.0/16' AND scope = 'wide'`).Scan(&city); err != nil || city != "Brussels" {
+		t.Fatalf("remapped city=%q err=%v", city, err)
+	}
+
+	// Rejection changes the fingerprint too. The wide row is volatile, so the withdrawal goes
+	// through without force_replace and the drop is reported.
+	w.exec(`UPDATE public.rdns_city_rules SET status = 'rejected' WHERE domain = 'transit.net'`)
+	out, err = w.p.Locate(ctx, false)
+	if err != nil || out.Skipped {
+		t.Fatalf("rejection rebuild: out=%+v err=%v", out, err)
+	}
+	if out.PreviousVolatile != 1 || out.StoredVolatile != 0 {
+		t.Fatalf("volatile counts: %+v", out)
+	}
+	if count := w.count(`SELECT count(*) FROM public.rdns_geo_layer WHERE scope = 'wide'`); count != 0 {
+		t.Fatalf("rejection retained %d wide rows", count)
+	}
+
+	// Rollout without the optional table remains safe.
+	w.exec(`DROP TABLE public.rdns_city_rules`)
+	out, err = w.p.Locate(ctx, true)
+	if err != nil || !out.CandidateRulesMissing {
+		t.Fatalf("missing candidate table: out=%+v err=%v", out, err)
+	}
+}
+
+// A candidate rule locates a /24 (traced row, method candidate_rule) without making it located:
+// the schedule stays unmatched, the row is recomputed (not carried) and goes away with the
+// rule, while resolve-names names every hop (hop_ips), not only the candidates.
+func TestIntegrationCandidateTracedRowIsNotLocated(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := schema.EnsureRDNSCityRules(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(`INSERT INTO public.rdns_city_rules (domain, rank, pattern, dictionary, places, version, status)
+		VALUES ('isp.net', 2, '^pool-([a-z]+)\d*\.isp\.net$', 'codes', '{"ber":["DE","Berlin"]}', 'v2', 'candidate'),
+		       ('isp.net', 1, '^be2\.([a-z]+)\d*\.isp\.net$', 'codes', '{"xyz":["NL","Amsterdam"]}', 'v1', 'candidate')`)
+	// Five public hops: the last two are the candidates, the first three are only in hop_ips.
+	w.hops["5.6.30"] = func(string) []string {
+		return []string{"5.6.0.20", "5.6.0.21", "5.6.0.22", "5.6.0.23", "5.6.0.24"}
+	}
+	w.ptrs["5.6.0.20"] = "ae1.fra20.isp.net" // a hop outside the candidates, named all the same
+	w.ptrs["5.6.0.24"] = "pool-ber1.isp.net" // rank 2 of the domain
+	w.visitors("5.6.30", 1)
+
+	_, _, names, loc := w.run()
+	if names.IPs < 5 || names.OK != 2 {
+		t.Fatalf("resolve-names did not look at every hop: %+v", names)
+	}
+	var stored int
+	if err := w.conn.QueryRow(ctx, `SELECT cardinality(hop_ips) FROM public.network_traces WHERE prefix = '5.6.30.0/24' AND target_kind = 'visitor'`).Scan(&stored); err != nil || stored != 5 {
+		t.Fatalf("hop_ips stored = %d, %v", stored, err)
+	}
+	if n := w.count(`SELECT count(*) FROM public.ip_ptr_names WHERE ip = '5.6.0.20' AND status = 'ok'`); n != 1 {
+		t.Fatalf("a hop outside the candidates was not named")
+	}
+	var method, rule, city string
+	if err := w.conn.QueryRow(ctx, `SELECT city, method, rule_name FROM public.rdns_geo_layer WHERE prefix = '5.6.30.0/24' AND scope = 'traced'`).Scan(&city, &method, &rule); err != nil {
+		t.Fatalf("no candidate traced row: %v (%+v)", err, loc)
+	}
+	// 5.6.0.20 (fra, legacy rule) is not a candidate, so only the candidate rule at the tail applies.
+	if city != "Berlin" || method != methodCandidate || rule != "isp.net#2" || loc.CandidateTraced != 1 {
+		t.Fatalf("traced row city=%s method=%s rule=%s out=%+v", city, method, rule, loc)
+	}
+	w.wantState("5.6.30.0/24", netUnmatched, 1, 7)
+	var located int
+	if err := w.conn.QueryRow(ctx, `SELECT count(*) FROM public.traced_networks WHERE status = 'located'`).Scan(&located); err != nil || located != 0 {
+		t.Fatalf("a candidate row made a /24 located: %d %v", located, err)
+	}
+
+	// A second rebuild neither carries nor duplicates the row.
+	out, err := w.p.Locate(ctx, true)
+	if err != nil || out.Carried != 0 || out.CandidateTraced != 1 || out.Stored != 2 { // traced + wide
+		t.Fatalf("rebuild: %+v %v", out, err)
+	}
+
+	// Withdrawal: the row and the wide vote vanish at the next rebuild without force_replace
+	// (both are volatile; the drop is reported), and the schedule is untouched.
+	w.exec(`UPDATE public.rdns_city_rules SET status = 'rejected'`)
+	out, err = w.p.Locate(ctx, false)
+	if err != nil || out.Stored != 0 || out.Carried != 0 || out.PreviousVolatile != 2 || out.StoredVolatile != 0 {
+		t.Fatalf("withdrawal: %+v %v", out, err)
+	}
+	if n := w.count(`SELECT count(*) FROM public.rdns_geo_layer`); n != 0 {
+		t.Fatalf("%d rows left after the withdrawal", n)
+	}
+	w.wantState("5.6.30.0/24", netUnmatched, 1, 7)
+	// And none of it feeds the located-only readers.
+	if ips, err := staleLocatedIPs(ctx, w.conn, 10); err != nil || len(ips) != 0 {
+		t.Fatalf("stale located IPs: %v %v", ips, err)
+	}
+}
+
+// Names of a candidate_rule row's /24 are not refreshed or retried as those of a located /24.
+func TestIntegrationCandidateRowsAreNotLocatedForRefresh(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := schema.EnsureRDNS(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(`INSERT INTO public.ip_ptr_names (ip, ptr, status, resolved_at) VALUES ('5.6.0.5', 'x.isp.net', 'ok', now() - interval '40 days')`)
+	w.exec(`INSERT INTO public.rdns_geo_layer (prefix, scope, country, city, router_ip, router_ptr, rule_name, method)
+		VALUES ('5.6.31.0/24', 'traced', 'DE', 'Berlin', '5.6.0.5', 'x.isp.net', 'isp.net#1', 'candidate_rule')`)
+	if ips, err := staleLocatedIPs(ctx, w.conn, 10); err != nil || len(ips) != 0 {
+		t.Fatalf("candidate row's router refreshed: %v %v", ips, err)
+	}
+	w.exec(`UPDATE public.rdns_geo_layer SET method = 'rdns_rule'`)
+	if ips, err := staleLocatedIPs(ctx, w.conn, 10); err != nil || len(ips) != 1 {
+		t.Fatalf("legacy row's router not refreshed: %v %v", ips, err)
+	}
+}
+
+// The guard still protects the sticky rows (legacy-located traced rows), and only them.
+func TestIntegrationShrinkGuardCountsStickyRowsOnly(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := schema.EnsureRDNS(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		w.exec(`INSERT INTO public.rdns_geo_layer (prefix, scope, country, city, method) VALUES ($1::cidr, 'traced', 'DE', 'Frankfurt', 'rdns_rule')`, fmt.Sprintf("5.6.%d.0/24", 100+i))
+	}
+	for i := 0; i < 20; i++ {
+		w.exec(`INSERT INTO public.rdns_geo_layer (prefix, scope, country, city, method) VALUES ($1::cidr, 'wide', 'DE', 'Berlin', 'candidate_rule')`, fmt.Sprintf("7.%d.0.0/16", i))
+	}
+	var sticky []geoRow
+	for i := 0; i < 10; i++ {
+		sticky = append(sticky, geoRow{Prefix: netip.MustParsePrefix(fmt.Sprintf("5.6.%d.0/24", 100+i)), Scope: scopeTraced, Country: "DE", City: "Frankfurt", Method: methodRule})
+	}
+	// Only volatile rows survive: the sticky ones fell from 10 to 0, so the guard refuses.
+	volatile := []geoRow{{Prefix: netip.MustParsePrefix("7.0.0.0/16"), Scope: scopeWide, Country: "DE", City: "Berlin", Method: methodCandidate}}
+	if _, err := replaceLayer(ctx, w.conn, volatile, false); !errors.Is(err, ErrShrink) {
+		t.Fatalf("sticky drop not refused: %v", err)
+	}
+	// All sticky rows kept, every volatile row gone: allowed, and the swing is reported.
+	rs, err := replaceLayer(ctx, w.conn, sticky, false)
+	if err != nil || rs.Previous != 30 || rs.PreviousVolatile != 20 || rs.StoredVolatile != 0 {
+		t.Fatalf("replace: %+v %v", rs, err)
 	}
 }

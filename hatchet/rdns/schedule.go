@@ -163,7 +163,7 @@ func updateSchedule(ctx context.Context, tx pgx.Tx, answered map[string]bool, at
 }
 
 // backfillScheduleSQL creates the rows of /24s that were traced before the schedule
-// existed: located when rdns_geo_layer has a traced row (its located_at kept), else
+// existed: located when rdns_geo_layer has a traced row that a legacy rule found (its located_at kept), else
 // unmatched when a hop answered in the newest traces (those within an hour of the newest one;
 // a run stores all its traces of a /24 at one time) and silent when none did, with
 // attempts 1; next_trace_at follows the rules from the newest trace. A located row of
@@ -181,12 +181,12 @@ const backfillScheduleSQL = `INSERT INTO public.traced_networks (prefix, status,
 		WHERE traced_at > last - interval '1 hour'
 		GROUP BY prefix, last
 	) s
-	LEFT JOIN public.rdns_geo_layer g ON g.prefix = s.prefix AND g.scope = 'traced'
+	LEFT JOIN public.rdns_geo_layer g ON g.prefix = s.prefix AND g.scope = 'traced' AND g.method IS DISTINCT FROM 'candidate_rule'
 	ON CONFLICT (prefix) DO NOTHING`
 
 const backfillLayerSQL = `INSERT INTO public.traced_networks (prefix, status, attempts, last_traced_at, next_trace_at, located_at)
 	SELECT g.prefix, 'located', 0, g.located_at, g.located_at + interval '150 days', g.located_at
-	FROM public.rdns_geo_layer g WHERE g.scope = 'traced'
+	FROM public.rdns_geo_layer g WHERE g.scope = 'traced' AND g.method IS DISTINCT FROM 'candidate_rule'
 	ON CONFLICT (prefix) DO NOTHING`
 
 // backfillSchedule fills public.traced_networks from network_traces and rdns_geo_layer

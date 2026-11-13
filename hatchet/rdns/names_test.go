@@ -44,14 +44,17 @@ func TestParseDoH(t *testing.T) {
 		want ptrAnswer
 	}{
 		"answer": {`{"Status":0,"TC":false,"RD":true,"RA":true,"AD":false,"CD":false,"Question":[{"name":"9.7.6.5.in-addr.arpa","type":12}],
-			"Answer":[{"name":"9.7.6.5.in-addr.arpa","type":12,"TTL":300,"data":"AE1.Fra01.Example.NET."}]}`, ptrAnswer{"ae1.fra01.example.net", statusOK}},
-		"cname first": {`{"Status":0,"Answer":[{"name":"x","type":5,"TTL":1,"data":"y."},{"name":"y","type":12,"TTL":1,"data":"host.example.net."}]}`, ptrAnswer{"host.example.net", statusOK}},
-		"nxdomain":    {`{"Status":3,"Question":[{"name":"9.7.6.5.in-addr.arpa","type":12}],"Authority":[{"name":"5.in-addr.arpa","type":6,"TTL":60,"data":"x"}]}`, ptrAnswer{"", statusNotFound}},
-		"no answer":   {`{"Status":0,"Question":[{"name":"9.7.6.5.in-addr.arpa","type":12}]}`, ptrAnswer{"", statusNotFound}},
-		"only a SOA":  {`{"Status":0,"Answer":[{"name":"x","type":6,"TTL":1,"data":"ns. host."}]}`, ptrAnswer{"", statusNotFound}},
-		"servfail":    {`{"Status":2}`, ptrAnswer{"", statusError}},
-		"not json":    {`<html>`, ptrAnswer{"", statusError}},
-		"empty":       {``, ptrAnswer{"", statusError}},
+			"Answer":[{"name":"9.7.6.5.in-addr.arpa","type":12,"TTL":300,"data":"AE1.Fra01.Example.NET."}]}`, ptrAnswer{PTR: "ae1.fra01.example.net", Status: statusOK}},
+		"cname first":    {`{"Status":0,"Answer":[{"name":"x","type":5,"TTL":1,"data":"y."},{"name":"y","type":12,"TTL":1,"data":"host.example.net."}]}`, ptrAnswer{PTR: "host.example.net", Status: statusOK}},
+		"nxdomain":       {`{"Status":3,"Question":[{"name":"9.7.6.5.in-addr.arpa","type":12}],"Authority":[{"name":"5.in-addr.arpa","type":6,"TTL":60,"data":"x"}]}`, ptrAnswer{PTR: "", Status: statusNotFound}},
+		"no answer":      {`{"Status":0,"Question":[{"name":"9.7.6.5.in-addr.arpa","type":12}]}`, ptrAnswer{PTR: "", Status: statusNotFound}},
+		"only a SOA":     {`{"Status":0,"Answer":[{"name":"x","type":6,"TTL":1,"data":"ns. host."}]}`, ptrAnswer{PTR: "", Status: statusNotFound}},
+		"servfail":       {`{"Status":2}`, ptrAnswer{Status: statusError, ErrKind: errKindServfail}},
+		"refused":        {`{"Status":5}`, ptrAnswer{Status: statusError, ErrKind: errKindOther}},
+		"not json":       {`<html>`, ptrAnswer{Status: statusError, ErrKind: errKindOther}},
+		"empty":          {``, ptrAnswer{Status: statusError, ErrKind: errKindOther}},
+		"missing status": {`{}`, ptrAnswer{Status: statusError, ErrKind: errKindOther}},
+		"null status":    {`{"Status":null}`, ptrAnswer{Status: statusError, ErrKind: errKindOther}},
 	} {
 		if got := parseDoH([]byte(c.body)); got != c.want {
 			t.Errorf("%s: parseDoH = %+v, want %+v", name, got, c.want)
@@ -72,7 +75,7 @@ func TestDoHClient(t *testing.T) {
 	d := &dohClient{base: server.URL, http: server.Client()}
 	ip := netip.MustParseAddr("5.6.7.9")
 
-	if got := d.lookup(context.Background(), ip); got != (ptrAnswer{"edge1.fra.example.net", statusOK}) {
+	if got := d.lookup(context.Background(), ip); got != (ptrAnswer{PTR: "edge1.fra.example.net", Status: statusOK}) {
 		t.Errorf("answer = %+v", got)
 	}
 	if gotQuery != "name=9.7.6.5.in-addr.arpa&type=PTR" || gotAccept != "application/dns-json" {
@@ -91,7 +94,7 @@ func TestDoHClient(t *testing.T) {
 
 func TestPTRResolverFallsBackToDoH(t *testing.T) {
 	ip := netip.MustParseAddr("5.6.7.9")
-	dohAnswer := ptrAnswer{"via.doh.example", statusOK}
+	dohAnswer := ptrAnswer{PTR: "via.doh.example", Status: statusOK}
 	var dohCalls int
 	newResolver := func(names []string, err error) *ptrResolver {
 		dohCalls = 0
@@ -107,10 +110,10 @@ func TestPTRResolverFallsBackToDoH(t *testing.T) {
 		viaDoH  bool
 		dohUsed int
 	}{
-		"system name":  {[]string{"Host.Example.NET."}, nil, ptrAnswer{"host.example.net", statusOK}, false, 0},
-		"first usable": {[]string{" ", "b.example."}, nil, ptrAnswer{"b.example", statusOK}, false, 0},
-		"no names":     {nil, nil, ptrAnswer{"", statusNotFound}, false, 0},
-		"nxdomain":     {nil, &net.DNSError{Err: "no such host", IsNotFound: true}, ptrAnswer{"", statusNotFound}, false, 0},
+		"system name":  {[]string{"Host.Example.NET."}, nil, ptrAnswer{PTR: "host.example.net", Status: statusOK}, false, 0},
+		"first usable": {[]string{" ", "b.example."}, nil, ptrAnswer{PTR: "b.example", Status: statusOK}, false, 0},
+		"no names":     {nil, nil, ptrAnswer{PTR: "", Status: statusNotFound}, false, 0},
+		"nxdomain":     {nil, &net.DNSError{Err: "no such host", IsNotFound: true}, ptrAnswer{PTR: "", Status: statusNotFound}, false, 0},
 		"timeout":      {nil, &net.DNSError{Err: "i/o timeout", IsTimeout: true}, dohAnswer, true, 1},
 		"servfail":     {nil, &net.DNSError{Err: "server misbehaving", IsTemporary: true}, dohAnswer, true, 1},
 		"plain error":  {nil, errors.New("resolver down"), dohAnswer, true, 1},
@@ -121,7 +124,7 @@ func TestPTRResolverFallsBackToDoH(t *testing.T) {
 			t.Errorf("%s: got %+v viaDoH=%v doh calls=%d", name, got, viaDoH, dohCalls)
 		}
 	}
-	// When both fail the answer is an error, to be retried next run.
+	// When both fail the answer is an error, retried after the failure backoff.
 	r := &ptrResolver{
 		system: func(context.Context, string) ([]string, error) { return nil, errors.New("down") },
 		doh:    func(context.Context, netip.Addr) ptrAnswer { return ptrAnswer{Status: statusError} },
@@ -135,6 +138,37 @@ func TestPTRResolverFallsBackToDoH(t *testing.T) {
 	r = newResolver(nil, errors.New("canceled"))
 	if got, viaDoH := r.lookup(ctx, ip); got.Status != statusError || viaDoH || dohCalls != 0 {
 		t.Errorf("canceled: %+v %v %d", got, viaDoH, dohCalls)
+	}
+}
+
+func TestPTRResolverReportsFinalErrorKind(t *testing.T) {
+	for _, kind := range []string{errKindTimeout, errKindServfail, errKindOther} {
+		r := &ptrResolver{
+			system: func(context.Context, string) ([]string, error) {
+				return nil, &net.DNSError{Err: "server misbehaving", IsTemporary: true}
+			},
+			doh: func(context.Context, netip.Addr) ptrAnswer {
+				return ptrAnswer{Status: statusError, ErrKind: kind}
+			},
+		}
+		got, viaDoH := r.lookup(context.Background(), netip.MustParseAddr("5.6.7.9"))
+		if got.ErrKind != kind || got.Status != statusError || !viaDoH {
+			t.Fatalf("final error: %+v, DoH %v", got, viaDoH)
+		}
+	}
+}
+
+func TestDoHTimeoutKind(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 10 * time.Millisecond
+	d := dohClient{base: server.URL, http: client}
+	got := d.lookup(context.Background(), netip.MustParseAddr("5.6.7.9"))
+	if got.Status != statusError || got.ErrKind != errKindTimeout {
+		t.Fatalf("timeout classified as %+v", got)
 	}
 }
 
@@ -190,7 +224,7 @@ func TestResolveAllBoundedConcurrency(t *testing.T) {
 		t.Errorf("peak concurrency %d, want 2..4", peak.Load())
 	}
 	// The answers are in the order of the IPs.
-	if answers[3] != (ptrAnswer{"h-5.6.7.3.example", statusOK}) || answers[7] != (ptrAnswer{"", statusNotFound}) {
+	if answers[3] != (ptrAnswer{PTR: "h-5.6.7.3.example", Status: statusOK}) || answers[7] != (ptrAnswer{PTR: "", Status: statusNotFound}) {
 		t.Errorf("answers = %+v %+v", answers[3], answers[7])
 	}
 	if answers, doh := resolveAll(context.Background(), r, nil, 4); len(answers) != 0 || doh != 0 {
@@ -208,6 +242,39 @@ func TestStoreNamesKeepsGoodAnswers(t *testing.T) {
 	} {
 		if !strings.Contains(storeNamesSQL, part) {
 			t.Errorf("storeNamesSQL lacks %q", part)
+		}
+	}
+}
+
+func TestSystemErrKind(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{&net.DNSError{Err: "i/o timeout", IsTimeout: true}, errKindTimeout},
+		{&net.DNSError{Err: "server misbehaving"}, errKindServfail},
+		{&net.DNSError{Err: "no such host"}, errKindOther},
+		{errors.New("boom"), errKindOther},
+	} {
+		if got := systemErrKind(tc.err); got != tc.want {
+			t.Errorf("%v: %s, want %s", tc.err, got, tc.want)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := &ptrResolver{system: func(context.Context, string) ([]string, error) {
+		return nil, &net.DNSError{Err: "i/o timeout", IsTimeout: true}
+	}}
+	if got, via := r.lookup(ctx, netip.MustParseAddr("5.6.7.9")); got.ErrKind != errKindTimeout || via {
+		t.Errorf("canceled lookup: %+v %v", got, via)
+	}
+}
+
+func TestErrorBackoff(t *testing.T) {
+	day := 24 * time.Hour
+	for n, want := range map[int]time.Duration{0: 0, 1: day, 2: 2 * day, 3: 7 * day, 9: 7 * day} {
+		if got := errorBackoff(n); got != want {
+			t.Errorf("errorBackoff(%d) = %v, want %v", n, got, want)
 		}
 	}
 }

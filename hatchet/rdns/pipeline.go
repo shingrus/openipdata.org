@@ -12,14 +12,16 @@
 //	              runs DDL: it creates and upgrades the tables for the whole run)
 //	Trace         scamper traceroutes of up to three hosts per /24 -> public.network_traces and
 //	              the schedule public.traced_networks; deletes visitor IPs it no longer needs
-//	ResolveNames  PTR names of the targets and the last hops (and the old names of located
+//	ResolveNames  PTR names of the targets and every public answering hop (and the old names of located
 //	              /24s) -> public.ip_ptr_names
 //	Locate        rules + names + announced prefixes (+ router hop cities from our own
 //	              published ip2geo MMDB) -> public.rdns_geo_layer, which keeps the rows of
 //	              located /24s that no trace locates again (skipped while nothing it reads
 //	              has changed)
 //
-// A /24 that no rule matches may still vote for its announced prefix with the city of
+// A /24 that no legacy rule matches is tried against the learned candidate rules (target name,
+// then router hops), which give it a wide vote and a non-sticky candidate_rule traced row.
+// Without a candidate it may still vote for its announced prefix with the city of
 // one of its router hops in our own published ip2geo MMDB (a copy kept from R2, read
 // by mmdbbuilder lookup); see mmdb.go.
 //

@@ -85,6 +85,12 @@ var rdnsStatements = []string{
 	`ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS candidates inet[]`,
 	// The rows still to fill, for the one-time backfill; empty afterwards.
 	`CREATE INDEX IF NOT EXISTS network_traces_no_candidates_idx ON public.network_traces (traced_at) WHERE candidates IS NULL`,
+	// hop_ips: every public IPv4 hop of the path that answered (the target left out, each IP
+	// once, path order), so resolve-names and the rule learner can name all hops without
+	// reading hops. NULL for rows written before the column was added, until resolve-names
+	// fills them once. locate never reads it.
+	`ALTER TABLE public.network_traces ADD COLUMN IF NOT EXISTS hop_ips inet[]`,
+	`CREATE INDEX IF NOT EXISTS network_traces_no_hop_ips_idx ON public.network_traces (traced_at) WHERE hop_ips IS NULL`,
 	// The schedule of one traced /24 (resolve-ips is the only writer). status: silent (no hop
 	// answered in the newest traces), unmatched (hops answered, no city) or located;
 	// attempts: consecutive traces with the same non-located status (0 for located);
@@ -110,8 +116,12 @@ var rdnsStatements = []string{
 	`CREATE INDEX IF NOT EXISTS ip_ptr_names_resolved_at_idx ON public.ip_ptr_names (resolved_at)`,
 	// tried_at: the last lookup of the IP, whatever came of it (an error never replaces an ok or
 	// not_found answer, so resolved_at stays old; tried_at tells the refresh it was just tried).
-	// NULL for rows written before the column was added. ip_ptr_names has one writer and no other reader.
+	// NULL for rows written before the column was added. resolve-ips is its only writer.
 	`ALTER TABLE public.ip_ptr_names ADD COLUMN IF NOT EXISTS tried_at timestamptz`,
+	// error_count: failed lookups in a row (an error adds one, any ok or not_found answer resets it
+	// to 0); resolve-names waits 1, 2, then 7 days after them. NULL or 0 in older rows.
+	`ALTER TABLE public.ip_ptr_names ADD COLUMN IF NOT EXISTS error_count integer`,
+	`CREATE INDEX IF NOT EXISTS ip_ptr_names_due_error_idx ON public.ip_ptr_names (COALESCE(tried_at, resolved_at), error_count) WHERE error_count > 0 OR (status = 'error' AND error_count IS NULL)`,
 	// One located prefix. scope: traced (a /24 a trace located) or wide (an announced
 	// prefix, never wider than /16, that the traced /24s voted for). A /24 can be
 	// both, hence the key. router_*, rule_name and same_asn describe a traced
@@ -129,15 +139,17 @@ var rdnsStatements = []string{
 		located_at timestamptz NOT NULL DEFAULT now(),
 		PRIMARY KEY (scope, prefix)
 	)`,
-	// method: how the row was found. Traced rows: rdns_rule (a rule matched the router's
-	// PTR name). Wide rows: rdns_rule when at least one vote for the city came from a rule,
-	// else mmdb_hop (every vote came from the city of a router hop in our own published
-	// ip2geo MMDB). rule_votes and mmdb_votes are the votes for the winning city of a wide
-	// row by method (NULL for a traced row). NULL everywhere in rows written before the
-	// columns were added, until the next rebuild. resolve-ips is the only writer of this
+	// method: how the row was found. Traced rows: rdns_rule (a legacy rule matched the router's
+	// PTR name; sticky and located) or candidate_rule (a learned candidate rule matched the target's
+	// or a router's name; recomputed every rebuild, never makes the /24 located). Wide rows: rdns_rule when at least one vote for the city came from a rule,
+	// else candidate_rule when a learned candidate voted, else mmdb_hop (every vote came
+	// from a router hop in our own published ip2geo MMDB). The vote columns count votes
+	// for the winning city; candidate_votes is zero for traced and pre-migration rows.
+	// rule_votes and mmdb_votes are NULL for traced and pre-migration rows.
+	// resolve-ips is the only writer of this
 	// table; build-geo-data reads it, so the ALTER waits for a running read at most and
 	// resolve-ips runs it once per run (first task only), not in every task.
-	`ALTER TABLE public.rdns_geo_layer ADD COLUMN IF NOT EXISTS method text, ADD COLUMN IF NOT EXISTS rule_votes integer, ADD COLUMN IF NOT EXISTS mmdb_votes integer`,
+	`ALTER TABLE public.rdns_geo_layer ADD COLUMN IF NOT EXISTS method text, ADD COLUMN IF NOT EXISTS rule_votes integer, ADD COLUMN IF NOT EXISTS mmdb_votes integer, ADD COLUMN IF NOT EXISTS candidate_votes integer NOT NULL DEFAULT 0`,
 }
 
 // statements are the tables the ASN workflows write (Ensure). geo_eval,
@@ -232,7 +244,7 @@ func EnsureVisitorIPs(ctx context.Context, db Execer) error {
 
 // EnsureRDNS creates public.network_traces, public.traced_networks, public.ip_ptr_names and
 // public.rdns_geo_layer, the tables resolve-ips writes, and adds the
-// network_traces.candidates column and the method and vote columns of rdns_geo_layer.
+// network_traces.candidates and hop_ips columns and the method and vote columns of rdns_geo_layer.
 // resolve-ips uses it (with EnsureVisitorIPs) instead of Ensure, once per run: its
 // first task runs it (ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column exists).
 func EnsureRDNS(ctx context.Context, db Execer) error {

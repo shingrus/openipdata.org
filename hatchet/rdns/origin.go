@@ -2,13 +2,11 @@ package rdns
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"openipdata.org/hatchet/ipdata"
 )
@@ -74,16 +72,12 @@ func (o *originTable) longest(addr netip.Addr, maxBits int) (netip.Prefix, int64
 	return netip.Prefix{}, 0, false
 }
 
-// originQuery reads the announced IPv4 prefixes (prefixes.ipv4 of the json) of every
-// current ASN, so the rest of each document is never sent. public.asn.json is
-// TEXT: a value that is not a JSON object (the column defaults to ”) has no
-// prefixes, as for ipdata.ASNPrefixes; the CASE keeps the cast to jsonb away from it.
-// Read only.
-const originQuery = `SELECT a.asn,
-		ARRAY(SELECT t.e FROM jsonb_array_elements_text(l.list) AS t(e) WHERE t.e IS NOT NULL)
-	FROM public.asn a
-	CROSS JOIN LATERAL (SELECT CASE WHEN a.json LIKE '{%' THEN a.json::jsonb #> '{prefixes,ipv4}' END AS list) l
-	WHERE jsonb_typeof(l.list) = 'array' AND ` + ipdata.SeenAtFilter + ` ORDER BY a.asn`
+// originQuery and originFallbackQuery are the shared reads of ipdata (also used by
+// learn-rdns-rules); the country column is not used here.
+const (
+	originQuery         = ipdata.AnnouncedQuery
+	originFallbackQuery = ipdata.AnnouncedFallbackQuery
+)
 
 // addPrefixes adds the IPv4 prefixes among texts (as written in the json: spaces
 // around them are ignored, unparsable ones are left out) to o and returns how many.
@@ -98,74 +92,19 @@ func (o *originTable) addPrefixes(asn int64, texts []string) int {
 	return n
 }
 
-// originFallbackQuery reads every current ASN's whole json, for the case that
-// originQuery cannot cast one of them to jsonb. Read only.
-const originFallbackQuery = `SELECT a.asn, a.json FROM public.asn a WHERE ` + ipdata.SeenAtFilter + ` ORDER BY a.asn`
-
-// loadOrigin reads the announced IPv4 prefixes of public.asn. A json value that
-// starts like an object but is not valid JSON fails originQuery (SQLSTATE 22P02);
-// ipdata.ASNPrefixes ignores such a value, so the load then goes through
-// originFallbackQuery and one damaged row does not stop locate.
+// loadOrigin reads the announced IPv4 prefixes of public.asn (see ipdata.ReadAnnounced).
 func loadOrigin(ctx context.Context, conn *pgx.Conn) (*originTable, int, error) {
-	o, prefixes, err := loadOriginWith(ctx, conn, originQuery, scanPrefixList)
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == invalidTextRepresentation {
-		o, prefixes, err = loadOriginWith(ctx, conn, originFallbackQuery, scanWholeJSON)
-	}
+	o := newOriginTable()
+	prefixes := 0
+	reset := func() { o, prefixes = newOriginTable(), 0 }
+	err := ipdata.ReadAnnounced(ctx, conn, reset, func(asn int64, _ *string, texts []string) {
+		prefixes += o.addPrefixes(asn, texts)
+	})
 	if err != nil {
 		return nil, 0, err
 	}
 	if prefixes == 0 {
 		return nil, 0, fmt.Errorf("public.asn has no announced IPv4 prefixes")
-	}
-	return o, prefixes, nil
-}
-
-// invalidTextRepresentation is Postgres' SQLSTATE for an invalid json value.
-const invalidTextRepresentation = "22P02"
-
-// scanPrefixList reads a row of originQuery: the ASN and its IPv4 prefixes as text.
-func scanPrefixList(rows pgx.Rows) (int64, []string, error) {
-	var asn int64
-	var texts []string
-	err := rows.Scan(&asn, &texts)
-	return asn, texts, err
-}
-
-// scanWholeJSON reads a row of originFallbackQuery: the ASN and its json, from
-// which the IPv4 prefixes are taken.
-func scanWholeJSON(rows pgx.Rows) (int64, []string, error) {
-	var asn int64
-	var raw string
-	if err := rows.Scan(&asn, &raw); err != nil {
-		return 0, nil, err
-	}
-	var texts []string
-	for _, p := range ipdata.ASNPrefixes(raw) {
-		if p.Addr().Is4() {
-			texts = append(texts, p.String())
-		}
-	}
-	return asn, texts, nil
-}
-
-func loadOriginWith(ctx context.Context, conn *pgx.Conn, query string, scan func(pgx.Rows) (int64, []string, error)) (*originTable, int, error) {
-	rows, err := conn.Query(ctx, query)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	o := newOriginTable()
-	prefixes := 0
-	for rows.Next() {
-		asn, texts, err := scan(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		prefixes += o.addPrefixes(asn, texts)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
 	}
 	return o, prefixes, nil
 }

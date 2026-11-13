@@ -108,3 +108,48 @@ func TestScrubIPs(t *testing.T) {
 		t.Errorf("scrubIPs = %q", got)
 	}
 }
+
+// hop_ips holds every public answering hop (the target and private hops left out, each IP
+// once, path order); candidates only takes the last quarter of them.
+func TestPublicHopsAndHopIPsOfStored(t *testing.T) {
+	hops := `[{"ttl":1,"ip":"10.0.0.1"},{"ttl":2,"ip":"9.9.9.1"},{"ttl":3,"ip":null},{"ttl":4,"ip":"9.9.9.1"},{"ttl":5,"ip":"9.9.9.2"},{"ttl":6,"ip":"8.8.8.1"},{"ttl":7,"ip":"5.6.7.9"}]`
+	want := addrs("9.9.9.1", "9.9.9.2", "8.8.8.1")
+	if got := hopIPsOfStored("5.6.7.9", hops); !reflect.DeepEqual(got, want) {
+		t.Errorf("hop IPs = %v, want %v", got, want)
+	}
+	// The quarter of 3 hops is 1: candidates is a subset of target + hop IPs.
+	if got := candidatesOfStored("5.6.7.9", hops); !reflect.DeepEqual(got, addrs("5.6.7.9", "8.8.8.1")) {
+		t.Errorf("candidates = %v", got)
+	}
+	if got := hopIPsOfStored("5.6.7.9", "not json"); len(got) != 0 {
+		t.Errorf("bad path: %v", got)
+	}
+	if got := hopIPsOfStored("2001:db8::1", hops); got != nil {
+		t.Errorf("IPv6 target: %v", got)
+	}
+}
+
+// resolve-names names the candidates and every hop; locate's candidateIPs stays the short list.
+func TestNameIPsIncludeAllHops(t *testing.T) {
+	trace := tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "9.9.9.1", "9.9.9.2", "9.9.9.3", "9.9.9.4", "5.6.0.1")
+	trace.HopIPs = addrs("9.9.9.1", "9.9.9.2", "9.9.9.3", "9.9.9.4", "5.6.0.1", "10.0.0.1")
+	if got := candidateIPs([]traceIn{trace}); !reflect.DeepEqual(got, addrs("5.6.0.1", "5.6.7.9", "9.9.9.4")) {
+		t.Errorf("candidateIPs = %v", got)
+	}
+	want := addrs("5.6.0.1", "5.6.7.9", "9.9.9.1", "9.9.9.2", "9.9.9.3", "9.9.9.4")
+	if got := nameIPs([]traceIn{trace}); !reflect.DeepEqual(got, want) {
+		t.Errorf("nameIPs = %v, want %v", got, want)
+	}
+}
+
+func TestTracesQueryHopIPsOnlyWhenAsked(t *testing.T) {
+	if contains(tracesQuery, "hop_ips") {
+		t.Errorf("locate's trace query reads hop_ips: %s", tracesQuery)
+	}
+	if !contains(tracesWithHopsQuery, "hop_ips") || contains(tracesWithHopsQuery, "hops,") || contains(tracesWithHopsQuery, ", hops") {
+		t.Errorf("resolve-names trace query: %s", tracesWithHopsQuery)
+	}
+	if !contains(backfillHopIPsQuery, "hop_ips IS NULL") || !contains(backfillHopIPsSQL, "hop_ips IS NULL") {
+		t.Error("hop_ips backfill does not target NULL rows only")
+	}
+}

@@ -35,8 +35,10 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 | `public.geo_ix_pdb` | `sync-peeringdb` |
 | `public.asn_domain` | `update-asn-domains` |
 | `public.geo_eval` | `build-geo-data` |
+| `public.network_traces`, `public.traced_networks`, `public.ip_ptr_names`, `public.rdns_geo_layer` | `resolve-ips` |
+| `public.rdns_city_rules` | `learn-rdns-rules` |
 
-All three share one concurrency limit, so only one runs at a time. Every morning (UTC):
+The three ASN workflows share one concurrency limit, so only one runs at a time. Every morning (UTC):
 `sync-peeringdb` (03:00) → `update-asn-domains` (04:00) → `build-asn-data` (06:00).
 ipverse/asn-ip publishes its daily update at about 02:30 UTC, so the 06:00 build has fresh
 asn-ip data plus the latest PeeringDB data and domains. `update-asn-domains` and
@@ -431,6 +433,57 @@ present in both rows), `publish` fails without retries (`geo.ErrGate`). With no 
 no baseline and it publishes. A manual run with `{"force_publish": true}` (or `run-geo -force-publish`)
 skips the gate, after checking that the drop is real; the forced row becomes the new baseline.
 
+### `learn-rdns-rules` (`hatchet/rdnsrules/`, daily 05:00 UTC)
+
+Learns extraction rules per registered router domain from the last 180 days of traces: the PTR names
+of every traced IP (the target, the candidates and every public answering hop, `network_traces.hop_ips`;
+each IP once) and the dictionaries below. Up to 3 extractions per domain: rank 1 is the best on all
+names, rank 2 the best on the names rank 1 does not decode, rank 3 likewise on what is left; each must
+meet the floor of 3 distinct IPs with distinct decodable names on those names. Country agreement is
+diagnostic, not a gate. OurAirports, UN/LOCODE and GeoNames dictionaries have their own monthly cache
+under `rdnsrules/dictionaries/`. Rules and their resolved token-to-city mappings are published
+atomically in `public.rdns_city_rules` (one row per `(domain, rank)`); a failed refresh keeps the old
+rules, and a rank the learner no longer finds keeps its last row. Scoped manual/LLM overrides of any
+rank of a domain apply to whichever rank now has their extraction; a version withdrawn at one rank
+cannot come back at another.
+
+`resolve-ips` uses candidate rules immediately, for domains it has a rule for, in this order: legacy
+`generated_rules` matches and carried traced rows first; then the candidate rules, a domain's ranks in
+order, on the PTR name of the target (traces by kind) and after that on router hops (same-ASN hops
+first, closest first; a hop needs a known origin ASN). A match casts the one wide vote of the /24 and,
+when it is a target or a router of the target's ASN, also gives the /24 a traced row in `65-rdns` with
+method `candidate_rule` (rule name `<domain>#<rank>`). These rows are not sticky: every rebuild
+recomputes them from the current rules and traces, they are never carried over, and they never mark a
+/24 located (it keeps its silent/unmatched schedule and is traced again). Only `generated_rules`
+matches stay sticky and located. The MMDB hop fallback comes last. The existing `35-rdns-wide`
+same-country guard and layer order still apply. The output reports candidate rows and votes, winning
+wide rows, and agreement with existing rules where both decode the same winning router. These counts
+are diagnostics, not measured accuracy.
+
+Reject a rule with `run-rdns-rules -reject example.net` (comma-separated domains), or trigger
+`learn-rdns-rules` with `{"reject_domains":["example.net"]}`. This withdraws the current versions of
+all ranks of the domain, without downloads or learning. Rejected versions cannot be silently revived by
+a later learning run. The next `locate` rebuild removes the rows and votes of withdrawn rules; an
+withdrawal never needs `force_replace`: the shrink guard counts only the sticky rows (legacy-located
+traced rows), and `previous_volatile`/`stored_volatile` in the `locate` output show how many candidate
+and wide rows were replaced. A `public.rdns_city_rules` table with the old per-domain layout (no `rank`
+column) makes the learner stop with a fixed error: drop it once (it holds only learned rules) and rerun. `active` promotion (sticky learned rows with provenance), Atlas validation and manual
+override entry are future work; v1 consumes only `candidate` rows. See
+[the rule design](docs/rdns-rules-plan.md).
+
+### PTR failures in `resolve-ips`
+
+`resolve-names` looks up every public answering hop of the newest traces, not only the candidates;
+`trace` stores them in `network_traces.hop_ips` (older rows are filled once from `hops`), so no run reads
+the full path. `locate` matching still uses the candidates.
+
+Consecutive failed lookups wait 1 day, then 2 days, then 7 days between attempts. Success or
+`not_found` resets the counter; errors preserve any stored successful answer. Each run reports
+`errors_timeout`, `errors_servfail` and `errors_other` from the final resolver attempt, plus
+`backed_off` skips. A bounded retry pass (up to 500 IPs per run, oldest attempt first) keeps due
+failures retrying after the normal 7-day trace window while their candidates remain relevant
+within 180 days or are routers of carried traced rows. Located-name refreshes use the same backoff.
+
 ## Commands
 
 ```bash
@@ -446,6 +499,10 @@ openipdata-worker run-geofeeds -skip-upload -rdap-budget 100 -domain-budget 100 
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet
 openipdata-worker run-geo -skip-publish  # same, without uploading
 openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
+openipdata-worker run-rdns             # run resolve-ips once locally
+openipdata-worker run-rdns -force-replace # allow an intentional layer shrink above 10%
+openipdata-worker run-rdns-rules       # learn candidate rules once locally
+openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule, without learning
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
 mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-ipinfo <f>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON

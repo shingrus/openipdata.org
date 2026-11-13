@@ -2,6 +2,7 @@ package schema
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -135,6 +136,9 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 	if !strings.Contains(strings.Join(r.sqls, "\n"), "ADD COLUMN IF NOT EXISTS candidates inet[]") {
 		t.Error("network_traces has no candidates column")
 	}
+	if !strings.Contains(strings.Join(r.sqls, "\n"), "ADD COLUMN IF NOT EXISTS hop_ips inet[]") {
+		t.Error("network_traces has no hop_ips column")
+	}
 	// traced_networks: one row per traced /24, with its schedule; its next_trace_at index is partial.
 	var traced string
 	for _, sql := range r.sqls {
@@ -163,7 +167,7 @@ func TestEnsureRDNSRunsOnlyItsTables(t *testing.T) {
 	if len(alters) != 1 {
 		t.Fatalf("ALTER statements of rdns_geo_layer: %q", alters)
 	}
-	for _, col := range []string{"method text", "rule_votes integer", "mmdb_votes integer"} {
+	for _, col := range []string{"method text", "rule_votes integer", "mmdb_votes integer", "candidate_votes integer NOT NULL DEFAULT 0"} {
 		if !strings.Contains(alters[0], "ADD COLUMN IF NOT EXISTS "+col) {
 			t.Errorf("rdns_geo_layer has no idempotent %q column: %s", col, alters[0])
 		}
@@ -177,10 +181,72 @@ func TestEnsureLeavesOutRDNSTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sql := range r.sqls {
-		for _, table := range []string{"visitor_ips", "network_traces", "traced_networks", "ip_ptr_names", "rdns_geo_layer"} {
+		for _, table := range []string{"visitor_ips", "network_traces", "traced_networks", "ip_ptr_names", "rdns_geo_layer", "rdns_city_rules"} {
 			if strings.Contains(sql, table) {
 				t.Errorf("Ensure touches %s: %s", table, sql)
 			}
 		}
+	}
+}
+
+func TestEnsureRDNSCityRulesRunsOnlyItsTable(t *testing.T) {
+	r := &recorder{}
+	if err := EnsureRDNSCityRules(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.sqls) == 0 {
+		t.Fatal("no rule table DDL")
+	}
+	if all := strings.Join(r.sqls, "\n"); !strings.Contains(all, "PRIMARY KEY (domain, rank)") {
+		t.Error("rule table is not keyed by (domain, rank)")
+	}
+	for _, sql := range r.sqls {
+		if strings.HasPrefix(sql, "DO $$") { // the old-layout check
+			continue
+		}
+		if !strings.Contains(sql, "IF NOT EXISTS") || !strings.Contains(sql, "public.rdns_city_rules") {
+			t.Errorf("unexpected statement: %s", sql)
+		}
+		for _, other := range []string{"public.asn", "public.network_traces", "public.ip_ptr_names", "public.rdns_geo_layer"} {
+			if strings.Contains(sql, other) {
+				t.Errorf("learner DDL touches %s", other)
+			}
+		}
+	}
+}
+
+// failingExec returns err for the statements that contain match.
+type failingExec struct {
+	match string
+	err   error
+	sqls  []string
+}
+
+func (f *failingExec) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	f.sqls = append(f.sqls, sql)
+	if strings.Contains(sql, f.match) {
+		return pgconn.CommandTag{}, f.err
+	}
+	return pgconn.CommandTag{}, nil
+}
+
+func TestEnsureRDNSCityRulesOldLayoutIsReported(t *testing.T) {
+	f := &failingExec{match: "DO $$", err: &pgconn.PgError{Code: "P0001", Message: oldRuleLayoutMarker}}
+	err := EnsureRDNSCityRules(context.Background(), f)
+	if !errors.Is(err, ErrOldRuleLayout) || !strings.Contains(err.Error(), "drop it once") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, sql := range f.sqls {
+		if strings.Contains(strings.ToUpper(sql), "DROP ") && !strings.Contains(sql, "RAISE") {
+			t.Errorf("must never drop: %s", sql)
+		}
+		if strings.Contains(sql, "CREATE TABLE") {
+			t.Error("created the table after detecting the old layout")
+		}
+	}
+	// Any other failure keeps the generic wrapper.
+	other := &failingExec{match: "DO $$", err: errors.New("boom")}
+	if err := EnsureRDNSCityRules(context.Background(), other); err == nil || errors.Is(err, ErrOldRuleLayout) {
+		t.Errorf("other error = %v", err)
 	}
 }

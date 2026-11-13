@@ -49,14 +49,7 @@ func (h Hop) addr() (netip.Addr, bool) {
 // once. resolve-names and locate both use it, so they agree on which hops matter.
 func candidates(target netip.Addr, hops []Hop) []netip.Addr {
 	out := []netip.Addr{target}
-	var path []netip.Addr
-	seen := map[netip.Addr]bool{target: true}
-	for _, h := range hops {
-		if a, ok := h.addr(); ok && !seen[a] && ipdata.PublicV4(a) {
-			seen[a] = true
-			path = append(path, a)
-		}
-	}
+	path := publicHops(target, hops)
 	if len(path) == 0 {
 		return out
 	}
@@ -65,6 +58,21 @@ func candidates(target netip.Addr, hops []Hop) []netip.Addr {
 		out = append(out, path[i])
 	}
 	return out
+}
+
+// publicHops lists the hops of a path that answered from a public IPv4 address, in
+// path order, each IP once and the target left out. It is the path candidates takes
+// its tail from, and what network_traces.hop_ips stores.
+func publicHops(target netip.Addr, hops []Hop) []netip.Addr {
+	var path []netip.Addr
+	seen := map[netip.Addr]bool{target: true}
+	for _, h := range hops {
+		if a, ok := h.addr(); ok && !seen[a] && ipdata.PublicV4(a) {
+			seen[a] = true
+			path = append(path, a)
+		}
+	}
+	return path
 }
 
 // ipv4Text finds IPv4 addresses in text that is going to a log or an error.
@@ -83,7 +91,10 @@ type traceIn struct {
 	Kind       string
 	Target     netip.Addr
 	Candidates []netip.Addr // the target first, then the tail hops, closest to the target first
-	TracedAt   time.Time    // when it was traced; zero in tests
+	// HopIPs are all public answering hops (network_traces.hop_ips); only resolve-names
+	// reads them (readTraces with hops), never locate.
+	HopIPs   []netip.Addr
+	TracedAt time.Time // when it was traced; zero in tests
 }
 
 // parseTrace reads a trace from its stored text forms; false when the target
@@ -110,6 +121,20 @@ func parseTrace(prefix, kind, target string, cands []string) (traceIn, bool) {
 		t.Candidates = []netip.Addr{t.Target}
 	}
 	return t, true
+}
+
+// hopIPsOfStored computes network_traces.hop_ips of a stored trace from its target and
+// its path, for the one-time backfill; the same rules as candidatesOfStored.
+func hopIPsOfStored(target, hops string) []netip.Addr {
+	addr, err := netip.ParseAddr(target)
+	if err != nil || !addr.Unmap().Is4() {
+		return nil
+	}
+	var path []Hop
+	if json.Unmarshal([]byte(hops), &path) != nil {
+		path = nil
+	}
+	return publicHops(addr.Unmap(), path)
 }
 
 // candidatesOfStored computes the candidates of a stored trace from its target and

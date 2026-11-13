@@ -183,6 +183,8 @@ type traceRow struct {
 	// Candidates are the IPs of the path that get named and matched (see candidates):
 	// stored beside the path, so later tasks never read it.
 	Candidates []netip.Addr
+	// HopIPs are all public answering hops of the path (see publicHops), stored as hop_ips.
+	HopIPs []netip.Addr
 	// Answered: at least one hop of the path replied (any address).
 	Answered bool
 }
@@ -336,7 +338,7 @@ func (p *Pipeline) traceBatch(ctx context.Context, batch []batchTarget, out Trac
 			return nil, out, err
 		}
 		rows = append(rows, traceRow{Prefix: t.Prefix.String(), Kind: t.Kind, Target: t.Addr.String(), Hops: data,
-			Candidates: candidates(t.Addr, hops), Answered: answered})
+			Candidates: candidates(t.Addr, hops), HopIPs: publicHops(t.Addr, hops), Answered: answered})
 	}
 	return rows, out, nil
 }
@@ -384,7 +386,7 @@ func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.T
 		return res, dbError("store traces", err)
 	}
 	defer tx.Rollback(ctx)
-	var prefixes, kinds, targets, hops, cands []string
+	var prefixes, kinds, targets, hops, cands, hopIPs []string
 	answered := map[string]bool{}
 	var touched []string
 	for _, r := range rows {
@@ -393,16 +395,17 @@ func storeTraces(ctx context.Context, conn *pgx.Conn, rows []traceRow, at time.T
 		targets = append(targets, r.Target)
 		hops = append(hops, string(r.Hops))
 		cands = append(cands, joinAddrs(r.Candidates))
+		hopIPs = append(hopIPs, joinAddrs(r.HopIPs))
 		if _, seen := answered[r.Prefix]; !seen {
 			touched = append(touched, r.Prefix)
 		}
 		answered[r.Prefix] = answered[r.Prefix] || r.Answered
 	}
 	sort.Strings(touched)
-	if _, err := tx.Exec(ctx, `INSERT INTO public.network_traces (prefix, target_kind, target, traced_at, hops, candidates)
-		SELECT u.prefix::cidr, u.kind, u.target::inet, $6::timestamptz, u.hops::jsonb, string_to_array(u.cands, ',')::inet[]
-		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[]) AS u(prefix, kind, target, hops, cands)`,
-		prefixes, kinds, targets, hops, cands, at); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO public.network_traces (prefix, target_kind, target, traced_at, hops, candidates, hop_ips)
+		SELECT u.prefix::cidr, u.kind, u.target::inet, $7::timestamptz, u.hops::jsonb, string_to_array(u.cands, ',')::inet[], string_to_array(u.hips, ',')::inet[]
+		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[]) AS u(prefix, kind, target, hops, cands, hips)`,
+		prefixes, kinds, targets, hops, cands, hopIPs, at); err != nil {
 		return res, dbError("store traces", err)
 	}
 	tag, err := tx.Exec(ctx, `DELETE FROM public.network_traces t USING (

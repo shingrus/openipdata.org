@@ -170,8 +170,10 @@ func TestScheduleStatements(t *testing.T) {
 			t.Errorf("refreshQuery lacks %q", part)
 		}
 	}
-	if !strings.Contains(refreshQuery, "n.tried_at IS NULL OR n.tried_at < now() - interval '7 days'") {
-		t.Error("refreshQuery does not skip IPs tried in the last 7 days")
+	for _, part := range []string{"n.tried_at IS NULL OR n.tried_at <= now() - CASE", "n.error_count >= 3", "n.error_count = 2", "$4::int", "$3::int", "$2::int"} {
+		if !strings.Contains(refreshQuery, part) {
+			t.Errorf("refreshQuery lacks retry backoff term %q", part)
+		}
 	}
 	// Every lookup sets tried_at; an error moves nothing else of a stored ok/not_found row.
 	for _, part := range []string{"tried_at", "tried_at = excluded.tried_at", "THEN excluded.ptr ELSE t.ptr", "THEN excluded.status ELSE t.status", "THEN excluded.resolved_at ELSE t.resolved_at", "now(), now()"} {
@@ -182,9 +184,14 @@ func TestScheduleStatements(t *testing.T) {
 	if strings.Contains(storeNamesSQL, "WHERE excluded") {
 		t.Error("storeNamesSQL still skips the update of tried_at for an error")
 	}
-	// Normal freshness stays on resolved_at.
-	if !strings.Contains(freshNamesSQL, "resolved_at") || strings.Contains(freshNamesSQL, "tried_at") {
-		t.Error("freshness must use resolved_at only")
+	// Answer freshness stays on resolved_at; tried_at gates only recent errors.
+	if !strings.Contains(freshNamesSQL, "resolved_at") || !strings.Contains(freshNamesSQL, "tried_at") || !strings.Contains(freshNamesSQL, "status = 'ok'") || !strings.Contains(freshNamesSQL, "status = 'not_found'") {
+		t.Error("freshNamesSQL must use resolved_at for answers and tried_at for error backoff")
+	}
+	for _, part := range []string{"error_count > 0", "DISTINCT ON (prefix, target_kind)", "unnest(t.candidates)", "scope = 'traced'", "LIMIT $1"} {
+		if !strings.Contains(hasDueNameErrorsSQL+retryFailedNamesQuery, part) {
+			t.Errorf("due retry queries lack %q", part)
+		}
 	}
 	for _, bad := range []string{"INSERT", "UPDATE", "DELETE"} {
 		if strings.Contains(strings.ToUpper(refreshQuery), bad) {

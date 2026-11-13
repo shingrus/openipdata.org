@@ -8,12 +8,14 @@
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
+//	openipdata-worker run-rdns-rules [-reject domain,...] # learn-rdns-rules
 //
 // Environment: PGSQL (Postgres DSN; sync-geofeeds keeps its URL list in
 // public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn;
-// resolve-ips reads public.generated_rules and public.asn, reads and deletes rows of
+// resolve-ips reads public.generated_rules, public.rdns_city_rules and public.asn, reads and deletes rows of
 // public.visitor_ips (the websites insert them), and writes public.network_traces,
-// public.traced_networks, public.ip_ptr_names and public.rdns_geo_layer),
+// public.traced_networks, public.ip_ptr_names and public.rdns_geo_layer;
+// learn-rdns-rules reads the names of every traced IP (targets, candidates, hops) and ASNs, and writes public.rdns_city_rules),
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
@@ -43,6 +45,7 @@ import (
 	"openipdata.org/hatchet/geofeeds"
 	"openipdata.org/hatchet/pdb"
 	"openipdata.org/hatchet/rdns"
+	"openipdata.org/hatchet/rdnsrules"
 )
 
 // BuildASNInput is the build-asn-data input; cron runs use the zero value.
@@ -92,6 +95,12 @@ type ResolveIPsInput struct {
 	ForceReplace bool `json:"force_replace"`
 }
 
+// LearnRDNSRulesInput defaults to learning. RejectDomains withdraws current
+// versions only, without source downloads or learning.
+type LearnRDNSRulesInput struct {
+	RejectDomains []string `json:"reject_domains"`
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -117,8 +126,10 @@ func main() {
 		err = runGeo(ctx, os.Args[2:])
 	case "run-rdns":
 		err = runRDNS(ctx, os.Args[2:])
+	case "run-rdns-rules":
+		err = runRDNSRules(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-geo, or run-rdns)", command)
+		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-geo, run-rdns, or run-rdns-rules)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -213,6 +224,10 @@ func newRDNSPipeline(progress func(string)) *rdns.Pipeline {
 	return &rdns.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, Scamper: scamper, MMDBBuilder: builder, R2: env("R2")}
 }
 
+func newRDNSRulesPipeline(progress func(string)) *rdnsrules.Pipeline {
+	return &rdnsrules.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress}
+}
+
 func pgsql() string { return env("PGSQL") }
 
 func dataDir() string {
@@ -245,6 +260,7 @@ func serve(ctx context.Context) error {
 			syncGeofeedsWorkflow(client),
 			buildGeoWorkflow(client),
 			resolveIPsWorkflow(client),
+			learnRDNSRulesWorkflow(client),
 		),
 		hatchet.WithSlots(4),
 	)
@@ -571,6 +587,25 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 // resolveIPsName is the name of the resolve-ips workflow (its last task starts the next run by name).
 const resolveIPsName = "resolve-ips"
 
+func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("learn-rdns-rules",
+		hatchet.WithWorkflowDescription("traced IP PTR names + public place dictionaries -> public.rdns_city_rules (up to 3 candidate rules per domain)"),
+		hatchet.WithWorkflowCron("0 5 * * *"),
+		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns-rules")),
+	)
+	wf.NewTask("learn", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.Output, error) {
+		p := newRDNSRulesPipeline(taskLog(ctx))
+		if err := p.CheckPGSQL(); err != nil {
+			return rdnsrules.Output{}, hatchet.NewNonRetryableError(err)
+		}
+		if len(input.RejectDomains) > 0 {
+			return p.Reject(ctx, input.RejectDomains)
+		}
+		return p.Learn(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+	return wf
+}
+
 // resolveIPsWorkflow traces visitor /24s and turns router names into cities.
 // Visitor IPs stay in Postgres (and the batch file on the VM): every task
 // returns counts only.
@@ -813,5 +848,28 @@ func runRDNS(ctx context.Context, args []string) error {
 		return err
 	}
 	_, err := p.Locate(ctx, *forceReplace)
+	return err
+}
+
+func runRDNSRules(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-rdns-rules", flag.ContinueOnError)
+	reject := flags.String("reject", "", "withdraw current rules for comma-separated registered domains, without learning")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() > 0 {
+		return errors.New("run-rdns-rules: unexpected argument")
+	}
+	p := newRDNSRulesPipeline(cliLog)
+	if err := p.CheckPGSQL(); err != nil {
+		return err
+	}
+	var rejection bool
+	flags.Visit(func(f *flag.Flag) { rejection = rejection || f.Name == "reject" })
+	if rejection {
+		_, err := p.Reject(ctx, strings.Split(*reject, ","))
+		return err
+	}
+	_, err := p.Learn(ctx)
 	return err
 }

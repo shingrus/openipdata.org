@@ -325,6 +325,134 @@ func TestLocateNothingToMatch(t *testing.T) {
 	}
 }
 
+func TestCandidateRuleWideVoteAndFallback(t *testing.T) {
+	o, legacy := locateWorld(t)
+	candidates, stats := compileCityRules([]cityRuleRow{{
+		Domain: "transit.net", Pattern: `^be2\.([a-z]+)\d*\.transit\.net$`,
+		PlacesJSON: `{"xyz":["NL","Amsterdam"],"abc":["DE","Munich"],"qwe":["GB","London"]}`, Status: "candidate", Version: "v1",
+	}})
+	if stats.Loaded != 1 {
+		t.Fatalf("candidate rules: %+v", stats)
+	}
+	trace := tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "8.8.8.1", "8.8.8.2", "8.8.8.3", "5.6.0.2", "9.9.0.2")
+	ptrs := names("9.9.0.2", "be2.xyz1.transit.net", "5.6.0.2", "be2.abc1.transit.net")
+	rows, out := locate([]traceIn{trace}, ptrs, legacy, o, nil, nil, candidates)
+	w := rowFor(rows, "5.6.0.0/16", scopeWide)
+	// 5.6.0.2 is a router of the target's ASN: it also gives the /24 a (non-sticky) traced row.
+	if tr := rowFor(rows, "5.6.8.0/24", scopeTraced); tr == nil || tr.City != "Munich" || tr.Method != methodCandidate ||
+		tr.Rule != "transit.net#1" || tr.RouterIP != netip.MustParseAddr("5.6.0.2") || out.CandidateTraced != 1 || out.Traced != 0 {
+		t.Fatalf("candidate traced row = %+v, output %+v", tr, out)
+	}
+	if w == nil || w.City != "Munich" ||
+		w.Method != methodCandidate || w.CandidateVotes != 1 || w.RuleVotes != 0 || w.MMDBVotes != 0 || out.CandidateVotes != 1 || out.CandidateWide != 1 {
+		t.Fatalf("candidate vote = row %+v, output %+v", w, out)
+	}
+
+	// A name with an unknown token does not block the MMDB hop fallback.
+	ptrs[netip.MustParseAddr("9.9.0.2")] = "be2.unknown1.transit.net"
+	ptrs[netip.MustParseAddr("5.6.0.2")] = "core.isp.net"
+	rows, out = locate([]traceIn{trace}, ptrs, legacy, o, hopCities("9.9.0.2", "NL", "Amsterdam"), nil, candidates)
+	w = rowFor(rows, "5.6.0.0/16", scopeWide)
+	if w == nil || w.Method != methodMMDB || w.CandidateVotes != 0 || w.MMDBVotes != 1 || out.MMDBVotes != 1 {
+		t.Fatalf("unknown-token fallback = row %+v, output %+v", w, out)
+	}
+
+	// A matching target name is tried first and locates the /24 and its wide row.
+	targetOnly := tr("5.6.9.0/24", kindVisitor, "5.6.9.9")
+	rows, out = locate([]traceIn{targetOnly}, names("5.6.9.9", "be2.xyz1.transit.net"), legacy, o,
+		hopCities("5.6.9.9", "NL", "Amsterdam"), nil, candidates)
+	if g := rowFor(rows, "5.6.9.0/24", scopeTraced); g == nil || g.City != "Amsterdam" || g.Method != methodCandidate || g.RouterIP != netip.MustParseAddr("5.6.9.9") ||
+		rowFor(rows, "5.6.0.0/16", scopeWide) == nil || out.CandidateVotes != 1 || out.MMDBVotes != 0 || out.MMDBCompared != 0 {
+		t.Fatalf("target name was not used: rows=%+v output=%+v", rows, out)
+	}
+	legacyTarget, _ := compileRules([]ruleRow{{"target", `be2`, `["transit.net"]`, "NL", "Amsterdam"}})
+	rows, out = locate([]traceIn{targetOnly}, names("5.6.9.9", "be2.xyz1.transit.net"), legacyTarget, o,
+		hopCities("5.6.9.9", "NL", "Amsterdam"), nil, candidates)
+	if rowFor(rows, "5.6.9.0/24", scopeTraced) == nil || out.CandidateCompared != 0 || out.CandidateAgreed != 0 ||
+		out.CandidateVotes != 0 || out.MMDBCompared != 0 {
+		t.Fatalf("target match entered router diagnostics or votes: rows=%+v output=%+v", rows, out)
+	}
+
+	// Across three targets, each /24 still casts just the first candidate vote.
+	three := []traceIn{
+		tr("5.6.10.0/24", kindVisitor, "5.6.10.9", "9.9.0.2"),
+		tr("5.6.10.0/24", kindGateway, "5.6.10.1", "9.9.0.3"),
+		tr("5.6.10.0/24", kindRandom, "5.6.10.10", "9.9.0.4"),
+	}
+	ptrs = names("9.9.0.2", "be2.xyz1.transit.net", "9.9.0.3", "be2.abc1.transit.net", "9.9.0.4", "be2.qwe1.transit.net")
+	rows, out = locate(three, ptrs, legacy, o, nil, nil, candidates)
+	w = rowFor(rows, "5.6.0.0/16", scopeWide)
+	if w == nil || w.City != "Amsterdam" || w.CandidateVotes != 1 || out.CandidateVotes != 1 || out.Votes != 1 {
+		t.Fatalf("three traces produced more than one candidate vote: row=%+v output=%+v", w, out)
+	}
+
+	// Without a known target origin, candidates cannot create an announced-prefix vote.
+	unknownASN := tr("45.6.10.0/24", kindVisitor, "45.6.10.9", "9.9.0.2")
+	rows, out = locate([]traceIn{unknownASN}, names("9.9.0.2", "be2.xyz1.transit.net"), legacy, o,
+		hopCities("9.9.0.2", "NL", "Amsterdam"), nil, candidates)
+	if len(rows) != 0 || out.CandidateVotes != 0 || out.MMDBVotes != 0 {
+		t.Fatalf("unknown-origin candidate voted: rows=%+v output=%+v", rows, out)
+	}
+}
+
+func TestCandidateRuleLosesToLegacyAndCarriedRows(t *testing.T) {
+	o, legacy := locateWorld(t)
+	candidates, _ := compileCityRules([]cityRuleRow{
+		{Domain: "transit.net", Pattern: `^be2\.([a-z]+)\d*\.transit\.net$`,
+			PlacesJSON: `{"xyz":["NL","Amsterdam"]}`, Status: "candidate", Version: "v1"},
+		{Domain: "isp.net", Pattern: `^ae1\.([a-z]+)\d*\.isp\.net$`,
+			PlacesJSON: `{"fra":["DE","Frankfurt"]}`, Status: "candidate", Version: "v1"},
+	})
+	traces := []traceIn{
+		tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "9.9.0.2"), // candidate is considered first
+		tr("5.6.8.0/24", kindGateway, "5.6.8.1", "5.6.0.1"), // but legacy rules are checked across the /24 first
+	}
+	ptrs := names("5.6.0.1", "ae1.fra01.isp.net", "9.9.0.2", "be2.xyz1.transit.net")
+	rows, out := locate(traces, ptrs, legacy, o, nil, nil, candidates)
+	if got := rowFor(rows, "5.6.0.0/16", scopeWide); got == nil || got.City != "Frankfurt" || got.RuleVotes != 1 || got.CandidateVotes != 0 {
+		t.Fatalf("legacy rule did not win: %+v", got)
+	}
+	if out.CandidateCompared != 1 || out.CandidateAgreed != 1 || out.CandidateWide != 0 {
+		t.Fatalf("candidate/legacy diagnostics = %+v", out)
+	}
+	disagreeing, _ := compileCityRules([]cityRuleRow{{
+		Domain: "isp.net", Pattern: `^ae1\.([a-z]+)\d*\.isp\.net$`,
+		PlacesJSON: `{"fra":["DE","Munich"]}`, Status: "candidate", Version: "v2",
+	}})
+	_, disagree := locate(traces, ptrs, legacy, o, nil, nil, disagreeing)
+	if disagree.CandidateCompared != 1 || disagree.CandidateAgreed != 0 {
+		t.Fatalf("candidate disagreement diagnostics = %+v", disagree)
+	}
+
+	carried := carriedRow("5.6.8.0/24", "DE", "Munich", time.Now().Add(-time.Hour))
+	noRuleTrace := tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "9.9.0.3")
+	rows, out = locate([]traceIn{noRuleTrace}, names("9.9.0.3", "be2.xyz1.transit.net"), legacy, o, nil, []geoRow{carried}, candidates)
+	if rowFor(rows, "5.6.8.0/24", scopeTraced) == nil || out.Carried != 1 {
+		t.Fatalf("candidate displaced carried row: %+v, %+v", rows, out)
+	}
+	if got := rowFor(rows, "5.6.0.0/16", scopeWide); got == nil || got.City != "Munich" || got.CandidateVotes != 0 {
+		t.Fatalf("carried row vote = %+v", got)
+	}
+}
+
+func TestCandidateAndLegacyVotesShareWeightAndReportLegacyMethod(t *testing.T) {
+	o, legacy := locateWorld(t)
+	candidates, _ := compileCityRules([]cityRuleRow{{
+		Domain: "transit.net", Pattern: `^be2\.([a-z]+)\d*\.transit\.net$`,
+		PlacesJSON: `{"abc":["DE","Munich"]}`, Status: "candidate", Version: "v1",
+	}})
+	traces := []traceIn{
+		tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "9.9.0.2"),
+		tr("5.6.9.0/24", kindVisitor, "5.6.9.9", "5.6.0.1"),
+	}
+	ptrs := names("9.9.0.2", "be2.abc1.transit.net", "5.6.0.1", "ae1.muc01.isp.net")
+	rows, out := locate(traces, ptrs, legacy, o, nil, nil, candidates)
+	w := rowFor(rows, "5.6.0.0/16", scopeWide)
+	if w == nil || w.City != "Munich" || w.Method != methodRule || w.RuleVotes != 1 || w.CandidateVotes != 1 || w.MMDBVotes != 0 || out.CandidateWide != 1 {
+		t.Fatalf("mixed candidate/legacy votes = row %+v, output %+v", w, out)
+	}
+}
+
 func TestCheckShrink(t *testing.T) {
 	for _, c := range []struct {
 		previous, rows int
@@ -373,11 +501,16 @@ func TestTracesQueryReadsOnly(t *testing.T) {
 	if locateWindow != "180 days" || resolveWindow != "7 days" {
 		t.Errorf("windows: locate %s, resolve-names %s", locateWindow, resolveWindow)
 	}
-	for _, q := range []string{tracesQuery, originQuery, originFallbackQuery, namesQuery, fingerprintTracesQuery, fingerprintNamesQuery, fingerprintASNQuery, fingerprintRulesQuery} {
+	for _, q := range []string{tracesQuery, originQuery, originFallbackQuery, namesQuery, cityRulesQuery, fingerprintTracesQuery, fingerprintNamesQuery, fingerprintASNQuery, fingerprintRulesQuery, fingerprintCityRulesQuery} {
 		for _, bad := range []string{"INSERT", "UPDATE", "ALTER", "DELETE", "CREATE"} {
 			if contains(upper(q), bad) {
 				t.Errorf("%s contains %s", q, bad)
 			}
+		}
+	}
+	for _, input := range []string{"domain", "rank", "pattern", "dictionary", "places", "version", "status"} {
+		if !contains(fingerprintCityRulesQuery, input) {
+			t.Errorf("candidate-rule fingerprint does not include %q", input)
 		}
 	}
 }
@@ -555,5 +688,136 @@ func TestLocateStampsRowWithTraceTime(t *testing.T) {
 	}
 	if w := rowFor(rows, "5.6.0.0/16", scopeWide); w == nil || !w.LocatedAt.IsZero() {
 		t.Errorf("a wide row is stamped by the table: %+v", w)
+	}
+}
+
+func transitCandidates(t *testing.T, rows ...cityRuleRow) []cityRule {
+	t.Helper()
+	rules, st := compileCityRules(rows)
+	if st.Loaded != len(rows) {
+		t.Fatalf("candidate rules: %+v", st)
+	}
+	return rules
+}
+
+// A candidate match gives the /24 a traced row too (method candidate_rule), but only a target
+// or a router of its own ASN does; a transit router only votes.
+func TestCandidateTracedRows(t *testing.T) {
+	o, legacy := locateWorld(t)
+	cands := transitCandidates(t, cityRuleRow{Domain: "transit.net", Rank: 1, Pattern: `^be2\.([a-z]+)\d*\.transit\.net$`,
+		PlacesJSON: `{"xyz":["NL","Amsterdam"],"abc":["DE","Munich"]}`, Status: "candidate", Version: "v1"})
+
+	// Only a transit (AS200) router matches: a wide vote, no traced row.
+	rows, out := locate([]traceIn{tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "9.9.0.2")}, names("9.9.0.2", "be2.xyz1.transit.net"), legacy, o, nil, nil, cands)
+	if rowFor(rows, "5.6.8.0/24", scopeTraced) != nil || rowFor(rows, "5.6.0.0/16", scopeWide) == nil || out.CandidateTraced != 0 || out.CandidateVotes != 1 {
+		t.Fatalf("transit router: rows=%+v out=%+v", rows, out)
+	}
+
+	// The target's own name comes before every hop, whatever the kind order: the gateway's
+	// target name beats the visitor's router hop.
+	traces := []traceIn{
+		tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "5.6.0.2"),
+		tr("5.6.8.0/24", kindGateway, "5.6.8.1"),
+	}
+	traces[0].TracedAt = time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	traces[1].TracedAt = traces[0].TracedAt
+	ptrs := names("5.6.0.2", "be2.xyz1.transit.net", "5.6.8.1", "be2.abc1.transit.net")
+	rows, out = locate(traces, ptrs, legacy, o, nil, nil, cands)
+	g := rowFor(rows, "5.6.8.0/24", scopeTraced)
+	if g == nil || g.City != "Munich" || g.RouterIP != netip.MustParseAddr("5.6.8.1") || g.Method != methodCandidate ||
+		g.SameASN == nil || !*g.SameASN || !g.LocatedAt.Equal(traces[0].TracedAt) {
+		t.Fatalf("target first: %+v out=%+v", g, out)
+	}
+	if w := rowFor(rows, "5.6.0.0/16", scopeWide); w == nil || w.City != "Munich" || w.Method != methodCandidate || w.CandidateVotes != 1 || out.Votes != 1 {
+		t.Fatalf("wide row %+v out=%+v", w, out)
+	}
+	// Without the target name the router hop of the same ASN is used.
+	delete(ptrs, netip.MustParseAddr("5.6.8.1"))
+	rows, _ = locate(traces, ptrs, legacy, o, nil, nil, cands)
+	if g := rowFor(rows, "5.6.8.0/24", scopeTraced); g == nil || g.City != "Amsterdam" || g.RouterIP != netip.MustParseAddr("5.6.0.2") {
+		t.Fatalf("router fallback: %+v", g)
+	}
+}
+
+// Candidate rows are recomputed, never carried: a row of the previous layer is gone as soon as
+// no rule finds the /24 again, while a legacy row stays.
+func TestCandidateTracedRowsAreNotSticky(t *testing.T) {
+	o, legacy := locateWorld(t)
+	cand := geoRow{Prefix: netip.MustParsePrefix("5.6.8.0/24"), Scope: scopeTraced, Country: "NL", City: "Amsterdam",
+		RouterIP: netip.MustParseAddr("5.6.0.2"), Rule: "transit.net#1", Method: methodCandidate, LocatedAt: time.Now().Add(-time.Hour)}
+	legacyRow := carriedRow("5.6.7.0/24", "DE", "Frankfurt", time.Now().Add(-time.Hour))
+	traces := []traceIn{tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "5.6.0.2"), tr("5.6.7.0/24", kindVisitor, "5.6.7.9", "5.6.0.3")}
+
+	// The rule is withdrawn: the candidate row and its wide vote vanish, the legacy row stays.
+	rows, out := locate(traces, names("5.6.0.2", "be2.xyz1.transit.net"), legacy, o, nil, []geoRow{cand, legacyRow})
+	if rowFor(rows, "5.6.8.0/24", scopeTraced) != nil || out.Carried != 1 || rowFor(rows, "5.6.7.0/24", scopeTraced) == nil {
+		t.Fatalf("withdrawn rule: rows=%+v out=%+v", rows, out)
+	}
+	if w := rowFor(rows, "5.6.0.0/16", scopeWide); w == nil || w.City != "Frankfurt" || w.RuleVotes != 1 {
+		t.Fatalf("wide after withdrawal: %+v", w)
+	}
+
+	// Still found by the current rule: one fresh row, not the old one and not a carried copy.
+	cands := transitCandidates(t, cityRuleRow{Domain: "transit.net", Rank: 1, Pattern: `^be2\.([a-z]+)\d*\.transit\.net$`,
+		PlacesJSON: `{"xyz":["BE","Brussels"]}`, Status: "candidate", Version: "v2"})
+	rows, out = locate(traces, names("5.6.0.2", "be2.xyz1.transit.net"), legacy, o, nil, []geoRow{cand}, cands)
+	if g := rowFor(rows, "5.6.8.0/24", scopeTraced); g == nil || g.City != "Brussels" || out.Carried != 0 || out.CandidateTraced != 1 {
+		t.Fatalf("changed rule: %+v out=%+v", g, out)
+	}
+	n := 0
+	for _, r := range rows {
+		if r.Prefix.String() == "5.6.8.0/24" && r.Scope == scopeTraced {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d traced rows for the /24", n)
+	}
+}
+
+// A domain's second rank decodes the names the first does not; the first match in rank
+// order wins and a legacy rule still beats every candidate.
+func TestCandidateRankOrderInLocate(t *testing.T) {
+	o, legacy := locateWorld(t)
+	cands := transitCandidates(t,
+		cityRuleRow{Domain: "transit.net", Rank: 1, Pattern: `^be2\.([a-z]+)\d*\.transit\.net$`, PlacesJSON: `{"xyz":["NL","Amsterdam"]}`, Status: "candidate", Version: "a"},
+		cityRuleRow{Domain: "transit.net", Rank: 2, Pattern: `^pool-([a-z]+)\d*\.transit\.net$`, PlacesJSON: `{"abc":["DE","Munich"]}`, Status: "candidate", Version: "b"})
+	rows, _ := locate([]traceIn{tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "5.6.0.2")}, names("5.6.0.2", "pool-abc7.transit.net"), legacy, o, nil, nil, cands)
+	g := rowFor(rows, "5.6.8.0/24", scopeTraced)
+	if g == nil || g.City != "Munich" || g.Rule != "transit.net#2" {
+		t.Fatalf("rank 2 row = %+v", g)
+	}
+	rows, _ = locate([]traceIn{tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "5.6.0.2")}, names("5.6.0.2", "ae1.fra01.isp.net"), legacy, o, nil, nil, cands)
+	if g := rowFor(rows, "5.6.8.0/24", scopeTraced); g == nil || g.Method != methodRule {
+		t.Fatalf("legacy row = %+v", g)
+	}
+}
+
+// The hop list for the MMDB fallback leaves out /24s that a candidate (target name or hop) located.
+func TestHopIPsSkipCandidateLocatedNetworks(t *testing.T) {
+	o, legacy := locateWorld(t)
+	cands := transitCandidates(t, cityRuleRow{Domain: "transit.net", Rank: 1, Pattern: `^pool-([a-z]+)\d*\.transit\.net$`,
+		PlacesJSON: `{"abc":["DE","Munich"]}`, Status: "candidate", Version: "a"})
+	traces := []traceIn{tr("5.6.8.0/24", kindVisitor, "5.6.8.9", "5.6.0.2"), tr("5.6.9.0/24", kindVisitor, "5.6.9.9", "5.6.0.3")}
+	got := hopIPs(traces, names("5.6.8.9", "pool-abc1.transit.net"), legacy, o, cands)
+	if !reflect.DeepEqual(got, []netip.Addr{netip.MustParseAddr("5.6.0.3")}) {
+		t.Errorf("hopIPs = %v", got)
+	}
+}
+
+// Only traced rows a legacy rule found are guarded by the shrink check.
+func TestGeoRowIsSticky(t *testing.T) {
+	for _, tc := range []struct {
+		row  geoRow
+		want bool
+	}{
+		{geoRow{Scope: scopeTraced, Method: methodRule}, true},
+		{geoRow{Scope: scopeTraced, Method: methodCandidate}, false},
+		{geoRow{Scope: scopeWide, Method: methodRule}, false},
+		{geoRow{Scope: scopeWide, Method: methodCandidate}, false},
+	} {
+		if got := tc.row.isSticky(); got != tc.want {
+			t.Errorf("%+v sticky = %v", tc.row, got)
+		}
 	}
 }
