@@ -6,7 +6,7 @@ to the database.
 Input (from export.sql): router-names.txt (one PTR name per line), learned-rules.tsv.
 Domains WITH a learned rule are controls (we know the answer); the others are the test.
 
-  export OPENROUTER_API_KEY=...            # never pass it on the command line
+  export OPENROUTER_TEST_API_KEY=...            # never pass it on the command line
   python3 llm_codes_test.py --models anthropic/claude-haiku-5.5,deepseek/deepseek-v4-flash
   python3 llm_codes_test.py --report       # summary again from the saved answers
 
@@ -352,9 +352,9 @@ def main():
             print(f"{'control' if d in rules else 'test   '} {len(names[d]):6d} {d}  e.g. {names[d][len(names[d]) // 2]}")
         return
     if not args.report:
-        key = os.environ.get("OPENROUTER_API_KEY")
+        key = os.environ.get("OPENROUTER_TEST_API_KEY")
         if not key:
-            sys.exit("set OPENROUTER_API_KEY")
+            sys.exit("set OPENROUTER_TEST_API_KEY")
         geonames = load_geonames(args.geonames)
         for m in models:
             run_model(m, domains, names, rules, key, args, geonames)
