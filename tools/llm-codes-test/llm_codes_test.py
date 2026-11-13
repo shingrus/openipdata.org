@@ -146,10 +146,16 @@ def load_geonames(path):
     return known
 
 
-def ask(model, prompt, key, timeout, label=""):
-    body = {"model": model, "temperature": 0, "max_tokens": 4000,
+def ask(model, prompt, key, timeout, label="", max_tokens=16000, reasoning="low"):
+    body = {"model": model, "temperature": 0, "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"}, "usage": {"include": True}}
+    # Thinking models spend output tokens on reasoning before the answer; "none" turns it off
+    # where the model allows, "default" leaves the model's own setting.
+    if reasoning == "none":
+        body["reasoning"] = {"enabled": False}
+    elif reasoning != "default":
+        body["reasoning"] = {"effort": reasoning}
     req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Authorization": "Bearer " + key, "Content-Type": "application/json",
                                           "X-Title": "rdns-codes-test"})
@@ -178,9 +184,16 @@ def ask(model, prompt, key, timeout, label=""):
     usage = data.get("usage") or {}
     choice = (data.get("choices") or [{}])[0]
     text = choice.get("message", {}).get("content") or ""
+    if not text.strip():
+        rt = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        return {"error": f"empty answer (finish={choice.get('finish_reason')}, {usage.get('completion_tokens')} output tokens, "
+                         f"{rt} of them reasoning)",
+                "seconds": round(time.time() - t0, 1), "cost": usage.get("cost") or 0}
     return {"text": text, "seconds": round(time.time() - t0, 1), "cost": usage.get("cost") or 0,
             "in": usage.get("prompt_tokens"), "out": usage.get("completion_tokens"),
-            "finish": choice.get("finish_reason"), "provider": data.get("provider")}
+            "finish": choice.get("finish_reason"), "provider": data.get("provider"),
+            "reasoning_tokens": ((usage.get("completion_tokens_details") or {}).get("reasoning_tokens")),
+            "reasoning_chars": len(choice.get("message", {}).get("reasoning") or "")}
 
 
 def parse(text):
@@ -296,7 +309,12 @@ def load_done(model):
     return done
 
 
-def run_model(model, domains, names, rules, key, args, geonames):
+def fmt_secs(x):
+    x = int(x)
+    return f"{x // 3600}h{x % 3600 // 60:02d}m" if x >= 3600 else f"{x // 60}m{x % 60:02d}s"
+
+
+def run_model(model, domains, names, rules, key, args, geonames, progress):
     done = load_done(model)
     todo = [d for d in domains if d not in done]
     spent = sum(r.get("cost") or 0 for r in done.values())
@@ -312,7 +330,7 @@ def run_model(model, domains, names, rules, key, args, geonames):
         prompt = PROMPT.format(domain=d, n=len(sample), total=len(all_names), names="\n".join(sample))
         kind = "control" if d in rules else "test"
         log(f"-> {model} {d} ({kind}): sending {len(sample)} of {len(all_names)} names, {len(prompt)} chars")
-        res = ask(model, prompt, key, args.timeout, label=f"{model} {d}")
+        res = ask(model, prompt, key, args.timeout, label=f"{model} {d}", max_tokens=args.max_tokens, reasoning=args.reasoning)
         row = {"domain": d, "control": d in rules, "names": len(all_names), **res}
         if "error" not in res:
             answer = parse(res["text"])
@@ -326,7 +344,12 @@ def run_model(model, domains, names, rules, key, args, geonames):
             log(f"<- {model} {d}: ERROR after {row.get('seconds')}s: {row['error']} (not saved, asked again next run)")
             return
         log(f"<- {model} {d}: {row['seconds']}s, {row.get('in')} in / {row.get('out')} out tokens, ${row.get('cost') or 0:.5f}, "
+            f"of them reasoning {row.get('reasoning_tokens')} tokens ({row.get('reasoning_chars')} chars), "
             f"finish={row.get('finish')}, provider={row.get('provider')}")
+        if row.get("finish") == "length":
+            log(f"   CUT OFF: the reply hit --max-tokens {args.max_tokens}"
+                + (" while still reasoning (no answer text); try --reasoning none or a higher --max-tokens"
+                   if not row.get("text") else "; the answer may be incomplete"))
         if not c.get("json"):
             log(f"   not JSON, raw answer starts: {row.get('text', '')[:400]!r}")
         else:
@@ -371,11 +394,18 @@ def run_model(model, domains, names, rules, key, args, geonames):
                 f.flush()
             spent += row.get("cost") or 0
             show(row)
-            log(f"   [{model} {n}/{len(todo)}, spent ${spent:.4f} of ${args.max_cost}, {time.time() - t_model:.0f}s]")
+            progress["done"] += 1
+            elapsed = time.time() - progress["start"]
+            left = progress["total"] - progress["done"]
+            eta = elapsed / progress["done"] * left
+            log(f"   STATUS model {progress['model']}/{progress['models']} {model}: {n}/{len(todo)} done, {len(todo) - n} left, "
+                f"${spent:.4f} of ${args.max_cost} | ALL: {progress['done']}/{progress['total']} done, {left} left, "
+                f"{fmt_secs(elapsed)} so far, about {fmt_secs(eta)} to go")
             if spent > args.max_cost:
                 log(f"{model}: budget ${args.max_cost} reached, cancelling the {len(todo) - n} domains not asked yet")
                 for other in futures:
                     other.cancel()
+                progress["total"] -= len(todo) - n
                 break
     log(f"=== {model}: done in {time.time() - t_model:.0f}s, ${spent:.4f} in total")
 
@@ -437,13 +467,17 @@ def main():
     p.add_argument("--sample", type=int, default=60, help="names sent per domain")
     p.add_argument("--parallel", type=int, default=4)
     p.add_argument("--timeout", type=int, default=180)
+    p.add_argument("--max-tokens", type=int, default=16000, help="output tokens per reply, reasoning included")
+    p.add_argument("--reasoning", default="low", choices=["none", "low", "medium", "high", "default"],
+                   help="reasoning effort for thinking models (none = off where the model allows)")
     p.add_argument("--max-cost", type=float, default=1.0, help="USD per model per run")
     p.add_argument("--list", action="store_true", help="only print the chosen domains")
     p.add_argument("--report", action="store_true", help="only print the summary of saved answers")
     args = p.parse_args()
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    log(f"start: models {', '.join(models)}")
+    log(f"start: models {', '.join(models)}; max {args.max_tokens} output tokens, reasoning {args.reasoning}, "
+        f"{args.parallel} requests in parallel (-> and <- lines of different domains interleave; match them by domain)")
     names, skipped = load_names(args.names)
     log(f"{args.names}: {sum(map(len, names.values()))} router names in {len(names)} domains, "
         f"{skipped} names skipped (a label outside [a-z0-9-])")
@@ -465,8 +499,13 @@ def main():
         log(f"GeoNames: {len(geonames)} (country, name) pairs from {args.geonames}" if geonames is not None
             else "GeoNames: not given, cities are not checked (--geonames)")
         log(f"answers go to out/<model>.jsonl, this log to {LOG_FILE}")
+        todo = {m: sum(1 for d in domains if d not in load_done(m)) for m in models}
+        progress = {"done": 0, "total": sum(todo.values()), "start": time.time(), "models": len(models), "model": 0}
+        log(f"plan: {progress['total']} requests in all: " + ", ".join(f"{m} {todo[m]}" for m in models)
+            + " (saved answers are not asked again)")
         for m in models:
-            run_model(m, domains, names, rules, key, args, geonames)
+            progress["model"] += 1
+            run_model(m, domains, names, rules, key, args, geonames, progress)
     report(models, set(domains))
 
 
