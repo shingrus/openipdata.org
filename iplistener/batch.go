@@ -50,7 +50,7 @@ type Batcher struct {
 func NewBatcher(w Writer, now func() time.Time, logf func(string, ...any)) *Batcher {
 	return &Batcher{
 		w: w, now: now, logf: logf,
-		size: 100, chunk: 1000, minGap: 2 * time.Second, maxWait: 60 * time.Second, ttl: time.Hour,
+		size: 100, chunk: 1000, minGap: 10 * time.Second, maxWait: 60 * time.Second, ttl: time.Hour,
 		queueCap: 50000, seenCap: 200000, backMin: 2 * time.Second, backMax: 5 * time.Minute,
 		pruneEach: time.Minute,
 		queued:    map[netip.Addr]struct{}{}, seen: map[netip.Addr]time.Time{},

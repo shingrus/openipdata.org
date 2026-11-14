@@ -59,17 +59,17 @@ func TestMinGap(t *testing.T) {
 		b.Add(ctx, ipn(i))
 	}
 	if len(w.batches) != 1 {
-		t.Fatal("second flush inside 2 s")
+		t.Fatal("second flush inside 10 s")
 	}
-	c.add(1999 * time.Millisecond)
+	c.add(9999 * time.Millisecond)
 	b.Tick(ctx)
 	if len(w.batches) != 1 {
-		t.Fatal("flushed at 1.999 s")
+		t.Fatal("flushed at 9.999 s")
 	}
 	c.add(time.Millisecond)
 	b.Tick(ctx)
 	if len(w.batches) != 2 || len(w.batches[1]) != 100 {
-		t.Fatal("no flush after 2 s")
+		t.Fatal("no flush after 10 s")
 	}
 }
 
@@ -120,6 +120,7 @@ func TestSeenStaysBounded(t *testing.T) {
 
 func TestRetryKeepsBatch(t *testing.T) {
 	b, w, c, logs := newTest()
+	b.minGap = 2 * time.Second // the test steps the backoff from 2 s
 	w.err = errors.New("write failed, postgres code 08006")
 	for i := 0; i < 100; i++ {
 		b.Add(ctx, ipn(i))
@@ -189,5 +190,61 @@ func TestFlushChunks(t *testing.T) {
 	b.Flush(ctx)
 	if len(w.batches) != 3 || len(w.batches[0]) != 1000 || b.Pending() != 0 {
 		t.Fatalf("batches %d", len(w.batches))
+	}
+}
+
+func TestDefaultLimits(t *testing.T) {
+	b, _, _, _ := newTest()
+	if b.size != 100 || b.minGap != 10*time.Second || b.maxWait != 60*time.Second {
+		t.Fatalf("defaults %d %s %s", b.size, b.minGap, b.maxWait)
+	}
+}
+
+func TestBatchLimits(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	l, err := batchLimits(env(nil))
+	if err != nil || l != (Limits{100, 10 * time.Second, 60 * time.Second}) {
+		t.Fatalf("defaults %+v %v", l, err)
+	}
+	l, err = batchLimits(env(map[string]string{"BATCH_SIZE": "1000", "MIN_INTERVAL": "1s", "MAX_WAIT": "2m"}))
+	if err != nil || l != (Limits{1000, time.Second, 2 * time.Minute}) {
+		t.Fatalf("custom %+v %v", l, err)
+	}
+	l, err = batchLimits(env(map[string]string{"MIN_INTERVAL": "90s"})) // MAX_WAIT default 60s is now too small
+	if err == nil || !strings.Contains(err.Error(), "MAX_WAIT") {
+		t.Fatalf("want MAX_WAIT error, got %+v %v", l, err)
+	}
+	bad := []struct{ name, val string }{
+		{"BATCH_SIZE", "0"}, {"BATCH_SIZE", "1001"}, {"BATCH_SIZE", "-5"}, {"BATCH_SIZE", "abc"}, {"BATCH_SIZE", "1.5"},
+		{"MIN_INTERVAL", "500ms"}, {"MIN_INTERVAL", "0s"}, {"MIN_INTERVAL", "10"}, {"MIN_INTERVAL", "soon"},
+		{"MAX_WAIT", "5s"}, {"MAX_WAIT", "1x"}, {"MAX_WAIT", "60"},
+	}
+	for _, c := range bad {
+		_, err := batchLimits(env(map[string]string{c.name: c.val}))
+		if err == nil || !strings.Contains(err.Error(), c.name) {
+			t.Errorf("%s=%q: want error naming %s, got %v", c.name, c.val, c.name, err)
+		}
+	}
+}
+
+func TestConfiguredMinInterval(t *testing.T) {
+	b, w, c, _ := newTest()
+	b.size, b.minGap, b.maxWait = 2, 10*time.Second, 60*time.Second
+	b.Add(ctx, ipn(1))
+	b.Add(ctx, ipn(2))
+	b.Add(ctx, ipn(3))
+	b.Add(ctx, ipn(4))
+	if len(w.batches) != 1 {
+		t.Fatal("second flush inside MIN_INTERVAL")
+	}
+	c.add(9 * time.Second)
+	b.Tick(ctx)
+	if len(w.batches) != 1 {
+		t.Fatal("flushed at 9 s")
+	}
+	c.add(time.Second)
+	b.Tick(ctx)
+	if len(w.batches) != 2 {
+		t.Fatal("no flush at 10 s")
 	}
 }

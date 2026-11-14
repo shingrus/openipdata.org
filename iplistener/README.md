@@ -10,7 +10,7 @@ reads that table. The table is created by `hatchet/schema`, never by this module
   (`$remote_addr`). Only public IPv4 is kept (IPv4-mapped IPv6 is unmapped first; private,
   CGNAT, loopback, link-local, multicast, reserved and other IPv6 are dropped).
 - An IP sent in the last hour is not queued again. Batches go out at 100 IPs (never more than
-  once per 2 s) or 60 s after the first queued IP, as one `INSERT ... ON CONFLICT` statement.
+  once every 10 s) or 60 s after the first queued IP (`BATCH_SIZE`, `MIN_INTERVAL`, `MAX_WAIT`), as one `INSERT ... ON CONFLICT` statement.
   A new IP is inserted; a known one only gets `last_seen_at = now()`, and only when that is
   more than an hour old.
 - A failed write is retried with backoff (2 s, doubling, up to 5 min). At most 50,000 IPs wait;
@@ -29,6 +29,11 @@ Env file `/etc/iplistener/iplistener.env` (see `iplistener.env.example`):
 | `FILTER` | yes, Go (RE2) regexp | `'"POST /api/\w+'` or `'"GET /api/beacon'` |
 | `EXCLUDE` | no, Go regexp | `'cc=T1\|bot\|crawl\|spider'` |
 | `SOURCE` | yes | short label stored in `visitor_ips.source` |
+| `BATCH_SIZE` | no, default `100` | flush when this many IPs are queued (1 to 1000) |
+| `MIN_INTERVAL` | no, default `10s` | never flush more often than this (Go duration, at least `1s`) |
+| `MAX_WAIT` | no, default `60s` | flush a non-empty queue this long after its first IP (Go duration, at least `MIN_INTERVAL`) |
+
+An invalid value makes the daemon exit with an error naming the variable.
 
 Supabase direct connections may be IPv6-only: use the session pooler connection string
 with the role's pooler user, and `sslmode=verify-full` (or `require`). The daemon uses the
