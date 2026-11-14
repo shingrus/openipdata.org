@@ -13,6 +13,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"html/template"
 	"log"
@@ -223,6 +224,12 @@ func fatal(name string, err error) {
 }
 
 func main() {
+	showVersion := flag.Bool("version", false, "print the version (the commit) and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	listen := os.Getenv("LISTEN")
 	if listen == "" {
 		listen = "127.0.0.1:8080"

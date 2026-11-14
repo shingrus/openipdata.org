@@ -1,0 +1,10 @@
+[Unit]
+Description=openipdata.org: refresh the Cloudflare address ranges weekly
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

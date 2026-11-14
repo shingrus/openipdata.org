@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Pulls the MMDB files from the rolling GitHub release "latest" into the site's data directory.
+# Runs as openipdata-site from openipdata-mmdb-pull.service (timer, every 10 minutes).
+# One unauthenticated, conditional API call per run (ETag, 304 reuses the saved JSON). A file is downloaded only when its change key differs
+# from the saved one (<name>.key): the asset digest when GitHub gives one, else updated_at|size.
+# Pings: HC_PING_MMDB on success, HC_PING_MMDB/fail on failure (the URL is never printed).
+#
+# Overrides for tests only (a real run needs none): API_URL, DATA_DIR.
+set -euo pipefail
+
+GITHUB_REPO="${GITHUB_REPO:-shingrus/openipdata.org}"
+API_URL="${API_URL:-https://api.github.com/repos/$GITHUB_REPO/releases/tags/latest}"
+DATA_DIR="${DATA_DIR:-/var/lib/openipdata-site/data}"
+ASSETS=(ip2geo-openipdata.mmdb ip2asn-openipdata.mmdb)
+
+log() {
+    printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+ping_hc() {
+    [[ -n "${HC_PING_MMDB:-}" ]] || return 0
+    curl -fsS -m 10 --retry 3 -o /dev/null "${HC_PING_MMDB}${1:-}" >/dev/null 2>&1 || log "warning: health ping failed"
+    return 0
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+handled=0
+on_exit() {
+    local rc=$?
+    if ((rc != 0 && handled == 0)); then
+        log "error: unexpected failure (exit $rc)"
+        ping_hc /fail
+    fi
+}
+trap on_exit EXIT
+
+exec 9>"$DATA_DIR/.pull.lock"
+if ! flock -n 9; then
+    log "another pull is running"
+    handled=1
+    exit 0
+fi
+
+# Conditional call: the saved ETag and body are used when both exist (If-None-Match, 304 = unchanged).
+# They are replaced only after the whole run succeeded, so a failed run retries in full.
+etag_file="$DATA_DIR/.release.etag"
+json_file="$DATA_DIR/.release.json"
+rm -f "$etag_file.tmp" "$json_file.tmp" "$DATA_DIR/.release.hdr" "$DATA_DIR/.release.body"
+hdr="$DATA_DIR/.release.hdr"
+body="$DATA_DIR/.release.body"
+cond=()
+if [[ -s "$etag_file" && -s "$json_file" ]]; then
+    read -r saved_etag <"$etag_file" || true
+    [[ -n "${saved_etag:-}" ]] && cond=(-H "If-None-Match: $saved_etag")
+fi
+code="$(curl -sS -m 30 -H 'Accept: application/vnd.github+json' ${cond[@]+"${cond[@]}"} -D "$hdr" -o "$body" -w '%{http_code}' "$API_URL" 2>/dev/null || true)"
+new_etag=""
+case "$code" in
+    200)
+        json="$(cat "$body")"
+        new_etag="$(tr -d '\r' <"$hdr" | awk 'tolower($1)=="etag:"{sub(/^[^:]*:[ \t]*/,""); print; exit}')"
+        ;;
+    304)
+        if [[ ${#cond[@]} -eq 0 ]] || ! json="$(cat "$json_file")"; then
+            code=""
+        fi
+        ;;
+esac
+rm -f "$hdr" "$body"
+if [[ "$code" != "200" && "$code" != "304" ]]; then
+    log "error: cannot read the release (rate limit, GitHub trouble or network)"
+    ping_hc /fail
+    handled=1
+    exit 1
+fi
+
+failures=0
+for name in "${ASSETS[@]}"; do
+    file="$DATA_DIR/$name"
+    rm -f "$file.tmp" "$file.key.tmp"
+    row="$(jq -r --arg n "$name" '[.assets[]? | select(.name == $n)][0] // empty
+        | [(.digest // "-"), (.updated_at // "-"), ((.size // 0) | tostring), (.browser_download_url // "-")] | @tsv' <<<"$json" 2>/dev/null || true)"
+    if [[ -z "$row" ]]; then
+        log "error: $name is not in the release; keeping the old file"
+        failures=$((failures + 1))
+        continue
+    fi
+    IFS=$'\t' read -r digest updated size url <<<"$row"
+    want=""
+    if [[ "$digest" =~ ^sha256:([0-9a-f]{64})$ ]]; then
+        want="${BASH_REMATCH[1]}"
+        key="$digest"
+    else
+        key="$updated|$size"
+    fi
+    saved=""
+    if [[ -f "$file.key" ]]; then read -r saved <"$file.key" || true; fi
+    if [[ -f "$file" && "$saved" == "$key" ]]; then
+        continue
+    fi
+    if [[ "$url" == "-" || ! "$size" =~ ^[0-9]+$ ]]; then
+        log "error: $name has no usable download URL or size"
+        failures=$((failures + 1))
+        continue
+    fi
+    log "downloading $name ($size bytes)"
+    if ! curl -fsSL -m 600 --retry 3 -o "$file.tmp" "$url" 2>/dev/null; then
+        rm -f "$file.tmp"
+        log "error: download of $name failed"
+        failures=$((failures + 1))
+        continue
+    fi
+    got_size="$(wc -c <"$file.tmp" | tr -d ' ')"
+    if [[ "$got_size" != "$size" ]]; then
+        rm -f "$file.tmp"
+        log "error: $name has $got_size bytes, expected $size"
+        failures=$((failures + 1))
+        continue
+    fi
+    if [[ -n "$want" && "$(sha256_of "$file.tmp")" != "$want" ]]; then
+        rm -f "$file.tmp"
+        log "error: $name does not match its digest"
+        failures=$((failures + 1))
+        continue
+    fi
+    chmod 0644 "$file.tmp"
+    mv -f "$file.tmp" "$file"
+    printf '%s\n' "$key" >"$file.key.tmp"
+    mv -f "$file.key.tmp" "$file.key"
+    log "updated $name"
+done
+
+handled=1
+if ((failures > 0)); then
+    ping_hc /fail
+    exit 1
+fi
+if [[ "$code" == "200" && -n "$new_etag" ]]; then
+    printf '%s' "$json" >"$json_file.tmp"
+    printf '%s\n' "$new_etag" >"$etag_file.tmp"
+    mv -f "$json_file.tmp" "$json_file"
+    mv -f "$etag_file.tmp" "$etag_file"
+fi
+ping_hc

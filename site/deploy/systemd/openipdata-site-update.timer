@@ -1,0 +1,10 @@
+[Unit]
+Description=openipdata.org: look for a new website binary every 2 minutes
+
+[Timer]
+OnCalendar=*:0/2
+RandomizedDelaySec=20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

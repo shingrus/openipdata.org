@@ -1,0 +1,17 @@
+[Unit]
+Description=openipdata.org: refresh the Cloudflare address ranges in nginx
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/openipdata-site/bin/openipdata-cf-ips
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+# Sandbox: not yet tested on the VM. nginx -t also writes its pid and log paths.
+ProtectSystem=strict
+ReadWritePaths=/etc/nginx/conf.d /run /var/log/nginx /var/lib/nginx
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
