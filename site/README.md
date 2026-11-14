@@ -35,7 +35,21 @@ Then open http://127.0.0.1:8080. `/healthz` answers `ok <version>` (`ok dev` for
 
 ## Release
 
-The `Publish site binary` workflow (Actions tab, Publish site binary, Run workflow; file `.github/workflows/site.yml`) runs the checks, builds a static linux/amd64 binary stamped with the commit, and replaces the assets of the rolling GitHub release `site`: `openipdata-site-linux-amd64` and its `.sha256`. The release is never marked latest. Only runs on `master` publish; on other branches the workflow only tests and builds. GitHub shows the Run workflow button only once the workflow file is on the default branch (`master`). `/healthz` answers `ok <commit>`, so you can tell which build is running.
+The `Publish site binary` workflow (`.github/workflows/site.yml`) runs the checks, builds a static linux/amd64 binary and replaces the assets of the rolling GitHub release `site`: `openipdata-site-linux-amd64` and its `.sha256`. The release is never marked latest.
+
+To release, tag a commit that is on `master` and push the tag:
+
+    git tag site-YYYY-MM-DD && git push origin site-YYYY-MM-DD
+
+Push the master commit first, then the tag. A tag whose commit is not on master yet only tests and builds; after merging, delete and push the tag again: `git push origin :refs/tags/<tag>` then `git push origin <tag>`. Tag names use only letters, digits, `.`, `_` and `-`.
+
+A second release on the same day gets a suffix, like `site-2026-11-15b`. The Run workflow button (Actions tab) still works on `master`; GitHub shows it only once the workflow file is on `master`.
+
+Guard: a run publishes only on `master`, or for a `site-*` tag whose commit is already on `master`. Any other ref (a branch, a tag on an unmerged commit) only tests and builds.
+
+`/healthz` answers `ok <version>`: `ok site-2026-11-15@<sha>` for a tag release, `ok <sha>` for a Run workflow release. The release notes name the tag and the commit.
+
+Rollback: tag an older `master` commit (for example `site-2026-11-16-rollback` on the commit you want) and push the tag; it passes the guard and publishes that older build. The updater then installs it.
 
 ## Server
 

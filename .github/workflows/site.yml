@@ -1,9 +1,13 @@
-# Started by hand for now. A `push` to `master` with `paths: [site/**]` will be
-# added once the updater on the web servers is in place.
+# A release is a pushed git tag `site-*` (e.g. site-2026-11-15), or the Run workflow
+# button. The rolling release we publish to has the tag `site`, which does not match
+# `site-*` (the hyphen is needed), and a tag made with github.token never starts a
+# workflow anyway, so publishing cannot trigger itself.
 name: Publish site binary
 
 on:
   workflow_dispatch:
+  push:
+    tags: ['site-*']
 
 permissions:
   contents: write
@@ -20,6 +24,36 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      # Publish only from master, or for a site-* tag whose commit is already on master.
+      # Other refs only test and build.
+      - name: Gate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish=false
+          if [ "$GITHUB_REF" = "refs/heads/master" ]; then
+            publish=true
+            echo "publish: run on master"
+          elif [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [[ "$GITHUB_REF" == refs/tags/site-* ]]; then
+            if ! [[ "$GITHUB_REF_NAME" =~ ^site-[A-Za-z0-9._-]+$ ]]; then
+              echo "no publish: tag name must match site-[A-Za-z0-9._-]+"
+              exit 1
+            fi
+            if ! git rev-parse --verify --quiet refs/remotes/origin/master >/dev/null; then
+              echo "no publish: origin/master is not available"
+            elif git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/master; then
+              publish=true
+              echo "publish: tag ${GITHUB_REF_NAME} is on a master commit"
+            else
+              echo "no publish: tag ${GITHUB_REF_NAME} is not on master"
+            fi
+          else
+            echo "no publish: ${GITHUB_REF} is not master or a site-* tag"
+          fi
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -45,20 +79,30 @@ jobs:
         working-directory: site
         run: |
           set -euo pipefail
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA}" -o ../dist/openipdata-site-linux-amd64 .
+          # On a tag the version is <tag>@<sha>, otherwise the bare sha (no spaces:
+          # /healthz answers "ok <version>" and the updater compares it exactly).
+          version="$GITHUB_SHA"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}@${GITHUB_SHA}"
+          fi
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${version}" -o ../dist/openipdata-site-linux-amd64 .
           cd ../dist
           sha256sum openipdata-site-linux-amd64 > openipdata-site-linux-amd64.sha256
 
-      # Runs on other branches only test and build.
       - name: Publish release
-        if: github.ref == 'refs/heads/master'
+        if: steps.gate.outputs.publish == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          notes="Commit ${GITHUB_SHA}, built $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}."
+          built="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            notes="Tag ${GITHUB_REF_NAME}, commit ${GITHUB_SHA}, built ${built} by run ${GITHUB_RUN_ID}."
+          else
+            notes="Commit ${GITHUB_SHA}, built ${built} by run ${GITHUB_RUN_ID}."
+          fi
           if ! out="$(gh release view site --json tagName 2>&1)"; then
             if grep -qi 'release not found' <<<"$out"; then
               gh release create site --title "Website binary" --notes "$notes" --target "$GITHUB_SHA" --latest=false
