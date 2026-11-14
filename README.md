@@ -12,6 +12,7 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 | `docs/pipeline.md` | the whole pipeline on one page: workflows, data sources, tables, layers |
 | `infra/` | VM provisioning script, systemd unit, env template |
 | `hatchet/` | `openipdata-worker`: the Hatchet worker; one folder per workflow |
+| `iplistener/` | `iplistener`: runs on web servers, tails the nginx log into `public.visitor_ips` ([README](iplistener/README.md)) |
 | `mmdbbuilder/` | `mmdbbuilder`: standalone MMDB build tool |
 | `tools/llm-codes-test/` | scratch LLM comparison for rDNS city codes, with results ([README](tools/llm-codes-test/README.md)) |
 

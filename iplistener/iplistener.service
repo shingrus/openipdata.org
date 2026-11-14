@@ -1,0 +1,33 @@
+[Unit]
+Description=iplistener: nginx access log to public.visitor_ips
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=iplistener
+Group=iplistener
+SupplementaryGroups=adm
+EnvironmentFile=/etc/iplistener/iplistener.env
+ExecStart=/opt/iplistener/bin/iplistener
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Never compete with the site: low priority, small hard limits.
+Environment=GOMEMLIMIT=40MiB GOMAXPROCS=1
+MemoryHigh=48M
+MemoryMax=96M
+CPUQuota=10%
+Nice=10
+IOSchedulingClass=idle
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
