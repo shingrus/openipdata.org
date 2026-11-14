@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and install iplistener on a web server (Ubuntu/Debian, amd64 or arm64).
+# Build and install iplistener on a web server (Ubuntu/Debian). Needs Go installed (e.g. snap install go --classic).
 # Run from a git clone: cd openipdata.org/iplistener && sudo ./init-iplistener.sh
 # Idempotent: re-run after `git pull` to redeploy; never overwrites an existing env file.
 set -euo pipefail
@@ -10,12 +10,8 @@ ETC_DIR=/etc/iplistener
 ENV_FILE=$ETC_DIR/iplistener.env
 SERVICE_NAME=iplistener
 
-# Go toolchain used only for the build, with its module/build caches; safe to delete.
+# Module and build caches of the Go build; safe to delete.
 CACHE_DIR=/var/cache/iplistener-build
-GO_VERSION="${GO_VERSION:-1.27.3}"
-# Checksum of the pinned tarball for this machine; set GO_SHA256 when you change GO_VERSION.
-GO_SHA256_AMD64="${GO_SHA256_AMD64:-65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40}"
-GO_SHA256_ARM64="${GO_SHA256_ARM64:-a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_TMP=""
@@ -32,18 +28,17 @@ fail() {
 
 [[ "${EUID}" -eq 0 ]] || fail "run this script as root"
 command -v systemctl >/dev/null 2>&1 || fail "systemd not found"
-case "$(uname -m)" in
-    x86_64) GO_ARCH=amd64; GO_SHA256="${GO_SHA256:-$GO_SHA256_AMD64}" ;;
-    aarch64 | arm64) GO_ARCH=arm64; GO_SHA256="${GO_SHA256:-$GO_SHA256_ARM64}" ;;
-    *) fail "unsupported architecture $(uname -m)" ;;
-esac
-[[ -n "${IPLISTENER_BIN:-}" || -n "$GO_SHA256" ]] || fail "no pinned sha256 for Go $GO_VERSION linux-$GO_ARCH; set GO_SHA256 (from https://go.dev/dl/)"
-
-if ! command -v curl >/dev/null 2>&1; then
-    log "installing curl"
-    DEBIAN_FRONTEND=noninteractive apt-get update -q
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ca-certificates curl
-fi
+# Go must already be installed (the version go.mod asks for, or newer); this script never downloads it.
+GO_BIN="$(command -v go || true)"
+[[ -z "$GO_BIN" && -x /usr/local/go/bin/go ]] && GO_BIN=/usr/local/go/bin/go
+GO_HINT="install Go first, e.g.: sudo snap install go --classic (then rerun this script)"
+[[ -n "$GO_BIN" ]] || fail "Go is not installed; $GO_HINT"
+GO_NEED="$(awk '$1 == "go" {print $2; exit}' "$SCRIPT_DIR/go.mod")"
+GO_HAVE="$("$GO_BIN" env GOVERSION 2>/dev/null | sed 's/^go//')"
+[[ -n "$GO_NEED" && -n "$GO_HAVE" ]] || fail "cannot read the Go version; $GO_HINT"
+[[ "$(printf '%s\n%s\n' "$GO_NEED" "$GO_HAVE" | sort -V | head -n1)" == "$GO_NEED" ]] ||
+    fail "Go $GO_HAVE is older than $GO_NEED (go.mod); $GO_HINT"
+log "using $GO_BIN (Go $GO_HAVE)"
 
 if ! getent group "$RUN_AS" >/dev/null 2>&1; then
     log "creating group: $RUN_AS"
@@ -64,50 +59,75 @@ install -d -m 0755 -o root -g root "$BIN_DIR"
 install -d -m 0750 -o root -g "$RUN_AS" "$ETC_DIR"
 
 BUILD_TMP="$(mktemp -d)"
-if [[ -n "${IPLISTENER_BIN:-}" ]]; then
-    # A binary built elsewhere (e.g. where Google downloads are blocked):
-    #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o iplistener-linux .
-    [[ -f "$IPLISTENER_BIN" ]] || fail "IPLISTENER_BIN: no such file"
-    [[ "$(head -c 4 "$IPLISTENER_BIN" | od -An -tx1 | tr -d ' \n')" == "7f454c46" ]] || fail "IPLISTENER_BIN is not a Linux (ELF) binary"
-    log "using prebuilt binary $IPLISTENER_BIN, skipping the Go build"
-    cp "$IPLISTENER_BIN" "$BUILD_TMP/iplistener"
-else
-    GO_ROOT="$CACHE_DIR/go$GO_VERSION"
-    install -d -m 0700 -o root -g root "$CACHE_DIR"
-    if [[ -x "$GO_ROOT/bin/go" ]]; then
-        log "using cached Go $GO_VERSION"
-    else
-        log "downloading Go $GO_VERSION ($GO_ARCH)"
-        curl -fsSL --retry 3 -o "$BUILD_TMP/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
-        echo "$GO_SHA256  $BUILD_TMP/go.tar.gz" | sha256sum --check --status || fail "Go download checksum mismatch"
-        rm -rf "$CACHE_DIR/go.partial"
-        mkdir "$CACHE_DIR/go.partial"
-        tar -C "$CACHE_DIR/go.partial" -xzf "$BUILD_TMP/go.tar.gz"
-        mv "$CACHE_DIR/go.partial/go" "$GO_ROOT"
-        rm -rf "$CACHE_DIR/go.partial"
-    fi
-    for old in "$CACHE_DIR"/go1.*; do
-        if [[ -d "$old" && "$old" != "$GO_ROOT" ]]; then
-            log "removing old toolchain $old"
-            rm -rf "$old"
-        fi
-    done
-
-    log "building iplistener from $SCRIPT_DIR"
-    (
-        cd "$SCRIPT_DIR"
-        GOTOOLCHAIN=local GOPATH="$CACHE_DIR/gopath" GOCACHE="$CACHE_DIR/cache" CGO_ENABLED=0 \
-            "$GO_ROOT/bin/go" build -buildvcs=false -trimpath -ldflags "-s -w" -o "$BUILD_TMP/iplistener" .
-    )
-fi
+install -d -m 0700 -o root -g root "$CACHE_DIR"
+log "building iplistener from $SCRIPT_DIR"
+(
+    cd "$SCRIPT_DIR"
+    GOTOOLCHAIN=local GOPATH="$CACHE_DIR/gopath" GOCACHE="$CACHE_DIR/cache" CGO_ENABLED=0 \
+        "$GO_BIN" build -buildvcs=false -trimpath -ldflags "-s -w" -o "$BUILD_TMP/iplistener" .
+)
 install -m 0755 -o root -g root "$BUILD_TMP/iplistener" "$BIN_DIR/iplistener"
 log "installed $BIN_DIR/iplistener"
 
+new_env=0
 if [[ -f "$ENV_FILE" ]]; then
     log "keeping existing $ENV_FILE"
 else
     log "installing env template: $ENV_FILE"
     install -m 0640 -o root -g "$RUN_AS" "$SCRIPT_DIR/iplistener.env.example" "$ENV_FILE"
+    new_env=1
+fi
+
+# is_set NAME: the env file has a non-empty value for NAME.
+is_set() {
+    grep -Eq "^${1}=([^'\"]|'[^']|\"[^\"])" "$ENV_FILE"
+}
+
+# set_value NAME VALUE: writes NAME='VALUE' (single quotes: systemd keeps \ and " literally).
+set_value() {
+    local tmp
+    tmp="$(mktemp "$ETC_DIR/.env.XXXXXX")"
+    NAME="$1" VAL="'$2'" awk '
+        $0 ~ "^" ENVIRON["NAME"] "=" { print ENVIRON["NAME"] "=" ENVIRON["VAL"]; done = 1; next }
+        { print }
+        END { if (!done) print ENVIRON["NAME"] "=" ENVIRON["VAL"] }' "$ENV_FILE" >"$tmp"
+    chown root:"$RUN_AS" "$tmp"
+    chmod 0640 "$tmp"
+    mv "$tmp" "$ENV_FILE"
+}
+
+# ask NAME PROMPT [DEFAULT] [secret]: asks on the terminal until the answer has no single quote.
+ask() {
+    local answer
+    while true; do
+        if [[ "${4:-}" == secret ]]; then
+            read -rs -p "$2: " answer </dev/tty
+            echo >/dev/tty
+        else
+            read -r -p "$2${3:+ [$3]}: " answer </dev/tty
+        fi
+        answer="${answer:-${3:-}}"
+        if [[ "$answer" == *"'"* ]]; then
+            echo "a value cannot contain a single quote (') here, try again" >/dev/tty
+            continue
+        fi
+        [[ -n "$answer" || "$1" == EXCLUDE ]] && break
+    done
+    [[ -n "$answer" ]] && set_value "$1" "$answer"
+    return 0
+}
+
+# Run in a terminal, ask for every empty setting, so one command installs and starts the service.
+if [[ -t 0 ]]; then
+    is_set PGSQL || ask PGSQL "Postgres connection string of the iplistener role (hidden)" "" secret
+    is_set LOG_FILE || ask LOG_FILE "nginx access log" "/var/log/nginx/access.log"
+    is_set FILTER || ask FILTER "regexp of the lines to keep, e.g. \"POST /api/\\w+ or \"GET /api/beacon"
+    ((new_env)) && ask EXCLUDE "regexp of the lines to drop (optional)" "cc=T1|bot|crawl|spider"
+    is_set SOURCE || ask SOURCE "short label for visitor_ips.source" "$(hostname -s)"
+fi
+if is_set LOG_FILE; then
+    log_file="$(sed -n "s/^LOG_FILE='\{0,1\}\([^']*\)'\{0,1\}$/\1/p" "$ENV_FILE" | head -n1)"
+    [[ -f "$log_file" ]] || log "warning: $log_file does not exist (yet)"
 fi
 
 log "installing systemd unit: $SERVICE_NAME"
@@ -117,12 +137,18 @@ systemctl enable "$SERVICE_NAME" >/dev/null
 
 missing=()
 for name in PGSQL LOG_FILE FILTER SOURCE; do
-    grep -Eq "^${name}=([^'\"]|'[^']|\"[^\"])" "$ENV_FILE" || missing+=("$name")
+    is_set "$name" || missing+=("$name")
 done
 if ((${#missing[@]} == 0)); then
     log "restarting $SERVICE_NAME"
     systemctl restart "$SERVICE_NAME"
-    log "check: journalctl -u $SERVICE_NAME -f"
+    sleep 3
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        log "$SERVICE_NAME is running; its log: journalctl -u $SERVICE_NAME -f"
+    else
+        journalctl -u "$SERVICE_NAME" -n 20 --no-pager || true
+        fail "$SERVICE_NAME did not start; fix $ENV_FILE (sudoedit) and rerun this script"
+    fi
 else
     log "empty in $ENV_FILE: ${missing[*]}; service enabled but not started"
     log "fill them in: sudoedit $ENV_FILE, then: systemctl restart $SERVICE_NAME && journalctl -u $SERVICE_NAME -f"

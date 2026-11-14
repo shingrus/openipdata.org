@@ -39,30 +39,25 @@ Invalid or missing settings stop the daemon with a message that never shows `PGS
 
 ## Install
 
-On the web server (Ubuntu/Debian, amd64 or arm64):
+On the web server (Ubuntu/Debian), two commands. Go must be installed (the version in `go.mod` or
+newer); the script never downloads it and stops with a hint when it is missing or too old:
 
 ```
-git clone <repo-url> && cd openipdata.org/iplistener && sudo ./init-iplistener.sh
-sudoedit /etc/iplistener/iplistener.env      # fill in the settings
-sudo systemctl restart iplistener && journalctl -u iplistener -f
+sudo snap install go --classic
+git clone https://github.com/shingrus/openipdata.org && cd openipdata.org/iplistener && sudo ./init-iplistener.sh
 ```
 
-The script is idempotent (re-run it after `git pull`). It builds with a pinned Go toolchain
-cached in `/var/cache/iplistener-build`, installs `/opt/iplistener/bin/iplistener`, creates the
+The script asks for every empty setting (the connection string is read hidden), writes the env
+file, starts the service and checks that it runs. To change a setting later:
+`sudoedit /etc/iplistener/iplistener.env` and rerun the script. Logs: `journalctl -u iplistener -f`.
+
+The script is idempotent (re-run it after `git pull`). It builds with the installed Go (module and build
+caches in `/var/cache/iplistener-build`), installs `/opt/iplistener/bin/iplistener`, creates the
 system user `iplistener` (in group `adm` to read the nginx logs), installs the systemd unit,
 and starts it only when the env file has all required values. It never overwrites the env file.
 
 nginx's default logrotate works: it renames the log, creates a new one and sends `USR1`;
 iplistener reads the new file from its start and keeps reading the renamed one for 30 s, because nginx writes to it until it reopens its logs.
-
-If the server cannot download Go (Google downloads blocked: `dl.google.com` answers 404), build the
-binary elsewhere and pass it in; the script then skips the Go download and build:
-
-```
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o iplistener-linux .   # on any machine with Go
-scp iplistener-linux <server>:/tmp/                                                              # then, on the server:
-sudo IPLISTENER_BIN=/tmp/iplistener-linux ./init-iplistener.sh
-```
 
 ## Resources
 
