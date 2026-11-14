@@ -151,7 +151,7 @@ func TestRoutes(t *testing.T) {
 		}
 	}
 	w := get(s, "GET", "/healthz")
-	if w.Code != 200 || w.Body.String() != "ok\n" || w.Header().Get("Cache-Control") != "no-store" {
+	if w.Code != 200 || w.Body.String() != "ok "+version+"\n" || w.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("healthz: %d %q %v", w.Code, w.Body.String(), w.Header())
 	}
 	w = get(s, "GET", "/favicon.ico")

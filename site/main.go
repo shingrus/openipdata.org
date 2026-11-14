@@ -33,6 +33,10 @@ var homeTemplate string
 //go:embed static/fonts/*.woff2
 var fontFiles embed.FS
 
+// version is the commit the binary was built from; the release build sets it
+// with -ldflags "-X main.version=<sha>".
+var version = "dev"
+
 const reloadEvery = 30 * time.Second
 
 // page is one rendered home page with its validators.
@@ -152,7 +156,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveHome(w, r)
 	case p == "/healthz":
 		w.Header().Set("Cache-Control", "no-store")
-		plain(w, http.StatusOK, "ok\n")
+		plain(w, http.StatusOK, "ok "+version+"\n")
 	case p == "/favicon.ico":
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		w.WriteHeader(http.StatusNoContent)
@@ -257,7 +261,7 @@ func main() {
 	if err != nil {
 		fatal("LISTEN", err)
 	}
-	log.Printf("openipdata-site listening on %s, scores from %s", listen, mmdb)
+	log.Printf("openipdata-site %s listening on %s, scores from %s", version, listen, mmdb)
 	done := make(chan struct{})
 	go func() {
 		<-ctx.Done()
