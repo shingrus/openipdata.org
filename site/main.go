@@ -12,6 +12,13 @@
 //	          set it to empty to use the address of the TCP connection).
 //	          Trusted only when the connection comes from loopback, i.e. from
 //	          our nginx.
+//	V4_URL, V6_URL  URLs that answer GET with the visitor's own address, on
+//	          a name that has only an A (V4_URL) or only an AAAA (V6_URL) record;
+//	          the page asks the one of the family the visitor did not use
+//	          (default https://v4.openipdata.org/ and https://v6.openipdata.org/).
+//	          Each is an absolute https URL (http only for 127.0.0.1 and
+//	          localhost) or empty: with the URL of that family empty the page
+//	          has no second row and no script.
 //
 // Both MMDBs are opened again when their file changes; a missing file only
 // means unknown values on the page. Addresses are never logged.
@@ -28,8 +35,10 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -62,7 +71,45 @@ type server struct {
 
 	geo, asn *mmdbFile // kept open for lookups
 	realIP   string    // header that holds the visitor address, or ""
+	v4, v6   string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
+	cspFill  string    // csp of a page that has the fill script
 	public   func(netip.Addr) bool
+}
+
+// useURLs sets V4_URL and V6_URL (already checked) and the policy of the pages
+// that have the fill script. Without any URL no page has it.
+func (s *server) useURLs(v4, v6 string) {
+	s.v4, s.v6 = v4, v6
+	var origins []string
+	for _, u := range []string{v4, v6} {
+		if u != "" {
+			x, _ := url.Parse(u)
+			if o := x.Scheme + "://" + x.Host; !slices.Contains(origins, o) {
+				origins = append(origins, o)
+			}
+		}
+	}
+	s.cspFill = s.csp
+	if len(origins) > 0 {
+		s.cspFill = csp(origins...)
+	}
+}
+
+// checkURL accepts an empty value or an absolute https URL (http only for
+// 127.0.0.1 and localhost, for local tests) without user info or fragment.
+func checkURL(v string) error {
+	if v == "" {
+		return nil
+	}
+	u, err := url.Parse(v)
+	if err != nil || !u.IsAbs() || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || strings.ContainsAny(v, " \t\r\n\"'<>") {
+		return errors.New("not an absolute https URL")
+	}
+	local := u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost"
+	if u.Scheme != "https" && !(u.Scheme == "http" && local) {
+		return errors.New("must be an https URL")
+	}
+	return nil
 }
 
 func newServer(geoPath, asnPath, realIP string) (*server, error) {
@@ -124,6 +171,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch p := r.URL.Path; {
 	case p == "/":
 		s.serveHome(w, r)
+	case p == "/ip":
+		s.serveIP(w, r)
 	case p == "/healthz":
 		w.Header().Set("Cache-Control", "no-store")
 		plain(w, http.StatusOK, "ok "+version+"\n")
@@ -161,6 +210,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	code, input, cache := http.StatusOK, "", "public, max-age=300"
 	title := "openipdata.org"
 	var p panel
+	fill := false
 	switch q.kind {
 	case "redirect":
 		h.Set("Cache-Control", cache)
@@ -183,12 +233,16 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		if a, ok := clientAddr(r, s.realIP); ok {
 			input = a.String()
 			p = s.panelFor("Your connection", a)
+			fill = s.addFill(&p, a)
 		} else {
 			p = panel{Title: "Your connection", Msg: "Address unknown"}
 		}
 	}
 	v := makeView(*s.scores.Load())
-	v.Panel, v.Input, v.Title = &p, input, title
+	v.Panel, v.Input, v.Title, v.Fill = &p, input, title, fill
+	if fill {
+		h.Set("Content-Security-Policy", s.cspFill)
+	}
 	body, err := render(s.tmpl, v)
 	if err != nil {
 		plain(w, http.StatusInternalServerError, "error\n")
@@ -200,6 +254,28 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(code)
 	if r.Method != http.MethodHead {
 		w.Write(body)
+	}
+}
+
+// serveIP answers "/ip": the visitor's own address and a newline, nothing
+// else, for the page to read from the names that have one address family only.
+// Any site may read it (it is only the requester's own address). Never logged.
+func (s *server) serveIP(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Content-Type", "text/plain; charset=utf-8")
+	h.Set("X-Content-Type-Options", "nosniff")
+	code, body := http.StatusOK, "unknown\n"
+	if a, ok := clientAddr(r, s.realIP); ok {
+		body = a.String() + "\n"
+	} else {
+		code = http.StatusServiceUnavailable
+	}
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(code)
+	if r.Method != http.MethodHead {
+		w.Write([]byte(body))
 	}
 }
 
@@ -266,10 +342,21 @@ func main() {
 		fatal("REAL_IP_HEADER", errors.New("not a header name"))
 	}
 
+	urls := map[string]string{"V4_URL": "https://v4.openipdata.org/", "V6_URL": "https://v6.openipdata.org/"}
+	for _, name := range []string{"V4_URL", "V6_URL"} {
+		if v, isSet := os.LookupEnv(name); isSet {
+			urls[name] = v
+		}
+		if err := checkURL(urls[name]); err != nil {
+			fatal(name, err)
+		}
+	}
+
 	s, err := newServer(mmdb, asnDB, realIP)
 	if err != nil {
 		fatal("start", err)
 	}
+	s.useURLs(urls["V4_URL"], urls["V6_URL"])
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go s.watch(ctx)

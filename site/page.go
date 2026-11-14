@@ -15,12 +15,35 @@ import (
 //go:embed static/style.css
 var styleCSS string
 
-// The only scripts of the page. Their sha256 goes into the CSP, so they are
-// constants, never built from request data.
-const (
-	headJS  = `try{var t=localStorage.theme;if(t=="dark"||t=="light")document.documentElement.dataset.theme=t}catch(e){}`
-	clickJS = `document.getElementById("theme").onclick=function(){var r=document.documentElement,t=r.dataset.theme||(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");t=t=="dark"?"light":"dark";r.dataset.theme=t;try{localStorage.theme=t}catch(e){}}`
-)
+// The only scripts of the page: static/head.js (saved theme), static/theme.js
+// (theme button) and static/fill.js (fills the row of the other address family,
+// see home.html; it sits at the end of the body). They are put into the page
+// inline, and their sha256 goes into the CSP, so both use the very same string
+// from scriptText(): the file without its first comment line and without
+// surrounding white space. Never built from request data.
+//
+//go:embed static/head.js
+var headSrc string
+
+//go:embed static/theme.js
+var themeSrc string
+
+//go:embed static/fill.js
+var fillSrc string
+
+var headJS, themeJS, fillJS = scriptText("head.js", headSrc), scriptText("theme.js", themeSrc), scriptText("fill.js", fillSrc)
+
+// scriptText returns the text that goes between <script> and </script>. An empty
+// file (or one with only a comment) stops the program at start.
+func scriptText(name, src string) string {
+	if strings.HasPrefix(src, "//") {
+		_, src, _ = strings.Cut(src, "\n")
+	}
+	if src = strings.TrimSpace(src); src == "" {
+		panic("static/" + name + " has no code")
+	}
+	return src
+}
 
 const dash = "—"
 
@@ -30,7 +53,9 @@ type card struct {
 }
 
 type view struct {
-	HeadJS, ClickJS template.JS
+	HeadJS, ThemeJS template.JS
+	Fill            bool // the page has a row for fillJS to fill
+	FillJS          template.JS
 	CSS             template.CSS
 	Cards           []card
 	Probes          string
@@ -71,7 +96,7 @@ func makeCard(label string, v float64) card {
 
 func makeView(s scores) view {
 	v := view{
-		HeadJS: template.JS(headJS), ClickJS: template.JS(clickJS), CSS: template.CSS(styleCSS),
+		HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), CSS: template.CSS(styleCSS),
 		Cards: []card{
 			makeCard("right country", s.Country),
 			makeCard("right city", s.City),
@@ -103,15 +128,22 @@ func scriptHash(js string) string {
 	return "'sha256-" + base64.StdEncoding.EncodeToString(h[:]) + "'"
 }
 
-func csp() string {
-	return strings.Join([]string{
+// csp is the policy of every page. With origins (the origins of V4_URL and
+// V6_URL) it is the policy of a page that has the fill script: that script's
+// hash and connect-src for exactly those origins. Without, nothing is added.
+func csp(origins ...string) string {
+	script := scriptHash(headJS) + " " + scriptHash(themeJS)
+	d := []string{
 		"default-src 'none'",
 		"style-src 'unsafe-inline'",
 		"font-src 'self'",
 		"img-src data:",
-		"script-src " + scriptHash(headJS) + " " + scriptHash(clickJS),
-		"base-uri 'none'",
-		"form-action 'self'",
-		"frame-ancestors 'none'",
-	}, "; ")
+	}
+	if len(origins) > 0 {
+		script += " " + scriptHash(fillJS)
+		d = append(d, "script-src "+script, "connect-src "+strings.Join(origins, " "))
+	} else {
+		d = append(d, "script-src "+script)
+	}
+	return strings.Join(append(d, "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'"), "; ")
 }

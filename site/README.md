@@ -2,7 +2,7 @@
 
 The openipdata.org website: one static Go binary, `openipdata-site`. It is small and fast on purpose. Right now it serves the home page with a lookup bar and two panels: "Your connection" (or "Lookup") and "Accuracy".
 
-The page is rendered on each request from small in-memory data (the scores and two open MMDBs). All CSS and the two tiny theme scripts are inline, the fonts (Geist, Geist Mono) are embedded in the binary, and there are no third-party requests.
+The page is rendered on each request from small in-memory data (the scores and two open MMDBs). All CSS and the three tiny scripts (saved theme, theme button, and the one that fills in the second address; plain files `static/head.js`, `static/theme.js` and `static/fill.js`, embedded in the binary) are put inline into the page; the CSP hash of each is computed at start from exactly the text that is put in the page, and an empty script file stops the start, the fonts (Geist, Geist Mono) are embedded in the binary, and there are no third-party requests.
 
 ## Settings
 
@@ -12,8 +12,10 @@ The page is rendered on each request from small in-memory data (the scores and t
 | `GEO_MMDB` | `/var/lib/openipdata-site/data/ip2geo-openipdata.mmdb` | the ip2geo MMDB: city and country of an address, and in its metadata the scores |
 | `ASN_MMDB` | `/var/lib/openipdata-site/data/ip2asn-openipdata.mmdb` | the ip2asn MMDB: network, AS number and announced prefix |
 | `REAL_IP_HEADER` | `X-Real-IP` | header that holds the visitor address (the server unit sets it too); set it to empty to use the address of the TCP connection |
+| `V4_URL` | `https://v4.openipdata.org/` | URL on a name with an A record only; answers with the visitor's IPv4 address (see "Both addresses"); empty = none |
+| `V6_URL` | `https://v6.openipdata.org/` | URL on a name with an AAAA record only; answers with the visitor's IPv6 address; empty = none |
 
-An invalid `LISTEN`, a directory as `GEO_MMDB` or `ASN_MMDB`, or a `REAL_IP_HEADER` that is not a header name stops the start with a message naming the variable.
+An invalid `LISTEN`, a directory as `GEO_MMDB` or `ASN_MMDB`, or a `REAL_IP_HEADER` that is not a header name, or a `V4_URL` / `V6_URL` that is neither empty nor an absolute `https://` URL (`http://` is accepted only for `127.0.0.1` and `localhost`, for local tests) stops the start with a message naming the variable.
 
 ## Your connection and lookup
 
@@ -26,6 +28,22 @@ Both MMDBs are checked every 30 seconds and opened again when their file changes
 Cache: `/` shows visitor data, so it is `private, no-store` with no `ETag`. A lookup page has no visitor data and is `public, max-age=300`. A bad query is `no-store`.
 
 The visitor address is the value of the `REAL_IP_HEADER` header when the peer of the TCP connection is loopback (our nginx); a missing, repeated or invalid value means unknown, never the proxy's address. The header is `X-Real-IP` unless the setting says otherwise, so a new binary works under an older unit. A peer that is not loopback is taken as the visitor itself, except a private or link-local peer while a header is set (most likely a proxy moved off loopback): that is unknown too. With `REAL_IP_HEADER=` (empty) no header is trusted and the peer is always the visitor. nginx always sets `X-Real-IP` to `$remote_addr`, which after the Cloudflare real-IP step is the visitor, and replaces any header a client sent. Run locally, the page says "Address unknown" (no nginx sends the header); with `REAL_IP_HEADER=` the visitor is `127.0.0.1`, which is not public.
+
+## Both addresses
+
+A browser connects over IPv4 or IPv6, so the server sees one address. `GET /ip` (and `HEAD`) answers `text/plain` with the visitor address in canonical form and a newline (`Cache-Control: no-store`, `Access-Control-Allow-Origin: *`, the address is only the requester's own); an unknown address gives status 503 and `unknown`. It uses the same rules as the page (`REAL_IP_HEADER`) and never logs the address. It works through `openipdata.org` too (the address of the Cloudflare visitor).
+
+The other address comes from a second request. On the visitor's own page ("Your connection" with a public address) the panel has an IPv4 row and an IPv6 row, in that order. The family the server saw is filled in by the server. The other row shows a dash and is filled in by one small inline script at the end of the body: after the page is parsed it asks `V4_URL` or `V6_URL` (the one of the missing family, 4 s timeout, no cookies, no referrer), checks that the answer is a plausible address of that family and puts it in the row. On any failure, or without JavaScript, the dash stays; the page is complete without it, and the dash row has the room of a long IPv6 address so nothing moves. A lookup page, "Address unknown" and "Not a public address" have no second row and no script. If the URL of the missing family is empty, the page is as it was before (one family row, no script). The CSP of a page with the script adds the script's hash and `connect-src` for the origins of the two URLs; every other page keeps the old CSP.
+
+DNS (the owner keeps these, in Cloudflare, DNS only, grey cloud, NOT proxied): `v4.openipdata.org` has an A record only (the VM's IPv4), `v6.openipdata.org` has an AAAA record only (the VM's IPv6). The two names are served by `infra/site/nginx/v46.openipdata.org.conf` (direct visitors, only `/`, rate limit 5 requests per second per address, own log without addresses). They show the VM's address by design. A request that comes from a Cloudflare address gets 403 on these two names (every path, both ports): if the DNS records were proxied by mistake, the page would show Cloudflare's address as the visitor's second address, so the answer is refused and the dash stays. Check:
+
+    curl -4 https://v4.openipdata.org/     # your IPv4 address
+    curl -6 https://v6.openipdata.org/     # your IPv6 address
+    curl -6 https://v4.openipdata.org/     # must fail: no AAAA record
+    curl -4 https://v6.openipdata.org/     # must fail: no A record
+    curl -i https://v4.openipdata.org/x    # 404, never reaches the site
+
+The new nginx file is installed by the init script: rerun `sudo ./init-openipdata-site.sh` on the VM after `git pull` (the file is enabled only once the certificate exists, like the main site), and the unit (`V4_URL`, `V6_URL`) is updated by the same run.
 
 ## Where the numbers come from
 
@@ -103,7 +121,7 @@ The release `site` must exist first (Actions tab, `Publish site binary`, Run wor
 | `openipdata-mmdb-pull` (every 10 min)         | `openipdata-site`  | downloads `ip2geo-openipdata.mmdb` and `ip2asn-openipdata.mmdb` from the release `latest`           |
 | `openipdata-cf-ips` (weekly, and at install)  | root               | refreshes the Cloudflare ranges in `/etc/nginx/conf.d/cloudflare-realip.conf`, `nginx -t`, reload  |
 
-Paths: scripts in `/opt/openipdata-site/bin`, binaries in `/opt/openipdata-site/releases/<sha256>` with the links `slot-8080` and `slot-8081` pointing at two of them, upstream files in `/etc/nginx/openipdata-site/` (`upstream-8080.conf`, `upstream-8081.conf`) and the link `/etc/nginx/conf.d/openipdata-site-live.conf` to the live one, MMDB files in `/var/lib/openipdata-site/data` (public data, with `<name>.key` change keys), updater state in `/var/lib/openipdata-site/state` (root only: `installed.sha256`, `bad.sha256`), settings in `/etc/openipdata-site/openipdata-site.env`, nginx in `/etc/nginx/sites-available/openipdata.org.conf` and `default-deny.conf`.
+Paths: scripts in `/opt/openipdata-site/bin`, binaries in `/opt/openipdata-site/releases/<sha256>` with the links `slot-8080` and `slot-8081` pointing at two of them, upstream files in `/etc/nginx/openipdata-site/` (`upstream-8080.conf`, `upstream-8081.conf`) and the link `/etc/nginx/conf.d/openipdata-site-live.conf` to the live one, MMDB files in `/var/lib/openipdata-site/data` (public data, with `<name>.key` change keys), updater state in `/var/lib/openipdata-site/state` (root only: `installed.sha256`, `bad.sha256`), settings in `/etc/openipdata-site/openipdata-site.env`, nginx in `/etc/nginx/sites-available/openipdata.org.conf`, `v46.openipdata.org.conf` and `default-deny.conf`.
 
 How it behaves:
 
@@ -119,7 +137,7 @@ How it behaves:
 - nginx default-deny: `default-deny.conf` (catch-all servers: 444 on port 80, rejected TLS handshake on 443) needs no certificate and is always enabled, so the origin is closed even before the certificate exists.
 - Pings: set `HC_PING_SITE` and `HC_PING_MMDB` (healthchecks.io URLs) in the env file. A normal run pings the URL, a failure pings `<url>/fail`, an empty value does nothing. The URLs are never logged.
 
-Settings (`/etc/openipdata-site/openipdata-site.env`): `GITHUB_REPO` (default `shingrus/openipdata.org`), `HC_PING_SITE`, `HC_PING_MMDB`. The site itself is configured in its unit (`LISTEN=127.0.0.1:<port>`, `GEO_MMDB`, `ASN_MMDB`, `REAL_IP_HEADER=X-Real-IP`).
+Settings (`/etc/openipdata-site/openipdata-site.env`): `GITHUB_REPO` (default `shingrus/openipdata.org`), `HC_PING_SITE`, `HC_PING_MMDB`. The site itself is configured in its unit (`LISTEN=127.0.0.1:<port>`, `GEO_MMDB`, `ASN_MMDB`, `REAL_IP_HEADER=X-Real-IP`, `V4_URL`, `V6_URL`).
 
 Which side is live: `readlink /etc/nginx/conf.d/openipdata-site-live.conf` (the port is in the name).
 

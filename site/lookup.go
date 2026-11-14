@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -245,6 +246,9 @@ type asnRecord struct {
 
 type row struct {
 	K, V, A string // label, value, accent text after the value
+	Fam     string // "4" or "6": a row the page script fills in with the address of that family, found at From
+	From    string
+	Own     bool // the row of the address family that is looked up (addFill places the other family's row by it)
 }
 
 // panel is the "Your connection" / "Lookup" panel.
@@ -312,8 +316,34 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	if a.Is4() {
 		family = "IPv4"
 	}
-	p.Rows = []row{{"Network", network, as}, {family, a.String(), ""}, {"Prefix", pfx, ""}}
+	p.Rows = []row{{K: "Network", V: network, A: as}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx}}
 	return p
+}
+
+// addFill puts the row of the other address family next to the family row of
+// p (the visitor's own panel): IPv4 first, then IPv6, a dash for the family
+// this connection did not use. It reports whether a row was added, which means
+// the page needs the fill script. With no URL for that family nothing changes.
+func (s *server) addFill(p *panel, a netip.Addr) bool {
+	if p.Msg != "" {
+		return false
+	}
+	own := slices.IndexFunc(p.Rows, func(r row) bool { return r.Own })
+	if own < 0 {
+		return false
+	}
+	fam, from := "6", s.v6
+	if !a.Is4() {
+		fam, from = "4", s.v4
+	}
+	if from == "" {
+		return false
+	}
+	if a.Is4() {
+		own++ // IPv4 first, then IPv6: after the family row for an IPv4 address, before it for IPv6
+	}
+	p.Rows = slices.Insert(p.Rows, own, row{K: "IPv" + fam, V: dash, Fam: fam, From: from})
+	return true
 }
 
 func firstNonEmpty(a, b string) string {

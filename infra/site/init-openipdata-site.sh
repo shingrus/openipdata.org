@@ -20,6 +20,9 @@ CERT_DIR=/etc/letsencrypt/live/$DOMAIN
 CF_CREDENTIALS=/root/.secrets/cloudflare.ini
 NGINX_SITE=/etc/nginx/sites-available/$DOMAIN.conf
 NGINX_LINK=/etc/nginx/sites-enabled/$DOMAIN.conf
+# The two direct names (v4. and v6.): same certificate, enabled only with it.
+NGINX_V46=/etc/nginx/sites-available/v46.$DOMAIN.conf
+NGINX_V46_LINK=/etc/nginx/sites-enabled/v46.$DOMAIN.conf
 NGINX_DENY=/etc/nginx/sites-available/default-deny.conf
 NGINX_DENY_LINK=/etc/nginx/sites-enabled/default-deny.conf
 # Upstream files live outside conf.d (it includes every *.conf); the link in conf.d is the live record.
@@ -105,7 +108,7 @@ fail() {
 [[ "${EUID}" -eq 0 ]] || fail "run this script as root"
 command -v systemctl >/dev/null 2>&1 || fail "systemd not found"
 command -v apt-get >/dev/null 2>&1 || fail "apt-get not found (Ubuntu or Debian only)"
-for f in "${SCRIPTS[@]}" "${UNITS[@]/#/systemd/}" nginx/openipdata.org.conf nginx/default-deny.conf nginx/upstream-8080.conf nginx/upstream-8081.conf openipdata-site.env.example; do
+for f in "${SCRIPTS[@]}" "${UNITS[@]/#/systemd/}" nginx/openipdata.org.conf nginx/v46.openipdata.org.conf nginx/default-deny.conf nginx/upstream-8080.conf nginx/upstream-8081.conf openipdata-site.env.example; do
     [[ -f "$SCRIPT_DIR/$f" ]] || fail "missing $SCRIPT_DIR/$f (run from a full git clone)"
 done
 
@@ -146,7 +149,7 @@ done
 systemctl daemon-reload
 log "installed systemd units"
 
-# Firewall: SSH and web only; Cloudflare-only access is enforced by nginx.
+# Firewall: SSH and web only; Cloudflare-only access for openipdata.org is enforced by nginx (v4. and v6. are direct).
 # The real sshd ports are allowed (sshd may not listen on 22); with none found, OpenSSH or 22/tcp.
 ssh_ports=()
 while IFS= read -r p; do
@@ -185,6 +188,7 @@ if [[ ! -e "$LIVE_LINK" && ! -L "$LIVE_LINK" ]]; then
     log "created $LIVE_LINK -> upstream-8080.conf"
 fi
 install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/openipdata.org.conf" "$NGINX_SITE"
+install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/v46.openipdata.org.conf" "$NGINX_V46"
 install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/default-deny.conf" "$NGINX_DENY"
 rm -f /etc/nginx/sites-enabled/default
 ln -sfn "$NGINX_DENY" "$NGINX_DENY_LINK"
@@ -204,6 +208,7 @@ have_cert=0
 if [[ -e "$CERT_DIR/fullchain.pem" && -e "$CERT_DIR/privkey.pem" ]]; then
     have_cert=1
     ln -sfn "$NGINX_SITE" "$NGINX_LINK"
+    ln -sfn "$NGINX_V46" "$NGINX_V46_LINK"
     nginx -t || fail "nginx -t failed; see above"
     systemctl enable nginx >/dev/null 2>&1 || true
     if systemctl is-active --quiet nginx; then
@@ -213,7 +218,7 @@ if [[ -e "$CERT_DIR/fullchain.pem" && -e "$CERT_DIR/privkey.pem" ]]; then
     fi
     log "nginx site enabled"
 else
-    rm -f "$NGINX_LINK"
+    rm -f "$NGINX_LINK" "$NGINX_V46_LINK"
     nginx -t || fail "nginx -t failed; see above"
     systemctl enable nginx >/dev/null 2>&1 || true
     if systemctl is-active --quiet nginx; then

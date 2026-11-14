@@ -89,11 +89,12 @@ a:hover{color:var(--accent)}
 .place h1{position:relative;font-size:clamp(40px,7vw,72px);font-weight:600;line-height:1;letter-spacing:-.035em;overflow-wrap:anywhere}
 .place p{position:relative;margin-top:10px;font-size:20px;color:var(--muted);overflow-wrap:anywhere}
 .place.none h1{color:var(--faint);font-size:clamp(30px,5vw,48px)}
-dl{min-width:0;display:grid;grid-auto-rows:1fr}
+dl{min-width:0;display:grid;grid-auto-rows:1fr} /* equal rows beside the place block; phone width resets it */
 dl div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
 dl div:last-child{border-bottom:0}
 dt{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 dd{min-width:0;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+dd.o6{display:flex;align-items:center;min-height:2lh} /* room for a long IPv6 address that arrives later: no layout shift */
 dd .as{margin-left:10px;color:var(--accent)}
 .msg{padding:20px;font-size:16px;color:var(--muted);overflow-wrap:anywhere}
 .msg .mono{display:block;margin-bottom:6px;font-size:20px;font-weight:500;color:var(--text)}
@@ -109,12 +110,15 @@ dd .as{margin-left:10px;color:var(--accent)}
 .note{padding:12px 20px;border-top:1px solid var(--line);background:var(--raised);font-size:14px;color:var(--muted)}
 .note span{color:var(--text)}
 
+/* 39 characters wrap to 3 lines on a 320px phone and in the narrowest two-column layout */
+@media (max-width:400px),(min-width:701px) and (max-width:760px){dd.o6{min-height:3lh}}
 @media (max-width:700px){
   .lookup{margin-top:18px;height:54px;padding-left:14px;gap:8px}
   .lookup input,.lookup b{font-size:17px}
   .lookup button{height:38px;padding:0 14px}
   .conn{grid-template-columns:minmax(0,1fr)}
   .place{min-height:170px;border-right:0;border-bottom:1px solid var(--line);padding:20px 16px}
+  dl{grid-auto-rows:auto}
   dl div{padding:13px 16px;grid-template-columns:84px minmax(0,1fr)}
   dd{font-size:15px}
   .msg{padding:16px}

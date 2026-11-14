@@ -1,0 +1,24 @@
+// Fills the row of the other address family; a failed, slow (4 s) or implausible answer leaves the dash.
+(function () {
+  var d = document.getElementById("other");
+  if (!d) return;
+  var f = d.dataset.fam, u = d.dataset.from;
+  function ok(s) {
+    if (f == "4") {
+      var p = s.split(".");
+      return p.length == 4 && p.every(function (x) { return /^\d{1,3}$/.test(x) && +x < 256; });
+    }
+    return s.length < 40 && /^[0-9a-f:]+$/i.test(s) && s.split(":").length > 2;
+  }
+  function go() {
+    try {
+      var c = new AbortController(), k = setTimeout(function () { c.abort(); }, 4000);
+      fetch(u, { signal: c.signal, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
+        .then(function (r) { return r.ok ? r.text() : ""; })
+        .then(function (t) { t = t.trim(); if (ok(t)) d.textContent = t; })
+        .catch(function () {})
+        .then(function () { clearTimeout(k); });
+    } catch (e) {}
+  }
+  document.readyState == "loading" ? document.addEventListener("DOMContentLoaded", go) : go();
+})();

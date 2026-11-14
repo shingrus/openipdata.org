@@ -18,6 +18,10 @@ Environment=ASN_MMDB=/var/lib/openipdata-site/data/ip2asn-openipdata.mmdb
 # nginx sends the visitor address in X-Real-IP (see openipdata.org.conf); the site
 # trusts it only from a loopback connection.
 Environment=REAL_IP_HEADER=X-Real-IP
+# The names that answer with the visitor's own address, one per family (v46.openipdata.org.conf);
+# the page asks the one of the family the visitor did not use.
+Environment=V4_URL=https://v4.openipdata.org/
+Environment=V6_URL=https://v6.openipdata.org/
 ExecStart=/opt/openipdata-site/slot-%i/openipdata-site
 Restart=always
 RestartSec=2
