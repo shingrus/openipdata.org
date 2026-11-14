@@ -37,7 +37,7 @@ case "$(uname -m)" in
     aarch64 | arm64) GO_ARCH=arm64; GO_SHA256="${GO_SHA256:-$GO_SHA256_ARM64}" ;;
     *) fail "unsupported architecture $(uname -m)" ;;
 esac
-[[ -n "$GO_SHA256" ]] || fail "no pinned sha256 for Go $GO_VERSION linux-$GO_ARCH; set GO_SHA256 (from https://go.dev/dl/)"
+[[ -n "${IPLISTENER_BIN:-}" || -n "$GO_SHA256" ]] || fail "no pinned sha256 for Go $GO_VERSION linux-$GO_ARCH; set GO_SHA256 (from https://go.dev/dl/)"
 
 if ! command -v curl >/dev/null 2>&1; then
     log "installing curl"
@@ -64,33 +64,42 @@ install -d -m 0755 -o root -g root "$BIN_DIR"
 install -d -m 0750 -o root -g "$RUN_AS" "$ETC_DIR"
 
 BUILD_TMP="$(mktemp -d)"
-GO_ROOT="$CACHE_DIR/go$GO_VERSION"
-install -d -m 0700 -o root -g root "$CACHE_DIR"
-if [[ -x "$GO_ROOT/bin/go" ]]; then
-    log "using cached Go $GO_VERSION"
+if [[ -n "${IPLISTENER_BIN:-}" ]]; then
+    # A binary built elsewhere (e.g. where Google downloads are blocked):
+    #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o iplistener-linux .
+    [[ -f "$IPLISTENER_BIN" ]] || fail "IPLISTENER_BIN: no such file"
+    [[ "$(head -c 4 "$IPLISTENER_BIN" | od -An -tx1 | tr -d ' \n')" == "7f454c46" ]] || fail "IPLISTENER_BIN is not a Linux (ELF) binary"
+    log "using prebuilt binary $IPLISTENER_BIN, skipping the Go build"
+    cp "$IPLISTENER_BIN" "$BUILD_TMP/iplistener"
 else
-    log "downloading Go $GO_VERSION ($GO_ARCH)"
-    curl -fsSL --retry 3 -o "$BUILD_TMP/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
-    echo "$GO_SHA256  $BUILD_TMP/go.tar.gz" | sha256sum --check --status || fail "Go download checksum mismatch"
-    rm -rf "$CACHE_DIR/go.partial"
-    mkdir "$CACHE_DIR/go.partial"
-    tar -C "$CACHE_DIR/go.partial" -xzf "$BUILD_TMP/go.tar.gz"
-    mv "$CACHE_DIR/go.partial/go" "$GO_ROOT"
-    rm -rf "$CACHE_DIR/go.partial"
-fi
-for old in "$CACHE_DIR"/go1.*; do
-    if [[ -d "$old" && "$old" != "$GO_ROOT" ]]; then
-        log "removing old toolchain $old"
-        rm -rf "$old"
+    GO_ROOT="$CACHE_DIR/go$GO_VERSION"
+    install -d -m 0700 -o root -g root "$CACHE_DIR"
+    if [[ -x "$GO_ROOT/bin/go" ]]; then
+        log "using cached Go $GO_VERSION"
+    else
+        log "downloading Go $GO_VERSION ($GO_ARCH)"
+        curl -fsSL --retry 3 -o "$BUILD_TMP/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
+        echo "$GO_SHA256  $BUILD_TMP/go.tar.gz" | sha256sum --check --status || fail "Go download checksum mismatch"
+        rm -rf "$CACHE_DIR/go.partial"
+        mkdir "$CACHE_DIR/go.partial"
+        tar -C "$CACHE_DIR/go.partial" -xzf "$BUILD_TMP/go.tar.gz"
+        mv "$CACHE_DIR/go.partial/go" "$GO_ROOT"
+        rm -rf "$CACHE_DIR/go.partial"
     fi
-done
+    for old in "$CACHE_DIR"/go1.*; do
+        if [[ -d "$old" && "$old" != "$GO_ROOT" ]]; then
+            log "removing old toolchain $old"
+            rm -rf "$old"
+        fi
+    done
 
-log "building iplistener from $SCRIPT_DIR"
-(
-    cd "$SCRIPT_DIR"
-    GOTOOLCHAIN=local GOPATH="$CACHE_DIR/gopath" GOCACHE="$CACHE_DIR/cache" CGO_ENABLED=0 \
-        "$GO_ROOT/bin/go" build -buildvcs=false -trimpath -ldflags "-s -w" -o "$BUILD_TMP/iplistener" .
-)
+    log "building iplistener from $SCRIPT_DIR"
+    (
+        cd "$SCRIPT_DIR"
+        GOTOOLCHAIN=local GOPATH="$CACHE_DIR/gopath" GOCACHE="$CACHE_DIR/cache" CGO_ENABLED=0 \
+            "$GO_ROOT/bin/go" build -buildvcs=false -trimpath -ldflags "-s -w" -o "$BUILD_TMP/iplistener" .
+    )
+fi
 install -m 0755 -o root -g root "$BUILD_TMP/iplistener" "$BIN_DIR/iplistener"
 log "installed $BIN_DIR/iplistener"
 

@@ -55,6 +55,15 @@ and starts it only when the env file has all required values. It never overwrite
 nginx's default logrotate works: it renames the log, creates a new one and sends `USR1`;
 iplistener reads the new file from its start and keeps reading the renamed one for 30 s, because nginx writes to it until it reopens its logs.
 
+If the server cannot download Go (Google downloads blocked: `dl.google.com` answers 404), build the
+binary elsewhere and pass it in; the script then skips the Go download and build:
+
+```
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o iplistener-linux .   # on any machine with Go
+scp iplistener-linux <server>:/tmp/                                                              # then, on the server:
+sudo IPLISTENER_BIN=/tmp/iplistener-linux ./init-iplistener.sh
+```
+
 ## Resources
 
 The unit keeps it out of the site's way: `Nice=10`, idle I/O priority, `CPUQuota=10%`,
