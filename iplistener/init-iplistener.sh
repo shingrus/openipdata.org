@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and install iplistener on a web server (Ubuntu/Debian). Needs Go installed (e.g. snap install go --classic).
+# Build and install iplistener on a web server (Ubuntu/Debian). Needs Go 1.21+ installed (e.g. apt install golang-go).
 # Run from a git clone: cd openipdata.org/iplistener && sudo ./init-iplistener.sh
 # Idempotent: re-run after `git pull` to redeploy; never overwrites an existing env file.
 set -euo pipefail
@@ -28,17 +28,20 @@ fail() {
 
 [[ "${EUID}" -eq 0 ]] || fail "run this script as root"
 command -v systemctl >/dev/null 2>&1 || fail "systemd not found"
-# Go must already be installed (the version go.mod asks for, or newer); this script never downloads it.
+# Go must already be installed (1.21 or newer); this script never downloads it. When go.mod asks
+# for a newer Go, the installed go fetches that toolchain itself (checksummed, into CACHE_DIR).
 GO_BIN="$(command -v go || true)"
 [[ -z "$GO_BIN" && -x /usr/local/go/bin/go ]] && GO_BIN=/usr/local/go/bin/go
-GO_HINT="install Go first, e.g.: sudo snap install go --classic (then rerun this script)"
+GO_HINT="install Go first, e.g.: sudo apt install golang-go (then rerun this script)"
 [[ -n "$GO_BIN" ]] || fail "Go is not installed; $GO_HINT"
+# GOTOOLCHAIN=local: the version of the installed go itself, not of a toolchain it would switch to.
+GO_HAVE="$(cd / && GOTOOLCHAIN=local "$GO_BIN" env GOVERSION 2>/dev/null | sed 's/^go//')"
+GO_MIN=1.21
+[[ -n "$GO_HAVE" ]] || fail "cannot read the Go version; $GO_HINT"
+[[ "$(printf '%s\n%s\n' "$GO_MIN" "$GO_HAVE" | sort -V | head -n1)" == "$GO_MIN" ]] ||
+    fail "Go $GO_HAVE is older than $GO_MIN; $GO_HINT"
 GO_NEED="$(awk '$1 == "go" {print $2; exit}' "$SCRIPT_DIR/go.mod")"
-GO_HAVE="$("$GO_BIN" env GOVERSION 2>/dev/null | sed 's/^go//')"
-[[ -n "$GO_NEED" && -n "$GO_HAVE" ]] || fail "cannot read the Go version; $GO_HINT"
-[[ "$(printf '%s\n%s\n' "$GO_NEED" "$GO_HAVE" | sort -V | head -n1)" == "$GO_NEED" ]] ||
-    fail "Go $GO_HAVE is older than $GO_NEED (go.mod); $GO_HINT"
-log "using $GO_BIN (Go $GO_HAVE)"
+log "using $GO_BIN (Go $GO_HAVE; go.mod needs $GO_NEED, fetched by go itself if newer)"
 
 if ! getent group "$RUN_AS" >/dev/null 2>&1; then
     log "creating group: $RUN_AS"
@@ -63,7 +66,7 @@ install -d -m 0700 -o root -g root "$CACHE_DIR"
 log "building iplistener from $SCRIPT_DIR"
 (
     cd "$SCRIPT_DIR"
-    GOTOOLCHAIN=local GOPATH="$CACHE_DIR/gopath" GOCACHE="$CACHE_DIR/cache" CGO_ENABLED=0 \
+    GOTOOLCHAIN=auto GOPATH="$CACHE_DIR/gopath" GOMODCACHE="$CACHE_DIR/gopath/pkg/mod" GOCACHE="$CACHE_DIR/cache" CGO_ENABLED=0 \
         "$GO_BIN" build -buildvcs=false -trimpath -ldflags "-s -w" -o "$BUILD_TMP/iplistener" .
 )
 install -m 0755 -o root -g root "$BUILD_TMP/iplistener" "$BIN_DIR/iplistener"

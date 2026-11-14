@@ -39,11 +39,12 @@ Invalid or missing settings stop the daemon with a message that never shows `PGS
 
 ## Install
 
-On the web server (Ubuntu/Debian), two commands. Go must be installed (the version in `go.mod` or
-newer); the script never downloads it and stops with a hint when it is missing or too old:
+On the web server (Ubuntu/Debian), two commands. Go 1.21 or newer must be installed (Ubuntu's
+package is fine); the script never downloads Go itself and stops with a hint when it is missing.
+When `go.mod` asks for a newer Go, the installed `go` fetches that toolchain on its own:
 
 ```
-sudo snap install go --classic
+sudo apt install -y golang-go
 git clone https://github.com/shingrus/openipdata.org && cd openipdata.org/iplistener && sudo ./init-iplistener.sh
 ```
 
@@ -51,7 +52,7 @@ The script asks for every empty setting (the connection string is read hidden), 
 file, starts the service and checks that it runs. To change a setting later:
 `sudoedit /etc/iplistener/iplistener.env` and rerun the script. Logs: `journalctl -u iplistener -f`.
 
-The script is idempotent (re-run it after `git pull`). It builds with the installed Go (module and build
+The script is idempotent (re-run it after `git pull`). It builds with the installed Go (toolchain, module and build
 caches in `/var/cache/iplistener-build`), installs `/opt/iplistener/bin/iplistener`, creates the
 system user `iplistener` (in group `adm` to read the nginx logs), installs the systemd unit,
 and starts it only when the env file has all required values. It never overwrites the env file.
