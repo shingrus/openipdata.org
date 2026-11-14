@@ -275,6 +275,8 @@ type proposeRun struct {
 	remaining *float64
 	spent     float64
 	stopped   string
+	done      int // first-model requests finished, for the progress line
+	planned   int // first-model requests planned this run
 	fatal     error
 	cancel    context.CancelFunc
 
@@ -478,6 +480,7 @@ func (r *proposeRun) execute(ctx context.Context, infos map[string]*domainInfo, 
 		}
 	}
 	requests := planRequests(eligible, r.newID)
+	r.planned = min(len(requests), r.maxReq)
 	r.logf("propose-codes: %d domains eligible in %d requests (up to %d requests this run)", len(eligible), len(requests), r.maxReq)
 	work := make(chan llmRequest)
 	var wg sync.WaitGroup
@@ -593,7 +596,17 @@ func (r *proposeRun) handle(ctx context.Context, req llmRequest, retry bool) {
 		}
 		r.finishDomain(ctx, d, a, &rec)
 	}
-	r.logf("propose-codes: request of %d domain(s) done (%s)", len(req.Domains), req.Kind)
+	label := req.Domains[0].Domain
+	if len(req.Domains) > 1 {
+		label += fmt.Sprintf(" +%d", len(req.Domains)-1)
+	}
+	r.mu.Lock()
+	if !retry {
+		r.done++
+	}
+	done, planned := r.done, r.planned
+	r.mu.Unlock()
+	r.logf("propose-codes: request of %q done %d/%d (%s)", label, done, planned, req.Kind)
 }
 
 // finishDomain checks one answer and, when it is accepted, stores the rank-4 rule, compares it
