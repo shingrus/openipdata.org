@@ -1,0 +1,18 @@
+[Unit]
+Description=openipdata.org: install a new website binary from the GitHub release "site"
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/openipdata-site/openipdata-site.env
+ExecStart=/opt/openipdata-site/bin/openipdata-site-update
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+# Sandbox: not yet tested on the VM. systemctl reaches systemd over D-Bus (AF_UNIX socket in /run).
+ProtectSystem=strict
+ReadWritePaths=/opt/openipdata-site /var/lib/openipdata-site/state /run
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

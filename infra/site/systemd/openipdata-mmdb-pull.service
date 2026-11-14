@@ -1,0 +1,21 @@
+[Unit]
+Description=openipdata.org: pull the MMDB files from the GitHub release "latest"
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openipdata-site
+Group=openipdata-site
+EnvironmentFile=/etc/openipdata-site/openipdata-site.env
+ExecStart=/opt/openipdata-site/bin/openipdata-mmdb-pull
+TimeoutStartSec=20min
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/openipdata-site/data
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

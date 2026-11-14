@@ -1,0 +1,28 @@
+[Unit]
+Description=openipdata.org website
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openipdata-site
+Group=openipdata-site
+# No env file: the site needs no secrets.
+Environment=LISTEN=127.0.0.1:8080
+Environment=GEO_MMDB=/var/lib/openipdata-site/data/ip2geo-openipdata.mmdb
+ExecStart=/opt/openipdata-site/current/openipdata-site
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Installs a new openipdata-site binary from the rolling GitHub release "site".
+# Runs as root from openipdata-site-update.service (timer, every 2 minutes).
+# Checksum missing or empty, download failed, or binary not matching its checksum:
+# an upload is probably in progress, so try again later (no ping, exit 0).
+# A build that fails its check (-version, then /healthz "ok <version>") is rolled back
+# and remembered in state/bad.sha256; it is never tried again.
+# Pings: HC_PING_SITE on success, HC_PING_SITE/fail on failure (the URL is never printed).
+#
+# Overrides for tests only (a real run needs none): BASE_URL, INSTALL_DIR, STATE_DIR, LOCK_FILE,
+# HEALTH_URL, SYSTEMCTL, SERVICE_RUNNER (command prefix that runs the new binary unprivileged).
+set -euo pipefail
+
+GITHUB_REPO="${GITHUB_REPO:-shingrus/openipdata.org}"
+BASE_URL="${BASE_URL:-https://github.com/$GITHUB_REPO/releases/download/site}"
+ASSET=openipdata-site-linux-amd64
+INSTALL_DIR="${INSTALL_DIR:-/opt/openipdata-site}"
+STATE_DIR="${STATE_DIR:-/var/lib/openipdata-site/state}"
+LOCK_FILE="${LOCK_FILE:-/run/openipdata-site-update.lock}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/healthz}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+SERVICE_RUNNER="${SERVICE_RUNNER-setpriv --reuid=openipdata-site --regid=openipdata-site --clear-groups}"
+UNIT=openipdata-site
+RELEASES="$INSTALL_DIR/releases"
+CURRENT="$INSTALL_DIR/current"
+HEALTH_WAIT="${HEALTH_WAIT:-20}"
+
+log() {
+    printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+# ping_hc [/fail]: a ping failure only logs, and never shows the URL.
+ping_hc() {
+    [[ -n "${HC_PING_SITE:-}" ]] || return 0
+    curl -fsS -m 10 --retry 3 -o /dev/null "${HC_PING_SITE}${1:-}" >/dev/null 2>&1 || log "warning: health ping failed"
+    return 0
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+handled=0
+tmp_sum=""
+# shellcheck disable=SC2329 # called by the EXIT trap
+on_exit() {
+    local rc=$?
+    [[ -z "$tmp_sum" ]] || rm -f "$tmp_sum"
+    if ((rc != 0 && handled == 0)); then
+        log "error: unexpected failure (exit $rc)"
+        ping_hc /fail
+    fi
+}
+trap on_exit EXIT
+
+hex=""
+# fail_build: remember the bad build, alert, stop.
+fail_build() {
+    printf '%s\n' "$hex" >"$STATE_DIR/bad.sha256.tmp"
+    mv -f "$STATE_DIR/bad.sha256.tmp" "$STATE_DIR/bad.sha256"
+    ping_hc /fail
+    handled=1
+    exit 1
+}
+
+mkdir -p "$RELEASES" "$STATE_DIR"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log "another update is running"
+    handled=1
+    exit 0
+fi
+
+tmp_sum="$(mktemp)"
+if curl -fsSL -m 30 -o "$tmp_sum" "$BASE_URL/$ASSET.sha256" 2>/dev/null; then
+    read -r hex _ <"$tmp_sum" || true
+fi
+if [[ ! "$hex" =~ ^[0-9a-f]{64}$ ]]; then
+    hex=""
+    log "no release yet or upload in progress (no valid checksum), trying later"
+    handled=1
+    exit 0
+fi
+
+installed=""
+if [[ -f "$STATE_DIR/installed.sha256" ]]; then read -r installed <"$STATE_DIR/installed.sha256" || true; fi
+if [[ "$hex" == "$installed" ]]; then
+    ping_hc
+    handled=1
+    exit 0
+fi
+bad=""
+if [[ -f "$STATE_DIR/bad.sha256" ]]; then read -r bad <"$STATE_DIR/bad.sha256" || true; fi
+if [[ "$hex" == "$bad" ]]; then
+    log "release ${hex:0:12} failed its check before, not trying it again"
+    ping_hc /fail
+    handled=1
+    exit 0
+fi
+
+# Leftovers of a run that was killed.
+rm -rf "${RELEASES:?}"/*.tmp
+work="$RELEASES/$hex.tmp"
+mkdir -p "$work"
+if ! curl -fsSL -m 300 --retry 3 -o "$work/openipdata-site" "$BASE_URL/$ASSET" 2>/dev/null; then
+    rm -rf "$work"
+    log "binary download failed (upload in progress?), trying later"
+    handled=1
+    exit 0
+fi
+got="$(sha256_of "$work/openipdata-site")"
+if [[ "$got" != "$hex" ]]; then
+    rm -rf "$work"
+    log "binary does not match the checksum (upload in progress?), trying later"
+    handled=1
+    exit 0
+fi
+chmod 0755 "$work/openipdata-site"
+
+# The expected version is what the new binary says about itself; the site must report the same.
+# shellcheck disable=SC2086
+if ! expected="$($SERVICE_RUNNER "$work/openipdata-site" -version 2>/dev/null)" || [[ -z "$expected" ]]; then
+    rm -rf "$work"
+    log "error: the new binary ${hex:0:12} cannot print its version"
+    fail_build
+fi
+
+prev="$(readlink "$CURRENT" || true)"
+dir="$RELEASES/$hex"
+if [[ "$prev" == "releases/$hex" ]]; then
+    rm -rf "$work" # already the current directory (state was lost): keep it
+else
+    rm -rf "$dir"
+    mv "$work" "$dir"
+fi
+
+switch_to() {
+    ln -sfn "$1" "$INSTALL_DIR/current.tmp"
+    mv -Tf "$INSTALL_DIR/current.tmp" "$CURRENT"
+}
+
+# healthy VERSION: /healthz answers exactly "ok VERSION" within HEALTH_WAIT seconds.
+healthy() {
+    local i body
+    for ((i = 0; i < HEALTH_WAIT; i++)); do
+        body="$(curl -fsS -m 2 "$HEALTH_URL" 2>/dev/null || true)"
+        [[ "$body" == "ok $1" ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+log "switching to ${hex:0:12} (version $expected)"
+switch_to "releases/$hex"
+restart_ok=1
+"$SYSTEMCTL" restart "$UNIT" || restart_ok=0
+if ((restart_ok)) && healthy "$expected"; then
+    printf '%s\n' "$hex" >"$STATE_DIR/installed.sha256.tmp"
+    mv -f "$STATE_DIR/installed.sha256.tmp" "$STATE_DIR/installed.sha256"
+    rm -f "$STATE_DIR/bad.sha256"
+    # Keep the 3 newest directories and whatever current and the previous one point to.
+    keep=" $hex ${prev#releases/} "
+    n=0
+    while IFS= read -r d; do
+        n=$((n + 1))
+        ((n <= 3)) && continue
+        [[ "$keep" == *" $d "* ]] && continue
+        rm -rf "${RELEASES:?}/${d:?}"
+    done < <(ls -1t "$RELEASES")
+    ping_hc
+    log "updated to $expected"
+    handled=1
+    exit 0
+fi
+
+if ((restart_ok)); then
+    log "error: $UNIT did not report ok $expected within ${HEALTH_WAIT}s"
+else
+    log "error: systemctl restart $UNIT failed"
+fi
+if [[ -n "$prev" && -e "$INSTALL_DIR/$prev" ]]; then
+    switch_to "$prev"
+    "$SYSTEMCTL" restart "$UNIT" || true
+    sleep 3
+    if curl -fsS -m 5 "$HEALTH_URL" >/dev/null 2>&1; then
+        log "rolled back to $prev; the site answers"
+    else
+        log "error: rolled back to $prev but the site does not answer"
+    fi
+    [[ "$prev" == "releases/$hex" ]] || rm -rf "${dir:?}"
+else
+    "$SYSTEMCTL" stop "$UNIT" || true
+    rm -f "$CURRENT"
+    rm -rf "${dir:?}"
+    log "no previous release; $UNIT stopped"
+fi
+fail_build

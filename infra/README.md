@@ -4,6 +4,8 @@
 packages, the `openipdata` user, directories, both binaries (built from this checkout),
 the env file, and the systemd unit. Hatchet Cloud holds schedules, run history, and the dashboard.
 
+The website VM is set up from `infra/site/`; see the Server section of `site/README.md`.
+
 ## Requirements
 
 - Ubuntu, x86_64, with outbound IPv4
