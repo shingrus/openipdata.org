@@ -7,7 +7,7 @@ package main
 // (both sorted, so one pass), per-probe and per-prefix scores look addresses
 // up. A reference that is not given leaves its scores out of the output.
 //
-// The reference databases (DB-IP, MaxMind GeoLite2 City, IP2Location LITE DB11)
+// The reference databases (DB-IP, MaxMind GeoLite2 City)
 // are scored like ours: coverage of the RIR space, the RIPE Atlas probes and
 // the holdout rows, each looked up in the reference itself.
 
@@ -21,7 +21,6 @@ import (
 	"net/netip"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -33,7 +32,6 @@ type evalInputs struct {
 	rir          string // RIR layer: the IPv4 space that should have a country
 	dbip         string // DB-IP city MMDB
 	maxmind      string // MaxMind GeoLite2 City MMDB
-	ip2location  string // IP2Location LITE DB11 CSV (IPv4)
 	atlas        string // truth CSV ip,country,lat,lon
 	holdoutDB    string // MMDB built without the held-out geofeeds
 	holdoutTruth string // truth CSV prefix,country,city of the held-out rows
@@ -46,12 +44,10 @@ type evalMetrics struct {
 	CityPct    *float64 `json:"city_pct,omitempty"`
 
 	// How often our place equals each reference's, over the addresses both have.
-	DBIPCountryAgreePct        *float64 `json:"dbip_country_agree_pct,omitempty"`
-	DBIPCityAgreePct           *float64 `json:"dbip_city_agree_pct,omitempty"`
-	MaxMindCountryAgreePct     *float64 `json:"maxmind_country_agree_pct,omitempty"`
-	MaxMindCityAgreePct        *float64 `json:"maxmind_city_agree_pct,omitempty"`
-	IP2LocationCountryAgreePct *float64 `json:"ip2location_country_agree_pct,omitempty"`
-	IP2LocationCityAgreePct    *float64 `json:"ip2location_city_agree_pct,omitempty"`
+	DBIPCountryAgreePct    *float64 `json:"dbip_country_agree_pct,omitempty"`
+	DBIPCityAgreePct       *float64 `json:"dbip_city_agree_pct,omitempty"`
+	MaxMindCountryAgreePct *float64 `json:"maxmind_country_agree_pct,omitempty"`
+	MaxMindCityAgreePct    *float64 `json:"maxmind_city_agree_pct,omitempty"`
 	// Where a strict majority of the references (at least two with a country) agree, how often we do.
 	VendorConsensusCountryAgreePct *float64 `json:"vendor_consensus_country_agree_pct,omitempty"`
 
@@ -74,12 +70,6 @@ type evalMetrics struct {
 	MaxMindAtlasCountryPct   *float64 `json:"maxmind_atlas_country_pct,omitempty"`
 	MaxMindHoldoutCountryPct *float64 `json:"maxmind_holdout_country_pct,omitempty"`
 	MaxMindHoldoutCityPct    *float64 `json:"maxmind_holdout_city_pct,omitempty"`
-
-	IP2LocationCountryPct        *float64 `json:"ip2location_country_pct,omitempty"`
-	IP2LocationCityPct           *float64 `json:"ip2location_city_pct,omitempty"`
-	IP2LocationAtlasCountryPct   *float64 `json:"ip2location_atlas_country_pct,omitempty"`
-	IP2LocationHoldoutCountryPct *float64 `json:"ip2location_holdout_country_pct,omitempty"`
-	IP2LocationHoldoutCityPct    *float64 `json:"ip2location_holdout_city_pct,omitempty"`
 }
 
 // refSlots are the places in evalMetrics where the scores of one reference go.
@@ -93,8 +83,6 @@ func (m *evalMetrics) slots(key string) refSlots {
 		return refSlots{&m.DBIPCountryAgreePct, &m.DBIPCityAgreePct, &m.DBIPCountryPct, &m.DBIPCityPct, &m.DBIPAtlasCountryPct, &m.DBIPHoldoutCountryPct, &m.DBIPHoldoutCityPct}
 	case "maxmind":
 		return refSlots{&m.MaxMindCountryAgreePct, &m.MaxMindCityAgreePct, &m.MaxMindCountryPct, &m.MaxMindCityPct, &m.MaxMindAtlasCountryPct, &m.MaxMindHoldoutCountryPct, &m.MaxMindHoldoutCityPct}
-	case "ip2location":
-		return refSlots{&m.IP2LocationCountryAgreePct, &m.IP2LocationCityAgreePct, &m.IP2LocationCountryPct, &m.IP2LocationCityPct, &m.IP2LocationAtlasCountryPct, &m.IP2LocationHoldoutCountryPct, &m.IP2LocationHoldoutCityPct}
 	}
 	panic("eval: unknown reference " + key)
 }
@@ -221,63 +209,6 @@ func loadRanges(reader *maxminddb.Reader, ids names, fields placeFields) ([]rng,
 		slices.SortFunc(out, func(a, b rng) int { return cmpU32(a.lo, b.lo) })
 	}
 	return out, nil
-}
-
-// loadIP2Location reads the IPv4 ranges of an IP2Location LITE DB11 CSV: no
-// header, quoted columns ip_from, ip_to (decimal numbers), country_code,
-// country_name, region_name, city_name, latitude, longitude, ... "-" means
-// unknown. Rows that do not parse (or overlap the row before) are skipped.
-func loadIP2Location(path string, ids names) ([]rng, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	r := csv.NewReader(f)
-	r.FieldsPerRecord = -1
-	var out []rng
-	for {
-		rec, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil || len(rec) < 6 {
-			continue
-		}
-		lo, err1 := strconv.ParseUint(strings.TrimSpace(rec[0]), 10, 32)
-		hi, err2 := strconv.ParseUint(strings.TrimSpace(rec[1]), 10, 32)
-		if err1 != nil || err2 != nil || lo > hi {
-			continue
-		}
-		city := ""
-		if strings.TrimSpace(rec[5]) != "-" {
-			city = rec[5]
-		}
-		x := rng{lo: uint32(lo), hi: uint32(hi), country: ids.id(normCountry(rec[2])), city: ids.id(normCity(city))}
-		if x.country == 0 && x.city == 0 {
-			continue
-		}
-		out = append(out, x)
-	}
-	slices.SortStableFunc(out, func(a, b rng) int { return cmpU32(a.lo, b.lo) })
-	merged := out[:0]
-	for _, x := range out {
-		if n := len(merged); n > 0 {
-			prev := &merged[n-1]
-			if x.lo <= prev.hi {
-				continue // overlaps the row before
-			}
-			if prev.hi+1 == x.lo && prev.country == x.country && prev.city == x.city && prev.hi != math.MaxUint32 {
-				prev.hi = x.hi
-				continue
-			}
-		}
-		merged = append(merged, x)
-	}
-	if len(merged) == 0 {
-		return nil, fmt.Errorf("%s: no usable rows", path)
-	}
-	return merged, nil
 }
 
 func cmpU32(a, b uint32) int {
@@ -555,13 +486,6 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 			return nil, err
 		}
 		refs = append(refs, reference{"maxmind", ranges})
-	}
-	if in.ip2location != "" {
-		ranges, err := loadIP2Location(in.ip2location, ids)
-		if err != nil {
-			return nil, err
-		}
-		refs = append(refs, reference{"ip2location", ranges})
 	}
 	for _, ref := range refs {
 		slots := m.slots(ref.key)

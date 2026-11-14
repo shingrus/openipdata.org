@@ -62,7 +62,7 @@ clean build next time. Override both to change Go:
 
 ## Secrets
 
-All secrets (`HATCHET_CLIENT_TOKEN`, `PGSQL`, `PDB_KEY`, `R2`, `GITHUB_TOKEN`, `HC_PING_ASN`, `MAXMIND_LICENSE_KEY`, `IP2LOCATION_TOKEN`) live in `/etc/openipdata/worker.env`
+All secrets (`HATCHET_CLIENT_TOKEN`, `PGSQL`, `PDB_KEY`, `R2`, `GITHUB_TOKEN`, `HC_PING_ASN`, `MAXMIND_LICENSE_KEY`) live in `/etc/openipdata/worker.env`
 on the VM, and Hatchet Cloud never sees them. Hatchet does store task inputs, outputs, and
 log lines, so keep secrets and visitor IPs out of all three.
 

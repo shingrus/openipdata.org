@@ -2,7 +2,6 @@ package geo
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
@@ -33,9 +32,6 @@ const (
 	// MaxMind GeoLite2 City (GeoLite EULA, attribution required), a tar.gz with
 	// GeoLite2-City_YYYYMMDD/GeoLite2-City.mmdb; the license key is added as a query.
 	maxmindURL = "https://download.maxmind.com/app/geoip_download"
-	// IP2Location LITE DB11 (CC BY-SA 4.0), IPv4 CSV in a zip, updated monthly;
-	// the token is added as a query.
-	ip2locationURL = "https://www.ip2location.com/download/"
 	// RIPE Atlas probe archive: today's dump, bzip2-compressed JSON
 	// {"objects": [{"address_v4", "country_code", "latitude", "longitude", "status", ...}]}.
 	atlasURL = "https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest"
@@ -45,13 +41,13 @@ const (
 )
 
 // evalURLs replaces the reference URLs in tests.
-type evalURLs struct{ dbip, maxmind, ip2location, atlas string }
+type evalURLs struct{ dbip, maxmind, atlas string }
 
 func (p *Pipeline) urls() evalURLs {
 	if p.refURLs != nil {
 		return *p.refURLs
 	}
-	return evalURLs{dbipURLFormat, maxmindURL, ip2locationURL, atlasURL}
+	return evalURLs{dbipURLFormat, maxmindURL, atlasURL}
 }
 
 // useCopy is the fallback for a failed download: a copy kept from an earlier
@@ -152,13 +148,9 @@ func looksLikeMMDB(path string) bool {
 	return bytes.Contains(buf, mmdbMarker)
 }
 
-// errMaxMind and errIP2Location are all that is ever said about a failed
-// request to these services: the request URL holds the key or token, and the
-// errors of Go's HTTP client repeat it.
-var (
-	errMaxMind     = errors.New("MaxMind download failed")
-	errIP2Location = errors.New("IP2Location download failed")
-)
+// errMaxMind is all that is ever said about a failed request to MaxMind: the
+// request URL holds the key, and the errors of Go's HTTP client repeat it.
+var errMaxMind = errors.New("MaxMind download failed")
 
 // refError turns any error of a request whose URL holds a secret into one that
 // is safe to log and return. An HTTP status stays: it holds no URL.
@@ -170,16 +162,13 @@ func refError(name string, fixed, err error) error {
 	return fixed
 }
 
-// Both services limit their downloads (MaxMind 30 a day) and publish rarely,
-// so a copy checked this recently is used without a request.
+// MaxMind limits its downloads (30 a day) and publishes rarely, so a copy
+// checked this recently is used without a request.
 const (
-	maxMindMinAge      = 3 * 24 * time.Hour
-	ip2locationMinAge  = 7 * 24 * time.Hour
-	ip2locationBackoff = 24 * time.Hour
+	maxMindMinAge = 3 * 24 * time.Hour
 
-	maxMindMMDB    = "GeoLite2-City.mmdb"        // the entry of the MaxMind archive
-	ip2locationCSV = "IP2LOCATION-LITE-DB11.CSV" // the entry of the IP2Location zip
-	maxUnpacked    = 2 << 30                     // an entry larger than this is not a database
+	maxMindMMDB = "GeoLite2-City.mmdb" // the entry of the MaxMind archive
+	maxUnpacked = 2 << 30              // an entry larger than this is not a database
 )
 
 // recentlyChecked tells whether the archive exists and its last successful
@@ -293,91 +282,6 @@ func writeChecked(r io.Reader, dst string, check func(string) bool, bad string) 
 		return errors.New(bad)
 	}
 	return os.Rename(tmp, dst)
-}
-
-// fetchIP2Location downloads the IP2Location LITE DB11 zip (IPv4) and unpacks
-// the CSV; without IP2LOCATION_TOKEN it is skipped. The service answers a
-// failed request (limit reached, bad token) with HTTP 200 and a short text,
-// which is not a zip and counts as a failed download.
-func (p *Pipeline) fetchIP2Location(ctx context.Context, client *http.Client, dir string, now time.Time) (string, string) {
-	if p.IP2LocationToken == "" {
-		return "", "skipped: IP2LOCATION_TOKEN is not set"
-	}
-	archive, csvPath := filepath.Join(dir, "ip2location-lite-db11.zip"), filepath.Join(dir, "ip2location-lite-db11.csv")
-	// After an answer that was no valid zip (limit reached, bad token) wait a day.
-	failed := archive + ".failed"
-	if info, err := os.Stat(failed); err == nil && now.Sub(info.ModTime()) < ip2locationBackoff && !info.ModTime().After(now) {
-		msg := "the last download failed, waiting 1 day"
-		if looksLikeIP2LocationCSV(csvPath) {
-			return csvPath, "stale: " + msg
-		}
-		return "", "skipped: " + msg
-	}
-	status := download.Cached
-	if !recentlyChecked(archive, ip2locationMinAge, now) {
-		rawURL := p.urls().ip2location + "?token=" + url.QueryEscape(p.IP2LocationToken) + "&file=DB11LITE"
-		var err error
-		if status, err = download.File(ctx, client, rawURL, archive); err != nil {
-			var ok bool
-			if status, ok = useCopy(archive, refError("IP2Location", errIP2Location, err)); !ok {
-				return "", status
-			}
-		} else {
-			markChecked(archive, now)
-		}
-	}
-	if _, statErr := os.Stat(csvPath); status == download.Downloaded || statErr != nil {
-		if err := unzipIP2Location(archive, csvPath); err != nil {
-			dropArchive(archive)
-			stamp(failed, now)
-			if looksLikeIP2LocationCSV(csvPath) {
-				return csvPath, "stale: " + err.Error()
-			}
-			return "", "skipped: " + err.Error()
-		}
-		os.Remove(failed)
-	}
-	return csvPath, status
-}
-
-// unzipIP2Location writes the DB11 CSV of the zip to dst through a temporary file.
-func unzipIP2Location(src, dst string) error {
-	zr, err := zip.OpenReader(src)
-	if err != nil {
-		return errors.New("not a zip archive")
-	}
-	defer zr.Close()
-	for _, f := range zr.File {
-		if !strings.EqualFold(path.Base(f.Name), ip2locationCSV) {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return errors.New("bad zip entry")
-		}
-		defer rc.Close()
-		return writeChecked(rc, dst, looksLikeIP2LocationCSV, "not an IP2Location CSV file")
-	}
-	return errors.New("archive has no " + ip2locationCSV)
-}
-
-// looksLikeIP2LocationCSV checks that the first record has the eight columns
-// or more of DB11 and numeric range bounds.
-func looksLikeIP2LocationCSV(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	r := csv.NewReader(f)
-	r.FieldsPerRecord = -1
-	rec, err := r.Read()
-	if err != nil || len(rec) < 8 {
-		return false
-	}
-	_, e1 := strconv.ParseUint(rec[0], 10, 32)
-	_, e2 := strconv.ParseUint(rec[1], 10, 32)
-	return e1 == nil && e2 == nil
 }
 
 // fetchAtlas downloads the RIPE Atlas probe dump and keeps the connected

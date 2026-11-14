@@ -66,16 +66,6 @@ func TestEvaluate(t *testing.T) {
 		{"45.0.1.128/25", "AT", "Vienna"},
 		{"45.0.2.0/24", "FR", "Paris"},
 	})
-	// 45.0.0.0 is 754974720. A row that does not parse, a row without data and
-	// one that overlaps the row before are skipped; "-" is unknown.
-	ip2location := writeFile(t, filepath.Join(dir, "ip2location.csv"),
-		"\"0\",\"16777215\",\"-\",\"-\",\"-\",\"-\",\"0.0\",\"0.0\",\"-\",\"-\"\n"+
-			"\"754974720\",\"754974975\",\"US\",\"United States of America\",\"Texas\",\"Dallas\",\"32.7\",\"-96.8\",\"75201\",\"-06:00\"\n"+
-			"\"abc\",\"def\",\"US\",\"x\",\"x\",\"Nowhere\",\"0\",\"0\",\"-\",\"-\"\n"+
-			"\"754974976\",\"754975231\",\"DE\",\"Germany\",\"Berlin\",\"-\",\"52.5\",\"13.4\",\"-\",\"+01:00\"\n"+
-			"\"754975000\",\"754975100\",\"JP\",\"Japan\",\"Tokyo\",\"Tokyo\",\"0\",\"0\",\"-\",\"-\"\n"+
-			"\"754975232\",\"754975487\",\"NL\",\"Netherlands\",\"Utrecht\",\"Paris\",\"0\",\"0\",\"-\",\"-\"\n"+
-			"\"754975488\",\"754975743\",\"-\",\"-\",\"-\",\"-\",\"0\",\"0\",\"-\",\"-\"\n")
 	atlas := writeFile(t, filepath.Join(dir, "atlas.csv"), "ip,country,lat,lon\n"+
 		"45.0.0.5,US,1,2\n45.0.1.5,DE,1,2\n45.0.2.5,NL,1,2\n45.0.3.5,FR,1,2\nnope,US,1,2\n2a00::1,DE,1,2\n")
 	holdoutRIR := writeFile(t, filepath.Join(dir, "holdout-cities.csv.gz"), "prefix,country,city\n"+
@@ -87,7 +77,7 @@ func TestEvaluate(t *testing.T) {
 	truth := writeFile(t, filepath.Join(dir, "truth.csv"), "prefix,country,city\n"+
 		"45.0.0.0/24,US,Dallas\n45.0.1.0/24,DE,Berlin\n45.0.2.0/24,FR,Paris\n45.0.3.0/24,FR,\n")
 
-	m, err := evaluate(evalInputs{db: ours, rir: rir, dbip: dbip, maxmind: maxmind, ip2location: ip2location, atlas: atlas, holdoutDB: holdout, holdoutTruth: truth})
+	m, err := evaluate(evalInputs{db: ours, rir: rir, dbip: dbip, maxmind: maxmind, atlas: atlas, holdoutDB: holdout, holdoutTruth: truth})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,13 +94,12 @@ func TestEvaluate(t *testing.T) {
 		"dbip_country_agree_pct": {m.DBIPCountryAgreePct, 66.67}, // 512 of 768
 		"dbip_city_agree_pct":    {m.DBIPCityAgreePct, 66.67},    // Berlin 256 agrees, Dallas/Austin 128 does not
 
-		"maxmind_country_agree_pct":     {m.MaxMindCountryAgreePct, 83.33}, // 640 of 768: 45.0.1.128/25 is AT
-		"maxmind_city_agree_pct":        {m.MaxMindCityAgreePct, 100},      // 384 of 384
-		"ip2location_country_agree_pct": {m.IP2LocationCountryAgreePct, 66.67},
-		"ip2location_city_agree_pct":    {m.IP2LocationCityAgreePct, 100}, // only Dallas, 128 of 128
+		"maxmind_country_agree_pct": {m.MaxMindCountryAgreePct, 83.33}, // 640 of 768: 45.0.1.128/25 is AT
+		"maxmind_city_agree_pct":    {m.MaxMindCityAgreePct, 100},      // 384 of 384
 
-		// US, DE, DE (2 of 3 on 45.0.1.128/25) agree with us; NL 256 (2 of 3) does not; 45.0.3.0/24 has one vote.
-		"vendor_consensus_country_agree_pct": {m.VendorConsensusCountryAgreePct, 66.67},
+		// Both references agree on US 256 and DE 128 (we agree with both); 45.0.1.128/25 (DE against AT),
+		// 45.0.2.0/24 (NL against FR) have no majority; 45.0.3.0/24 has one vote: 384 of 384.
+		"vendor_consensus_country_agree_pct": {m.VendorConsensusCountryAgreePct, 100},
 
 		"dbip_country_pct":         {m.DBIPCountryPct, 80},
 		"dbip_city_pct":            {m.DBIPCityPct, 80},
@@ -123,12 +112,6 @@ func TestEvaluate(t *testing.T) {
 		"maxmind_atlas_country_pct":   {m.MaxMindAtlasCountryPct, 50},
 		"maxmind_holdout_country_pct": {m.MaxMindHoldoutCountryPct, 75},
 		"maxmind_holdout_city_pct":    {m.MaxMindHoldoutCityPct, 100},
-
-		"ip2location_country_pct":         {m.IP2LocationCountryPct, 60},
-		"ip2location_city_pct":            {m.IP2LocationCityPct, 40},
-		"ip2location_atlas_country_pct":   {m.IP2LocationAtlasCountryPct, 75},
-		"ip2location_holdout_country_pct": {m.IP2LocationHoldoutCountryPct, 50},
-		"ip2location_holdout_city_pct":    {m.IP2LocationHoldoutCityPct, 66.67},
 	} {
 		if !approx(c.got, c.want) {
 			t.Errorf("%s = %v, want %v", name, c.got, c.want)
@@ -138,51 +121,9 @@ func TestEvaluate(t *testing.T) {
 		t.Errorf("probes %v, holdout prefixes %v", m.AtlasProbes, m.HoldoutPrefixes)
 	}
 
-	// Two references are enough for a consensus; one is not.
-	m, err = evaluate(evalInputs{db: ours, rir: rir, dbip: dbip, maxmind: maxmind})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Both agree on US 256 and DE 128 (we agree) and 45.0.2.0/24 never (NL against FR).
-	if !approx(m.VendorConsensusCountryAgreePct, 100) || m.IP2LocationCountryPct != nil || m.IP2LocationAtlasCountryPct != nil {
-		t.Errorf("two references: consensus %v, %+v", m.VendorConsensusCountryAgreePct, m)
-	}
-	if m, err = evaluate(evalInputs{db: ours, rir: rir, ip2location: ip2location}); err != nil || m.VendorConsensusCountryAgreePct != nil || m.IP2LocationCountryAgreePct == nil {
+	// One reference is not enough for a consensus.
+	if m, err = evaluate(evalInputs{db: ours, rir: rir, dbip: dbip}); err != nil || m.VendorConsensusCountryAgreePct != nil || m.DBIPCountryAgreePct == nil {
 		t.Errorf("one reference: %+v %v", m, err)
-	}
-}
-
-func TestLoadIP2Location(t *testing.T) {
-	dir := t.TempDir()
-	ids := names{}
-	path := writeFile(t, filepath.Join(dir, "a.csv"), "\"16777216\",\"16777471\",\"AU\",\"Australia\",\"Queensland\",\"South Brisbane\",\"0\",\"0\",\"-\",\"-\"\n"+
-		"\"16777472\",\"16778239\",\"AU\",\"Australia\",\"Queensland\",\" South Brisbane \",\"0\",\"0\",\"-\",\"-\"\n"+ // merges with the row before
-		"\"16778240\",\"16778495\",\"-\",\"x\",\"x\",\"-\",\"0\",\"0\",\"-\",\"-\"\n"+ // no country, no city: nothing
-		"\"5\",\"3\",\"AU\",\"x\",\"x\",\"x\",\"0\",\"0\",\"-\",\"-\"\n"+ // from after to
-		"\"4294967040\",\"4294967295\",\"US\",\"x\",\"x\",\"-\",\"0\",\"0\",\"-\",\"-\"\n")
-	got, err := loadIP2Location(path, ids)
-	if err != nil {
-		t.Fatal(err)
-	}
-	au, city, us := ids.id("AU"), ids.id("south brisbane"), ids.id("US")
-	want := []rng{{lo: 16777216, hi: 16778239, country: au, city: city}, {lo: 4294967040, hi: math.MaxUint32, country: us}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ranges = %v, want %v", got, want)
-	}
-	lookup := rangeLookup(got, ids.reverse())
-	if c, ci, _ := lookup(netip.MustParseAddr("1.0.3.255")); c != "AU" || ci != "south brisbane" {
-		t.Errorf("lookup = %q %q", c, ci)
-	}
-	for _, a := range []string{"1.0.4.0", "0.0.0.0", "255.255.254.255"} {
-		if c, ci, _ := lookup(netip.MustParseAddr(a)); c != "" || ci != "" {
-			t.Errorf("lookup %s = %q %q", a, c, ci)
-		}
-	}
-	if c, _, _ := lookup(netip.MustParseAddr("255.255.255.255")); c != "US" {
-		t.Errorf("last address = %q", c)
-	}
-	if _, err := loadIP2Location(writeFile(t, filepath.Join(dir, "b.csv"), "<html>limit reached</html>\n"), names{}); err == nil {
-		t.Error("a file without rows: no error")
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 // EvalOutput is what Evaluate scored. Metrics holds the numbers
 // "mmdbbuilder eval" printed; a score whose reference was not available is
 // absent. References tells how each reference stands (never a URL: the MaxMind
-// and IP2Location URLs hold a secret).
+// URL holds a secret).
 type EvalOutput struct {
 	ID              int64              `json:"id"` // the row in public.geo_eval
 	Metrics         map[string]float64 `json:"metrics"`
@@ -33,7 +33,7 @@ func (p *Pipeline) evalDir() string { return filepath.Join(p.dir(), "eval") }
 // public.geo_eval (published = false; Publish flips it).
 //
 // It refreshes the reference databases in DataDir/geo/eval/ (DB-IP city,
-// MaxMind GeoLite2 City, IP2Location LITE DB11, RIPE Atlas probes), builds a second MMDB without a frozen
+// MaxMind GeoLite2 City, RIPE Atlas probes), builds a second MMDB without a frozen
 // tenth of the geofeeds (holdout.mmdb) to score the lower layers on the
 // held-out rows, and runs "mmdbbuilder eval". A reference that cannot be
 // fetched falls back to its cached copy; with no copy it is skipped, which
@@ -70,7 +70,6 @@ func (p *Pipeline) Evaluate(ctx context.Context, src Source, mmdbPath string) (E
 	}{
 		{"dbip", "-dbip", p.fetchDBIP},
 		{"maxmind", "-maxmind", p.fetchMaxMind},
-		{"ip2location", "-ip2location", p.fetchIP2Location},
 		{"atlas", "-atlas", p.fetchAtlas},
 	} {
 		path, status := ref.fetch(ctx, client, dir, now)
