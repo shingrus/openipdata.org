@@ -28,19 +28,13 @@ func noScores() scores {
 	return scores{Country: math.NaN(), City: math.NaN(), Coverage: math.NaN(), Probes: -1}
 }
 
-// readScores opens the MMDB, reads its metadata and closes it. On an error it
-// returns empty scores and the error.
-func readScores(path string) (scores, error) {
-	r, err := maxminddb.Open(path)
-	if err != nil {
-		return noScores(), err
-	}
-	defer r.Close()
+// metaScores reads the scores from the metadata of an open MMDB.
+func metaScores(r *maxminddb.Reader) scores {
 	var epoch time.Time
 	if r.Metadata.BuildEpoch > 0 {
 		epoch = r.Metadata.BuildTime()
 	}
-	return parseStamp(r.Metadata.Description[stampKey], epoch), nil
+	return parseStamp(r.Metadata.Description[stampKey], epoch)
 }
 
 // parseStamp reads the stamp text (may be empty or garbage). epoch is the

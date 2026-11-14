@@ -37,6 +37,9 @@ type view struct {
 	Updated         bool
 	UpdatedISO      string
 	UpdatedText     string
+	Panel           *panel
+	Input           string // lookup bar value
+	Title           string // the page title
 }
 
 // fmtPct returns the number with one decimal, or false when v is missing,
@@ -86,10 +89,10 @@ func makeView(s scores) view {
 	return v
 }
 
-// render builds the whole home page once for the given scores.
-func render(t *template.Template, s scores) ([]byte, error) {
+// render executes the page template for v.
+func render(t *template.Template, v view) ([]byte, error) {
 	var b bytes.Buffer
-	if err := t.Execute(&b, makeView(s)); err != nil {
+	if err := t.Execute(&b, v); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil

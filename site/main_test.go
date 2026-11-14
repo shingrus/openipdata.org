@@ -12,11 +12,23 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/oschwald/maxminddb-golang/v2"
 )
+
+// readScores opens an MMDB, reads the scores from its metadata and closes it.
+func readScores(path string) (scores, error) {
+	r, err := maxminddb.Open(path)
+	if err != nil {
+		return noScores(), err
+	}
+	defer r.Close()
+	return metaScores(r), nil
+}
 
 func testServer(t *testing.T, mmdb string) *server {
 	t.Helper()
-	s, err := newServer(mmdb)
+	s, err := newServer(mmdb, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +95,7 @@ func TestHome(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		"<h1>Accuracy</h1>", "right country", "right city", "of addresses have a city",
+		"<h2>Accuracy</h2>", "right country", "right city", "of addresses have a city",
 		`<span class="num">91.5<i>%</i></span>`, `<span class="num">42.5<i>%</i></span>`, `<span class="num">77.5<i>%</i></span>`,
 		`style="--v:91.5%"`, `<span class="mono">1,234</span>`,
 		`<time datetime="2026-11-14T07:42:10Z">14 Nov 2026</time>`,
@@ -94,7 +106,7 @@ func TestHome(t *testing.T) {
 		}
 	}
 	h := w.Header()
-	if h.Get("Content-Type") != "text/html; charset=utf-8" || h.Get("Cache-Control") != "public, max-age=60" ||
+	if h.Get("Content-Type") != "text/html; charset=utf-8" || h.Get("Cache-Control") != "private, no-store" ||
 		h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Referrer-Policy") != "no-referrer" {
 		t.Errorf("headers: %v", h)
 	}
@@ -118,17 +130,9 @@ func TestHome(t *testing.T) {
 		}
 	}
 
-	// ETag and 304
-	etag := h.Get("ETag")
-	if !strings.HasPrefix(etag, `"`) || strings.HasPrefix(etag, "W/") {
-		t.Fatalf("etag %q", etag)
-	}
-	w2 := get(s, "GET", "/", "If-None-Match", etag)
-	if w2.Code != 304 || w2.Body.Len() != 0 || w2.Header().Get("ETag") != etag {
-		t.Errorf("conditional: %d, %d bytes", w2.Code, w2.Body.Len())
-	}
-	if w3 := get(s, "GET", "/", "If-None-Match", `"other"`); w3.Code != 200 {
-		t.Errorf("other etag: %d", w3.Code)
+	// The home page shows visitor data: never an ETag, never cached.
+	if h.Get("ETag") != "" {
+		t.Errorf("home has an ETag: %q", h.Get("ETag"))
 	}
 	if w4 := get(s, "HEAD", "/"); w4.Code != 200 {
 		t.Errorf("HEAD: %d", w4.Code)
@@ -137,7 +141,7 @@ func TestHome(t *testing.T) {
 
 func TestRoutes(t *testing.T) {
 	s := testServer(t, "testdata/stamped.mmdb")
-	if w := get(s, "GET", "/?1.1.1.1"); w.Code != 200 || !strings.Contains(w.Body.String(), "Accuracy") {
+	if w := get(s, "GET", "/?8.8.8.8"); w.Code != 200 || !strings.Contains(w.Body.String(), "Accuracy") {
 		t.Errorf("query: %d", w.Code)
 	}
 	for _, p := range []string{"/x", "/index.html", "/fonts/", "/fonts/nope.woff2", "/healthz/"} {
@@ -184,7 +188,7 @@ func TestNoMMDB(t *testing.T) {
 		if n := strings.Count(body, `<span class="num">—</span>`); n != 3 {
 			t.Errorf("%s: %d dashes", name, n)
 		}
-		if strings.Contains(body, "%</i>") || strings.Contains(body, `<span class="mono">`) {
+		if strings.Contains(body, "%</i>") {
 			t.Errorf("%s: shows a number", name)
 		}
 		if !strings.Contains(body, "tested on devices whose real location is known.") {
@@ -204,11 +208,11 @@ func TestReload(t *testing.T) {
 	if !strings.Contains(get(s, "GET", "/").Body.String(), "—") {
 		t.Fatal("want dashes first")
 	}
-	old := s.home.Load()
+	old := s.scores.Load()
 
-	s.check() // still missing: keeps the page
-	if s.home.Load() != old {
-		t.Error("page changed for a missing file")
+	s.check() // still missing: keeps the scores
+	if s.scores.Load() != old {
+		t.Error("scores changed for a missing file")
 	}
 
 	copyFile(t, "testdata/stamped.mmdb", path+".tmp")
@@ -219,16 +223,16 @@ func TestReload(t *testing.T) {
 	if !strings.Contains(get(s, "GET", "/").Body.String(), "91.5") {
 		t.Error("new file not picked up")
 	}
-	cur := s.home.Load()
+	cur := s.scores.Load()
 	s.check() // unchanged: nothing re-rendered
-	if s.home.Load() != cur {
-		t.Error("re-rendered without a change")
+	if s.scores.Load() != cur {
+		t.Error("scores reloaded without a change")
 	}
 
 	// A broken replacement keeps the page.
 	os.WriteFile(path, []byte("broken broken broken"), 0o644)
 	s.check()
-	if s.home.Load() != cur || !strings.Contains(get(s, "GET", "/").Body.String(), "91.5") {
+	if s.scores.Load() != cur || !strings.Contains(get(s, "GET", "/").Body.String(), "91.5") {
 		t.Error("failed reload did not keep the page")
 	}
 
@@ -236,7 +240,7 @@ func TestReload(t *testing.T) {
 	copyFile(t, "testdata/stamped.mmdb", path)
 	os.Chtimes(path, time.Now(), time.Now().Add(time.Hour))
 	s.check()
-	if s.home.Load() == cur {
+	if s.scores.Load() == cur {
 		t.Error("fixed file not picked up")
 	}
 }
@@ -244,7 +248,7 @@ func TestReload(t *testing.T) {
 func TestPageHygiene(t *testing.T) {
 	s := testServer(t, "testdata/stamped.mmdb")
 	body := get(s, "GET", "/").Body.String()
-	if len(body) >= 8<<10 {
+	if len(body) >= 12<<10 {
 		t.Errorf("page is %d bytes", len(body))
 	}
 	// The only URL is the GitHub link (the SVG namespace of the data: favicon is no request).

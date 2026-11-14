@@ -18,3 +18,5 @@
 /site/openipdata-site
 !/site/testdata/stamped.mmdb
 !/site/testdata/unstamped.mmdb
+!/site/testdata/lookup-geo.mmdb
+!/site/testdata/lookup-asn.mmdb

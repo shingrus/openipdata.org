@@ -14,6 +14,10 @@ Group=openipdata-site
 # No env file: the site needs no secrets.
 Environment=LISTEN=127.0.0.1:%i
 Environment=GEO_MMDB=/var/lib/openipdata-site/data/ip2geo-openipdata.mmdb
+Environment=ASN_MMDB=/var/lib/openipdata-site/data/ip2asn-openipdata.mmdb
+# nginx sends the visitor address in X-Real-IP (see openipdata.org.conf); the site
+# trusts it only from a loopback connection.
+Environment=REAL_IP_HEADER=X-Real-IP
 ExecStart=/opt/openipdata-site/slot-%i/openipdata-site
 Restart=always
 RestartSec=2

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>openipdata.org</title>
+<title>{{.Title}}</title>
 <meta name="description" content="Open IP geolocation and ASN data.">
 <meta name="color-scheme" content="dark light">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23ff7d1f'/%3E%3C/svg%3E">
@@ -20,8 +20,23 @@
 <button id="theme" class="ico" type="button" aria-label="Switch between dark and light"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg></button>
 </header>
 <main>
-<section class="panel">
-<div class="head"><h1>Accuracy</h1>{{if .Updated}} <span class="r">Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time></span>{{end}}</div>
+<form class="lookup" method="get" action="/">
+<b class="mono" aria-hidden="true">&rsaquo;</b>
+<input name="q" value="{{.Input}}" placeholder="IPv4 or IPv6" aria-label="IPv4 or IPv6" maxlength="100" autocomplete="off" autocapitalize="off" spellcheck="false">
+<button type="submit">Look up</button>
+</form>
+{{with .Panel}}<section class="panel">
+<div class="head"><h2>{{.Title}}</h2></div>
+{{if .Msg}}<p class="msg">{{if .Addr}}<span class="mono">{{.Addr}}</span>{{end}}{{.Msg}}</p>
+{{else}}<div class="conn">
+<div class="place{{if .None}} none{{end}}"><h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
+<dl>
+{{range .Rows}}<div><dt>{{.K}}</dt><dd>{{.V}}{{if .A}}<span class="as">{{.A}}</span>{{end}}</dd></div>
+{{end}}</dl>
+</div>
+{{end}}</section>
+{{end}}<section class="panel">
+<div class="head"><h2>Accuracy</h2>{{if .Updated}} <span class="r">Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time></span>{{end}}</div>
 <div class="acc">
 {{range .Cards}}<div><span class="num">{{.Num}}{{if .Pct}}<i>%</i>{{end}}</span><span class="lab">{{.Label}}</span><span class="bar" style="--v:{{.Bar}}"></span></div>
 {{end}}</div>
