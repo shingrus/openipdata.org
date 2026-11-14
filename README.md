@@ -37,7 +37,7 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 | `public.asn_domain` | `update-asn-domains` |
 | `public.geo_eval` | `build-geo-data` |
 | `public.network_traces`, `public.traced_networks`, `public.ip_ptr_names`, `public.rdns_geo_layer` | `resolve-ips` |
-| `public.rdns_city_rules` | `learn-rdns-rules` |
+| `public.rdns_city_rules`, `public.rdns_llm_answers` | `learn-rdns-rules` |
 
 The three ASN workflows share one concurrency limit, so only one runs at a time. Every morning (UTC):
 `sync-peeringdb` (03:00) → `update-asn-domains` (04:00) → `build-asn-data` (06:00).
@@ -478,6 +478,11 @@ column) makes the learner stop with a fixed error: drop it once (it holds only l
 override entry are future work; v1 consumes only `candidate` rows. See
 [the rule design](docs/rdns-rules-plan.md).
 
+The task `propose-codes` runs after `learn` (optional: needs `OPENROUTER_API_KEY`). It sends an LLM digit-free name
+patterns only (never a name or an IP) and stores each checked answer as the domain's rank-4 rule; learned codes it
+contradicts are overridden only when a second model agrees. Questions and verdicts are in `public.rdns_llm_answers`;
+API trouble or an used-up credit limit never fails the run.
+
 ### PTR failures in `resolve-ips`
 
 `resolve-names` looks up every public answering hop of the newest traces, not only the candidates;
@@ -510,6 +515,7 @@ openipdata-worker run-rdns             # run resolve-ips once locally
 openipdata-worker run-rdns -force-replace # allow an intentional layer shrink above 10%
 openipdata-worker run-rdns-rules       # learn candidate rules once locally
 openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule, without learning
+openipdata-worker run-rdns-rules -codes [-domains a.net,b.net] [-force] # only the LLM task propose-codes (needs OPENROUTER_API_KEY)
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
 mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-ipinfo <f>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON

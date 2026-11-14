@@ -1,5 +1,7 @@
 # rDNS rules without an LLM
 
+LLM codes for what this learner cannot decode: `docs/rdns-llm-codes-plan.md`.
+
 Greedy candidate v1 implemented, 2026-11-13. The "Greedier v1.1" section below (decided 2026-11-13) overrides the earlier sections where they differ. Validation and active-rule promotion remain future work.
 
 ## Greedier v1.1 (overrides the sections below where they differ)

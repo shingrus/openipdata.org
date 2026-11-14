@@ -250,3 +250,59 @@ func TestEnsureRDNSCityRulesOldLayoutIsReported(t *testing.T) {
 		t.Errorf("other error = %v", err)
 	}
 }
+
+func TestEnsureRDNSCityRulesAllowsRankFourAndWidensOnlyTheOldCheck(t *testing.T) {
+	r := &recorder{}
+	if err := EnsureRDNSCityRules(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(r.sqls, "\n")
+	if !strings.Contains(all, "CHECK (rank BETWEEN 1 AND 4)") {
+		t.Error("a new table does not allow rank 4")
+	}
+	// The widening only runs when the old constraint exists (no lock otherwise).
+	var widen string
+	for _, sql := range r.sqls {
+		if strings.Contains(sql, "DROP CONSTRAINT") {
+			widen = sql
+		}
+	}
+	for _, want := range []string{"IF old_check IS NOT NULL THEN", "pg_get_constraintdef(oid) LIKE '%rank <= 3%'", "ADD CONSTRAINT rdns_city_rules_rank_check CHECK (rank BETWEEN 1 AND 4)"} {
+		if !strings.Contains(widen, want) {
+			t.Errorf("widening lacks %q: %s", want, widen)
+		}
+	}
+}
+
+func TestEnsureRDNSLLMAnswersRunsOnlyItsTable(t *testing.T) {
+	r := &recorder{}
+	if err := EnsureRDNSLLMAnswers(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.sqls) == 0 {
+		t.Fatal("no DDL")
+	}
+	for _, sql := range r.sqls {
+		if !strings.Contains(sql, "IF NOT EXISTS") || !strings.Contains(sql, "public.rdns_llm_answers") {
+			t.Errorf("unexpected statement: %s", sql)
+		}
+		if strings.Contains(sql, "ALTER TABLE") {
+			t.Errorf("no ALTER on the answers table: %s", sql)
+		}
+	}
+	for _, col := range []string{"status TEXT NOT NULL", "verdict TEXT NOT NULL", "patterns_hash", "rule_versions", "request_id", "cost_usd"} {
+		if !strings.Contains(r.sqls[0], col) {
+			t.Errorf("missing column %q", col)
+		}
+	}
+	// Ensure (the ASN workflows) must not touch it.
+	ar := &recorder{}
+	if err := Ensure(context.Background(), ar); err != nil {
+		t.Fatal(err)
+	}
+	for _, sql := range ar.sqls {
+		if strings.Contains(sql, "rdns_llm_answers") {
+			t.Errorf("Ensure touches rdns_llm_answers: %s", sql)
+		}
+	}
+}

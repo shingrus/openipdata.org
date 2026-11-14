@@ -48,11 +48,20 @@ type Pipeline struct {
 	DataDir  string
 	PGSQL    string
 	Progress func(string)
+	// propose-codes: OpenRouter key and models (env settings read in main.go). The key is
+	// never logged, returned or stored.
+	OpenRouterKey         string
+	OpenRouterModel       string
+	OpenRouterSecondModel string
 	// Tests may replace endpoints, transport, and the clock.
-	client       *http.Client
-	now          func() time.Time
-	dictionaries Dictionaries
-	load         func(context.Context) (Dictionaries, error)
+	OpenRouterURL string
+	llmHTTP       *http.Client
+	llmBackoff    time.Duration
+	testGeo       *geoIndex
+	client        *http.Client
+	now           func() time.Time
+	dictionaries  Dictionaries
+	load          func(context.Context) (Dictionaries, error)
 }
 
 type Output struct {
@@ -129,7 +138,7 @@ func (p *Pipeline) Learn(ctx context.Context) (Output, error) {
 	}
 	// Scoped manual/LLM overrides of all of a domain's rows: an extraction can move to
 	// another rank between runs, so each learned row gets the union (first rank wins a token).
-	codeRows, err := conn.Query(ctx, `SELECT domain,codes FROM public.rdns_city_rules ORDER BY domain,rank`)
+	codeRows, err := conn.Query(ctx, `SELECT domain,codes FROM public.rdns_city_rules WHERE rank <= 3 ORDER BY domain,rank`)
 	if err != nil {
 		return out, safeDBError("read scoped city overrides", err)
 	}
@@ -159,44 +168,11 @@ func (p *Pipeline) Learn(ctx context.Context) (Output, error) {
 		return out, safeDBError("read scoped city overrides", err)
 	}
 	codeRows.Close()
-	var hasHops bool
-	if err = conn.QueryRow(ctx, hopIPsColumnQuery).Scan(&hasHops); err != nil {
-		return out, safeDBError("read network_traces columns", err)
-	}
-	query := inputQueryNoHops
-	if hasHops {
-		query = inputQuery
-	}
-	rows, err := conn.Query(ctx, query)
+	byDomain, namesSkipped, err := readDomainNames(ctx, conn)
 	if err != nil {
-		return out, safeDBError("read recent router names", err)
+		return out, err
 	}
-	byDomain := map[string][]Name{}
-	for rows.Next() {
-		var ip, ptr, country string
-		if err = rows.Scan(&ip, &ptr, &country); err != nil {
-			rows.Close()
-			return out, safeDBError("read recent router names", err)
-		}
-		a, addrErr := netip.ParseAddr(ip)
-		if addrErr != nil || !ipdata.PublicV4(a) {
-			continue
-		}
-		domain := registeredDomain(ptr)
-		if domain == "" {
-			continue
-		}
-		if !cleanLabels(ptr, domain) {
-			out.NamesSkipped++
-			continue
-		}
-		byDomain[domain] = append(byDomain[domain], Name{IP: ip, PTR: ptr, Country: country})
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return out, safeDBError("read recent router names", err)
-	}
-	rows.Close()
+	out.NamesSkipped = namesSkipped
 	// Rules with no current router evidence remain untouched. Count them as
 	// unsupported so a loss of support is visible in the count-only report.
 	for domain, n := range storedRows {
@@ -235,6 +211,52 @@ func (p *Pipeline) Learn(ctx context.Context) (Output, error) {
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
 	p.log("learn-rdns-rules: %d domains, %d rules (%d of rank 2 or 3), %d updated, %d unchanged, %d unsupported, %d lost support, %d retired, %d names skipped", out.Domains, out.Candidates, out.ExtraRanks, out.Updated, out.Unchanged, out.Unsupported, out.LostSupport, out.Retired, out.NamesSkipped)
 	return out, nil
+}
+
+// readDomainNames reads the PTR names of the traced IPs of the last 180 days, grouped by
+// registered domain (public IPv4 only, labels [a-z0-9-] only; the second result counts the
+// names skipped for another label). Countries are not set yet (loadRouterCountries).
+func readDomainNames(ctx context.Context, conn *pgx.Conn) (map[string][]Name, int, error) {
+	skipped := 0
+	var hasHops bool
+	if err := conn.QueryRow(ctx, hopIPsColumnQuery).Scan(&hasHops); err != nil {
+		return nil, 0, safeDBError("read network_traces columns", err)
+	}
+	query := inputQueryNoHops
+	if hasHops {
+		query = inputQuery
+	}
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, 0, safeDBError("read recent router names", err)
+	}
+	byDomain := map[string][]Name{}
+	for rows.Next() {
+		var ip, ptr, country string
+		if err = rows.Scan(&ip, &ptr, &country); err != nil {
+			rows.Close()
+			return nil, 0, safeDBError("read recent router names", err)
+		}
+		a, addrErr := netip.ParseAddr(ip)
+		if addrErr != nil || !ipdata.PublicV4(a) {
+			continue
+		}
+		domain := registeredDomain(ptr)
+		if domain == "" {
+			continue
+		}
+		if !cleanLabels(ptr, domain) {
+			skipped++
+			continue
+		}
+		byDomain[domain] = append(byDomain[domain], Name{IP: ip, PTR: ptr, Country: country})
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, 0, safeDBError("read recent router names", err)
+	}
+	rows.Close()
+	return byDomain, skipped, nil
 }
 
 // Reject withdraws the current rules for registered domains. It does not
@@ -402,7 +424,7 @@ type storedRule struct {
 }
 
 const readDomainRulesSQL = `SELECT rank,version,status,origin,pattern,dictionary,codes,rejected_versions,truth_hits,truth_misses,precision,measured_at,learned_at
-	FROM public.rdns_city_rules WHERE domain=$1 ORDER BY rank FOR UPDATE`
+	FROM public.rdns_city_rules WHERE domain=$1 AND rank <= 3 ORDER BY rank FOR UPDATE`
 
 func readDomainRules(ctx context.Context, tx pgx.Tx, domain string) ([]storedRule, error) {
 	rows, err := tx.Query(ctx, readDomainRulesSQL, domain)

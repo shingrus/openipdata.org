@@ -8,14 +8,18 @@
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
-//	openipdata-worker run-rdns-rules [-reject domain,...] # learn-rdns-rules
+//	openipdata-worker run-rdns-rules [-reject domain,...] # learn-rdns-rules (task learn)
+//	openipdata-worker run-rdns-rules -codes [-domains a,b] [-force] # learn-rdns-rules, only the task propose-codes
 //
 // Environment: PGSQL (Postgres DSN; sync-geofeeds keeps its URL list in
 // public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn;
 // resolve-ips reads public.generated_rules, public.rdns_city_rules and public.asn, reads and deletes rows of
 // public.visitor_ips (the websites insert them), and writes public.network_traces,
 // public.traced_networks, public.ip_ptr_names and public.rdns_geo_layer;
-// learn-rdns-rules reads the names of every traced IP (targets, candidates, hops) and ASNs, and writes public.rdns_city_rules),
+// learn-rdns-rules reads the names of every traced IP (targets, candidates, hops) and ASNs, and writes public.rdns_city_rules
+// and public.rdns_llm_answers),
+// OPENROUTER_API_KEY (optional, a secret: without it propose-codes is skipped), OPENROUTER_MODEL (default
+// openai/gpt-6.1-terra) and OPENROUTER_SECOND_MODEL (default openai/gpt-6-luna),
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
@@ -99,6 +103,10 @@ type ResolveIPsInput struct {
 // versions only, without source downloads or learning.
 type LearnRDNSRulesInput struct {
 	RejectDomains []string `json:"reject_domains"`
+	// Domains restricts the questions of propose-codes to these registered domains.
+	Domains []string `json:"domains"`
+	// Force makes propose-codes ask again whatever its record says.
+	Force bool `json:"force"`
 }
 
 func main() {
@@ -225,7 +233,16 @@ func newRDNSPipeline(progress func(string)) *rdns.Pipeline {
 }
 
 func newRDNSRulesPipeline(progress func(string)) *rdnsrules.Pipeline {
-	return &rdnsrules.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress}
+	model := env("OPENROUTER_MODEL")
+	if model == "" {
+		model = rdnsrules.DefaultModel
+	}
+	second := env("OPENROUTER_SECOND_MODEL")
+	if second == "" {
+		second = rdnsrules.DefaultSecondModel
+	}
+	return &rdnsrules.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress,
+		OpenRouterKey: env("OPENROUTER_API_KEY"), OpenRouterModel: model, OpenRouterSecondModel: second}
 }
 
 func pgsql() string { return env("PGSQL") }
@@ -589,11 +606,11 @@ const resolveIPsName = "resolve-ips"
 
 func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("learn-rdns-rules",
-		hatchet.WithWorkflowDescription("traced IP PTR names + public place dictionaries -> public.rdns_city_rules (up to 3 candidate rules per domain)"),
+		hatchet.WithWorkflowDescription("traced IP PTR names + public place dictionaries -> public.rdns_city_rules (up to 3 learned candidate rules per domain; propose-codes adds an LLM rule as rank 4 and records its questions in public.rdns_llm_answers)"),
 		hatchet.WithWorkflowCron("0 5 * * *"),
 		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns-rules")),
 	)
-	wf.NewTask("learn", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.Output, error) {
+	learn := wf.NewTask("learn", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.Output, error) {
 		p := newRDNSRulesPipeline(taskLog(ctx))
 		if err := p.CheckPGSQL(); err != nil {
 			return rdnsrules.Output{}, hatchet.NewNonRetryableError(err)
@@ -603,6 +620,22 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		}
 		return p.Learn(ctx)
 	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+	// The LLM questions run after learn. API trouble never fails the task (it is counted); only
+	// a database error and an invalid key do, and an invalid key is not retried.
+	wf.NewTask("propose-codes", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.ProposeOutput, error) {
+		if len(input.RejectDomains) > 0 {
+			return rdnsrules.ProposeOutput{Skipped: "reject_domains"}, nil
+		}
+		p := newRDNSRulesPipeline(taskLog(ctx))
+		if err := p.CheckPGSQL(); err != nil {
+			return rdnsrules.ProposeOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		out, err := p.ProposeCodes(ctx, rdnsrules.ProposeOptions{Domains: input.Domains, Force: input.Force})
+		if errors.Is(err, rdnsrules.ErrInvalidKey) {
+			err = hatchet.NewNonRetryableError(err)
+		}
+		return out, err
+	}, taskRetry(hatchet.WithParents(learn), hatchet.WithExecutionTimeout(8*time.Hour))...)
 	return wf
 }
 
@@ -854,6 +887,9 @@ func runRDNS(ctx context.Context, args []string) error {
 func runRDNSRules(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-rdns-rules", flag.ContinueOnError)
 	reject := flags.String("reject", "", "withdraw current rules for comma-separated registered domains, without learning")
+	codes := flags.Bool("codes", false, "run only propose-codes (the LLM questions), without learning")
+	domains := flags.String("domains", "", "with -codes: ask only these comma-separated registered domains")
+	force := flags.Bool("force", false, "with -codes: ask again whatever the record says")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -866,6 +902,22 @@ func runRDNSRules(ctx context.Context, args []string) error {
 	}
 	var rejection bool
 	flags.Visit(func(f *flag.Flag) { rejection = rejection || f.Name == "reject" })
+	if !*codes && (*domains != "" || *force) {
+		return errors.New("run-rdns-rules: -domains and -force need -codes")
+	}
+	if *codes {
+		if rejection {
+			return errors.New("run-rdns-rules: -codes and -reject cannot be combined")
+		}
+		var list []string
+		for _, d := range strings.Split(*domains, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				list = append(list, d)
+			}
+		}
+		_, err := p.ProposeCodes(ctx, rdnsrules.ProposeOptions{Domains: list, Force: *force})
+		return err
+	}
 	if rejection {
 		_, err := p.Reject(ctx, strings.Split(*reject, ","))
 		return err

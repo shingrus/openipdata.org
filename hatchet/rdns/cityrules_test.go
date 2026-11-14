@@ -1,6 +1,9 @@
 package rdns
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestCompileCityRulesStatusPatternAndMappings(t *testing.T) {
 	rules, st := compileCityRules([]cityRuleRow{
@@ -81,5 +84,38 @@ func TestCityRuleRanksTriedInOrder(t *testing.T) {
 	})
 	if got, ok := firstCityRuleMatch(indexCityRules(fall), "b-xyz1.isp.net"); !ok || got.City != "Amsterdam" {
 		t.Errorf("fall through to rank 2 = %+v ok=%v", got, ok)
+	}
+}
+
+// Rank 4 is the LLM rule of learn-rdns-rules: tried after the learned ranks, same rules.
+func TestCityRuleRankFourIsTriedLast(t *testing.T) {
+	rules, st := compileCityRules([]cityRuleRow{
+		{Domain: "isp.net", Rank: 4, Pattern: `^[a-z0-9-]+\.([a-z]+)\.isp\.net$`, PlacesJSON: `{"lnd":["GB","London"],"fra":["DE","Frankfurt am Main"]}`, Status: "candidate", Version: "v4"},
+		{Domain: "isp.net", Rank: 1, Pattern: `^([a-z]+)\d*\.isp\.net$`, PlacesJSON: `{"fra":["DE","Frankfurt"]}`, Status: "candidate"},
+		{Domain: "other.net", Rank: 4, Pattern: `^([a-z]+)\.other\.net$`, PlacesJSON: `{"ams":["NL","Amsterdam"]}`, Status: "rejected"},
+	})
+	if st.Loaded != 2 {
+		t.Fatalf("stats %+v", st)
+	}
+	index := indexCityRules(rules)
+	for _, tc := range []struct {
+		ptr  string
+		city string
+		rank int
+	}{
+		{"fra1.isp.net", "Frankfurt", 1}, // the learned rank decodes it first
+		{"r1.lnd.isp.net", "London", 4},  // only the LLM rule does
+		{"r1.fra.isp.net", "Frankfurt am Main", 4},
+	} {
+		got, rule, ok := firstCityRuleMatchRule(index, tc.ptr)
+		if !ok || got.City != tc.city || rule.rank != tc.rank {
+			t.Errorf("%s = %+v %v ok=%v", tc.ptr, got, rule, ok)
+		}
+		if ok && candidateRuleName(rule) != "isp.net#"+fmt.Sprint(tc.rank) {
+			t.Errorf("rule name %s", candidateRuleName(rule))
+		}
+	}
+	if _, _, ok := firstCityRuleMatchRule(index, "r1.ams.other.net"); ok {
+		t.Error("a withdrawn rank 4 rule voted")
 	}
 }

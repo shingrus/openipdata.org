@@ -33,9 +33,10 @@ flowchart LR
   rd --> t_rd[(network_traces<br/>ip_ptr_names<br/>rdns_geo_layer)]
   t_rd --> geo
   places[OurAirports, UN/LOCODE<br/>GeoNames] --> learn[learn-rdns-rules<br/>daily 05:00]
+  llm[OpenRouter<br/>name patterns only] --> learn
   t_rd --> learn
   t_asn --> learn
-  learn --> t_rules[(rdns_city_rules)]
+  learn --> t_rules[(rdns_city_rules<br/>rdns_llm_answers)]
   t_rules --> rd
 ```
 
@@ -67,11 +68,12 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `sync-geofeeds` | `rdap-lookups` and `probe-domains` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `60-whois` and `70-geofeeds` to private R2 | nothing |
 | `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `ip2geo-openipdata.mmdb` |
 | `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink of the sticky traced rows; candidate and wide rows are only counted) | — |
-| `learn-rdns-rules` | `learn` | `public.rdns_city_rules` (atomic rule/mapping updates) | — |
+| `learn-rdns-rules` | `learn` → `propose-codes` | `public.rdns_city_rules` (ranks 1-3 by `learn`, atomic; rank 4 and scoped overrides by `propose-codes`), `public.rdns_llm_answers` | — |
 
 - **`sync-geofeeds`**: finds every geofeed URL (whois, IRR, RDAP, CAIDA, built-in list, ASN websites), fetches and checks each feed, drops rows that fail the ownership check, exports ~6.4M rows (36 MB gz). `discover` also builds the whois geoloc layer.
 - **`build-geo-data`**: builds the MMDB from stacked layers (see ip2geo layers), scores it, and publishes only if the scores did not clearly drop.
 - **`resolve-ips`**: for IPv4 /24s that visitors came from (`public.visitor_ips`, filled by external websites), traces three hosts with `scamper` (built without privilege separation, next to the worker), names the last routers (PTR), and gives the /24 the city that a rule of `public.generated_rules` finds in a router name. Visitor IPs never leave Postgres and the VM: tasks report counts only.
+- **`learn-rdns-rules` / `propose-codes`**: per label, hex runs (6+ characters with a digit, or exactly 7 or 8) become `x` and decimal runs `0` before a name pattern leaves the VM; at most 300 distinct patterns per domain are sent. The model's regex and codes are tested on the real names here: one letters-only capture group, anchored, at least 2 distinct tokens and 20% of the names decoded (small domains: the announced country), every city resolved to one GeoNames place, the learner's domestic gate. An accepted answer is the domain's rank-4 row (`origin = llm`); the learner never touches rank 4 and `-reject` withdraws it. Where a learned rank and rank 4 disagree (other country or over 100 km), the second model is asked, and only when it names the same country within 100 km is the learned token overridden (an `origin = llm` code scoped to its extraction, never over a manual code). `public.rdns_llm_answers` records every question; only `complete` answers count. A domain is asked again when its newest question is incomplete (errors, stops and failed second opinions), when a current learned row has a version its last complete answer did not check, or when its pattern set changed and that answer is 30 days old (`force` overrides). A run makes at most 400 requests, fewer when the key's credit is low, and ends quietly with `stopped: credit_limit` on a key limit, budget or 402 (the domains it reached get the verdict `stopped`). Run only this task with `run-rdns-rules -codes [-domains a,b] [-force]` or the workflow input `{"domains": [...], "force": true}`.
 
 ### Tasks
 
@@ -100,6 +102,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `resolve-names` | PTR of every target and of every public answering hop (`hop_ips`); fresh names wait 30 days, not found 7; errors wait 1, 2, then 7 days and preserve stored answers; up to 500 due failures remain eligible beyond the normal 7-day trace window; counts timeouts, SERVFAIL and other failures separately |
 | | `locate` | existing rules and carried traced rows first; then learned candidate rules (target name first, then router hops; ranks in order), which give a wide vote and a non-sticky `candidate_rule` traced row that never marks the /24 located; MMDB hop fallback last; one vote per /24; replaces `public.rdns_geo_layer` |
 | `learn-rdns-rules` | `learn` | learns up to 3 rules (ranks) per domain from target and hop names, each with at least 3 distinct named IPs on the names better ranks do not decode, at least 2 distinct token values, stop list and GeoNames size limits, domestic country gate; retires learned rows it no longer reproduces; materializes token mappings in Postgres; rejection input withdraws current versions without downloads |
+| | `propose-codes` | asks an LLM (OpenRouter; only name patterns, never names or IPs) for the city code of every domain's names: 5+ hosts one domain a request, 1-4 hosts packed by country; checked answers become the rank-4 rule (GeoNames-resolved cities); learned rules it contradicts go to a second model and are overridden only when it agrees within 100 km; skipped without `OPENROUTER_API_KEY` and with `reject_domains`; API trouble never fails it (credit stop, request cap of 400) |
 
 ## Data sources
 
@@ -118,7 +121,8 @@ Every external input, grouped by what it feeds. Third-party geo databases are us
 | ASN websites (from `public.asn_domain`) | `sync-geofeeds` `probe-domains` | feeds at the usual paths | budget per run |
 | Operator geofeeds (RFC 8805) | `sync-geofeeds` `check-feeds` | city rows, ~6.4M | backoff 3 d / weekly / monthly |
 | GeoNames `cities1000.zip` | `sync-geofeeds` | city name for whois `geoloc:` points | 7-day age gate |
-| OurAirports, UNECE UN/LOCODE, GeoNames `cities1000.zip` | `learn-rdns-rules` | city-token dictionaries (own caches) | monthly, conditional |
+| OurAirports, UNECE UN/LOCODE, GeoNames `cities1000.zip` and `admin1CodesASCII.txt` | `learn-rdns-rules` | city-token dictionaries and GeoNames places with region and coordinates (own caches) | monthly, conditional |
+| OpenRouter chat completions (`OPENROUTER_API_KEY`, optional) | `learn-rdns-rules` (`propose-codes`) | city codes of router names, from digit-free name patterns | daily, only domains with new patterns |
 | `public.visitor_ips` (external websites insert active users' IPs) | `resolve-ips` | which /24s to trace | every 30 min |
 | `scamper` traceroutes, PTR names (system resolver, Cloudflare DoH) | `resolve-ips` | routers near each visitor /24 and their names | per /24 every 60 days; names 30 / 7 days |
 | `public.generated_rules` (regex rules written outside this repo) | `resolve-ips` | router name → city | read as is |
@@ -141,7 +145,8 @@ Each table has exactly one writer; data between workflows goes through these tab
 | `public.visitor_ips` | external websites | `resolve-ips` |
 | `public.network_traces` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
 | `public.ip_ptr_names` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
-| `public.rdns_city_rules` | `learn-rdns-rules` | `resolve-ips` (candidate rules: wide votes and non-sticky traced rows) |
+| `public.rdns_city_rules` | `learn-rdns-rules` | `resolve-ips` (candidate rules, ranks 1-4: wide votes and non-sticky traced rows) |
+| `public.rdns_llm_answers` | `learn-rdns-rules` | `learn-rdns-rules` (what was asked, and the verdict) |
 | `public.rdns_geo_layer` | `resolve-ips` | `build-geo-data` (layers `35-rdns-wide`, `65-rdns`) |
 | R2 private `internal/layers/60-whois.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/layers/70-geofeeds.csv.gz` | `sync-geofeeds` | `build-geo-data` |

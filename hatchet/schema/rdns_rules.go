@@ -10,11 +10,12 @@ import (
 
 // rdnsCityRulesStatement creates the table written only by learn-rdns-rules.
 // rejected_versions remembers withdrawn content so a later identical proposal
-// cannot silently revive it. A domain has up to 3 rows, one per rank: rank 1 is its
-// best extraction, rank 2 the best on names rank 1 does not decode, rank 3 likewise.
+// cannot silently revive it. A domain has up to 4 rows, one per rank: rank 1 is its
+// best learned extraction, rank 2 the best on names rank 1 does not decode, rank 3 likewise;
+// rank 4 is the LLM rule of propose-codes (origin llm), which the learner never touches.
 const rdnsCityRulesStatement = `CREATE TABLE IF NOT EXISTS public.rdns_city_rules (
 	domain TEXT NOT NULL,
-	rank SMALLINT NOT NULL DEFAULT 1 CHECK (rank BETWEEN 1 AND 3),
+	rank SMALLINT NOT NULL DEFAULT 1 CHECK (rank BETWEEN 1 AND 4),
 	pattern TEXT NOT NULL,
 	dictionary TEXT NOT NULL,
 	codes JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -51,6 +52,58 @@ const rdnsCityRulesCheck = `DO $$ BEGIN
 	) THEN RAISE EXCEPTION '` + oldRuleLayoutMarker + `'; END IF;
 END $$`
 
+// rdnsCityRulesWidenRank replaces the old rank check (1 to 3) with 1 to 4. It does nothing,
+// and so takes no lock, when no constraint with the old bound exists. Postgres stores
+// BETWEEN 1 AND 3 as (rank >= 1) AND (rank <= 3).
+const rdnsCityRulesWidenRank = `DO $$ DECLARE old_check TEXT; BEGIN
+	SELECT conname INTO old_check FROM pg_constraint
+	WHERE conrelid = to_regclass('public.rdns_city_rules') AND contype = 'c'
+	  AND pg_get_constraintdef(oid) LIKE '%rank <= 3%' LIMIT 1;
+	IF old_check IS NOT NULL THEN
+		EXECUTE format('ALTER TABLE public.rdns_city_rules DROP CONSTRAINT %I', old_check);
+		ALTER TABLE public.rdns_city_rules ADD CONSTRAINT rdns_city_rules_rank_check CHECK (rank BETWEEN 1 AND 4);
+	END IF;
+END $$`
+
+// rdnsLLMAnswersStatements creates the record of the LLM questions of propose-codes (one row
+// per domain and question), written only by learn-rdns-rules. Only status = 'complete' rows
+// count as answered. It holds name patterns (digits and hex runs removed), never IPs or names.
+var rdnsLLMAnswersStatements = []string{
+	`CREATE TABLE IF NOT EXISTS public.rdns_llm_answers (
+	id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	asked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	kind TEXT NOT NULL,
+	domain TEXT NOT NULL,
+	request_id TEXT NOT NULL,
+	model TEXT NOT NULL,
+	hosts INTEGER NOT NULL DEFAULT 0,
+	patterns_sent TEXT[] NOT NULL DEFAULT '{}',
+	patterns_hash TEXT NOT NULL DEFAULT '',
+	rule_versions TEXT[] NOT NULL DEFAULT '{}',
+	answer JSONB,
+	status TEXT NOT NULL DEFAULT 'incomplete',
+	verdict TEXT NOT NULL,
+	reason TEXT NOT NULL DEFAULT '',
+	disagreements INTEGER NOT NULL DEFAULT 0,
+	overrides INTEGER NOT NULL DEFAULT 0,
+	disputed INTEGER NOT NULL DEFAULT 0,
+	tokens_in INTEGER,
+	tokens_out INTEGER,
+	cost_usd DOUBLE PRECISION
+)`,
+	`CREATE INDEX IF NOT EXISTS rdns_llm_answers_domain_asked_idx ON public.rdns_llm_answers (domain, asked_at DESC)`,
+}
+
+// EnsureRDNSLLMAnswers creates public.rdns_llm_answers only (written by learn-rdns-rules).
+func EnsureRDNSLLMAnswers(ctx context.Context, db Execer) error {
+	for _, stmt := range rdnsLLMAnswersStatements {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure schema: %w", err)
+		}
+	}
+	return nil
+}
+
 // EnsureRDNSCityRules creates only the table owned by learn-rdns-rules. A table with the
 // old per-domain layout is reported (ErrOldRuleLayout), never dropped or altered.
 func EnsureRDNSCityRules(ctx context.Context, db Execer) error {
@@ -62,6 +115,9 @@ func EnsureRDNSCityRules(ctx context.Context, db Execer) error {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
 	if _, err := db.Exec(ctx, rdnsCityRulesStatement); err != nil {
+		return fmt.Errorf("ensure schema: %w", err)
+	}
+	if _, err := db.Exec(ctx, rdnsCityRulesWidenRank); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
 	return nil

@@ -353,9 +353,9 @@ func TestStoreRanksAndRejectionPostgres(t *testing.T) {
 	if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.rdns_city_rules WHERE domain=$1`, domain).Scan(&n); err != nil || n != 3 {
 		t.Fatalf("rows: %d %v", n, err)
 	}
-	// A fourth rank is refused by the table.
-	if _, err := conn.Exec(ctx, `INSERT INTO public.rdns_city_rules(domain,rank,pattern,dictionary,version) VALUES($1,4,'x','iata','x')`, domain); err == nil {
-		t.Fatal("rank 4 accepted")
+	// A fifth rank is refused by the table (rank 4 is the LLM rule of propose-codes).
+	if _, err := conn.Exec(ctx, `INSERT INTO public.rdns_city_rules(domain,rank,pattern,dictionary,version) VALUES($1,5,'x','iata','x')`, domain); err == nil {
+		t.Fatal("rank 5 accepted")
 	}
 	// Measurements of rank 2 follow its content to rank 1; a manual override on rank 3 is kept.
 	manual := Code{Country: "AT", City: "Vienna", Origin: "manual", Scope: Scope{LabelFromRight: 1, TokenFromLeft: 1, Dictionary: "iata"}}

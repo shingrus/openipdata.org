@@ -113,6 +113,8 @@ type Code struct {
 	City    string `json:"city"`
 	Origin  string `json:"origin"`
 	Scope   Scope  `json:"scope"`
+	// GeoNameID is set on codes of origin llm (the GeoNames place the city resolved to).
+	GeoNameID int64 `json:"geonameid,omitempty"`
 }
 
 type Name struct {
