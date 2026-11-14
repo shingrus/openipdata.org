@@ -302,7 +302,9 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
 ### `build-geo-data` (`hatchet/geo/`, cron `0 7,19 * * *` UTC)
 
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
-layers before it put under its prefixes.
+layers before it put under its prefixes. A record has `country_code`, `country_name`, `city_name` and,
+when it has a city, `city_source`: the name of the layer file without `.csv.gz` (e.g. `70-geofeeds`) that wrote
+the city (a record without a city has none). `eval` scores our cities per `city_source`.
 
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
@@ -458,6 +460,7 @@ same truth, with its own data as it is:
 | `X_atlas_country_pct` | per probe: share whose country `X` has right (same probes as `atlas_probes`) |
 | `atlas_city_answered`, `atlas_city_precision_pct` | coverage versus accuracy: probes where we named a city GeoNames could place (an unplaced city is not answered), and the share of those within 50 km (`atlas_city_pct` is hits over all probes, so it mixes coverage and precision; precision is hits over answered). Left out without `-geonames` |
 | `X_atlas_city_answered`, `X_atlas_city_precision_pct` | same for `X`: probes where `X` names a city with its own coordinates, and the share of those within 50 km |
+| `layer_<src>_atlas_city_answered`, `_precision_pct`, `_unresolved` | ours only, per `city_source` (the layer that wrote the city, e.g. `70_geofeeds`; characters outside `[a-z0-9]` become `_`; a city without `city_source`, from an older MMDB, is `unknown`): probes answered with a placed city, the share within 50 km, and cities GeoNames could not place (only when above 0) |
 | `X_atlas_city_pct` | per probe with coordinates (`atlas_city_probes`): share where `X` names a city whose own `location` is within 50 km of the probe; a record without a city (its coordinates are a country centroid) is a miss |
 
 The references have no holdout scores (`dbip_holdout_country_pct`, `dbip_holdout_city_pct`,

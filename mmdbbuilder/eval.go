@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -90,6 +91,63 @@ type evalMetrics struct {
 
 	MaxMindAtlasCityAnswered     *int     `json:"maxmind_atlas_city_answered,omitempty"`
 	MaxMindAtlasCityPrecisionPct *float64 `json:"maxmind_atlas_city_precision_pct,omitempty"`
+
+	// Our Atlas city score per city_source (layer): flat keys
+	// layer_<src>_atlas_city_{answered,precision_pct,unresolved}, merged into
+	// the JSON by MarshalJSON.
+	Layers map[string]float64 `json:"-"`
+}
+
+// MarshalJSON prints the fields above plus the flat per-layer keys.
+func (m evalMetrics) MarshalJSON() ([]byte, error) {
+	type plain evalMetrics // no methods, so no recursion
+	data, err := json.Marshal(plain(m))
+	if err != nil || len(m.Layers) == 0 {
+		return data, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	for k, v := range m.Layers {
+		out[k] = v
+	}
+	return json.Marshal(out)
+}
+
+// layerScore counts our Atlas city answers for one city_source.
+type layerScore struct{ answered, right, unresolved int }
+
+// sourceKey is a city_source as a metric key part: lower case, every
+// character outside [a-z0-9] replaced by "_". No source is "unknown".
+func sourceKey(src string) string {
+	if src == "" {
+		return "unknown"
+	}
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '_'
+	}, strings.ToLower(src))
+}
+
+// layerMetrics turns the counts into the flat metric keys.
+func layerMetrics(by map[string]*layerScore) map[string]float64 {
+	out := map[string]float64{}
+	for src, c := range by {
+		prefix := "layer_" + src + "_atlas_city_"
+		if c.answered > 0 || c.unresolved > 0 {
+			out[prefix+"answered"] = float64(c.answered)
+		}
+		if p := ratio(uint64(c.right), uint64(c.answered)); p != nil {
+			out[prefix+"precision_pct"] = *p
+		}
+		if c.unresolved > 0 {
+			out[prefix+"unresolved"] = float64(c.unresolved)
+		}
+	}
+	return out
 }
 
 // refSlots are the places in evalMetrics where the scores of one reference go.
@@ -758,24 +816,42 @@ const (
 )
 
 // cityPlacer returns the city of an address with its coordinates.
-type cityPlacer func(netip.Addr) (lat, lon float64, answer cityAnswer, err error)
+type cityPlacer func(netip.Addr) (lat, lon float64, answer cityAnswer, source string, err error)
 
 // scoreCities counts the probes whose database city lies within atlasCityKm,
 // those where a city was named but could not be placed, and those answered
-// with a city that has coordinates.
-func scoreCities(probes []cityProbe, place cityPlacer) (ok, unresolved, answered int, err error) {
+// with a city that has coordinates. When by is not nil, the same counts are
+// also added per sourceKey of the city_source the placer returns.
+func scoreCities(probes []cityProbe, place cityPlacer, by map[string]*layerScore) (ok, unresolved, answered int, err error) {
 	for _, p := range probes {
-		lat, lon, answer, err := place(p.addr)
+		lat, lon, answer, source, err := place(p.addr)
 		if err != nil {
 			return 0, 0, 0, err
+		}
+		var c *layerScore
+		if by != nil && answer != noCity {
+			key := sourceKey(source)
+			if c = by[key]; c == nil {
+				c = &layerScore{}
+				by[key] = c
+			}
 		}
 		switch answer {
 		case unplaced:
 			unresolved++
+			if c != nil {
+				c.unresolved++
+			}
 		case placedCity:
 			answered++
+			if c != nil {
+				c.answered++
+			}
 			if haversineKm(p.lat, p.lon, lat, lon) <= atlasCityKm {
 				ok++
+				if c != nil {
+					c.right++
+				}
 			}
 		}
 	}
@@ -799,10 +875,12 @@ func scoreAtlasCities(m *evalMetrics, in evalInputs, ours *maxminddb.Reader, ref
 		if err != nil {
 			return fmt.Errorf("%s: %w", in.geonames, err)
 		}
-		ok, unresolved, answered, err := scoreCities(probes, geoNamesPlacer(ours, index))
+		by := map[string]*layerScore{}
+		ok, unresolved, answered, err := scoreCities(probes, geoNamesPlacer(ours, index), by)
 		if err != nil {
 			return err
 		}
+		m.Layers = layerMetrics(by)
 		m.AtlasCityPct, m.AtlasCityUnresolved = ratio(uint64(ok), total), count(unresolved)
 		m.AtlasCityAnswered, m.AtlasCityPrecisionPct = count(answered), ratio(uint64(ok), uint64(answered))
 	}
@@ -811,7 +889,7 @@ func scoreAtlasCities(m *evalMetrics, in evalInputs, ours *maxminddb.Reader, ref
 		if err != nil {
 			return err
 		}
-		ok, _, answered, err := scoreCities(probes, referencePlacer(reader))
+		ok, _, answered, err := scoreCities(probes, referencePlacer(reader), nil)
 		reader.Close()
 		if err != nil {
 			return fmt.Errorf("%s: %w", ref.path, err)
@@ -890,21 +968,28 @@ func loadGeoNames(path string) (geoNames, error) {
 // geoNamesPlacer looks addresses up in our MMDB (country_code, city_name) and
 // places the city with GeoNames.
 func geoNamesPlacer(reader *maxminddb.Reader, index geoNames) cityPlacer {
-	return func(addr netip.Addr) (float64, float64, cityAnswer, error) {
+	return func(addr netip.Addr) (float64, float64, cityAnswer, string, error) {
 		res := reader.Lookup(addr)
 		if !res.Found() {
-			return 0, 0, noCity, res.Err()
+			return 0, 0, noCity, "", res.Err()
 		}
-		country, city, err := ourFields(res)
-		country, city = normCountry(country), normCity(city)
-		if err != nil || city == "" {
-			return 0, 0, noCity, err
+		var r struct {
+			Country string `maxminddb:"country_code"`
+			City    string `maxminddb:"city_name"`
+			Source  string `maxminddb:"city_source"`
+		}
+		if err := res.Decode(&r); err != nil {
+			return 0, 0, noCity, "", err
+		}
+		country, city := normCountry(r.Country), normCity(r.City)
+		if city == "" {
+			return 0, 0, noCity, "", nil
 		}
 		p, ok := index[geoNamesKey(country, city)]
 		if !ok {
-			return 0, 0, unplaced, nil
+			return 0, 0, unplaced, r.Source, nil
 		}
-		return p.lat, p.lon, placedCity, nil
+		return p.lat, p.lon, placedCity, r.Source, nil
 	}
 }
 
@@ -912,10 +997,10 @@ func geoNamesPlacer(reader *maxminddb.Reader, index geoNames) cityPlacer {
 // its own coordinates, but only for a record with a city: without one they are
 // a country's centroid.
 func referencePlacer(reader *maxminddb.Reader) cityPlacer {
-	return func(addr netip.Addr) (float64, float64, cityAnswer, error) {
+	return func(addr netip.Addr) (float64, float64, cityAnswer, string, error) {
 		res := reader.Lookup(addr)
 		if !res.Found() {
-			return 0, 0, noCity, res.Err()
+			return 0, 0, noCity, "", res.Err()
 		}
 		var r struct {
 			City struct {
@@ -929,12 +1014,12 @@ func referencePlacer(reader *maxminddb.Reader) cityPlacer {
 			} `maxminddb:"location"`
 		}
 		if err := res.Decode(&r); err != nil {
-			return 0, 0, noCity, err
+			return 0, 0, noCity, "", err
 		}
 		if normCity(r.City.Names.EN) == "" || r.Location.Latitude == nil || r.Location.Longitude == nil {
-			return 0, 0, noCity, nil
+			return 0, 0, noCity, "", nil
 		}
-		return *r.Location.Latitude, *r.Location.Longitude, placedCity, nil
+		return *r.Location.Latitude, *r.Location.Longitude, placedCity, "", nil
 	}
 }
 

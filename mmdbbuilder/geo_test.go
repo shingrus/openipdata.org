@@ -73,11 +73,11 @@ func TestBuildGeo(t *testing.T) {
 	}
 	for ip, want := range map[string]map[string]any{
 		"45.1.1.1":  {"country_code": "US", "country_name": "United States"},
-		"45.11.0.1": {"country_code": "FR", "country_name": "France", "city_name": "Paris"},   // tzdata name
-		"45.10.1.9": {"country_code": "IE", "country_name": "Ireland", "city_name": "Dublin"}, // last row wins
-		"45.10.2.1": {"country_code": "NL", "country_name": "Netherlands", "city_name": "Amsterdam"},
+		"45.11.0.1": {"country_code": "FR", "country_name": "France", "city_name": "Paris", "city_source": "pdb"},        // tzdata name
+		"45.10.1.9": {"country_code": "IE", "country_name": "Ireland", "city_name": "Dublin", "city_source": "geofeeds"}, // last row wins
+		"45.10.2.1": {"country_code": "NL", "country_name": "Netherlands", "city_name": "Amsterdam", "city_source": "geofeeds"},
 		"45.10.3.4": {"country_code": "BE", "country_name": "Belgium"},
-		"45.10.3.5": {"country_code": "FR", "country_name": "France", "city_name": "Paris"},
+		"45.10.3.5": {"country_code": "FR", "country_name": "France", "city_name": "Paris", "city_source": "pdb"},
 		"2a00::1":   {"country_code": "DE", "country_name": "Germany"},
 		"8.8.8.8":   nil,
 	} {
@@ -140,10 +140,10 @@ func TestBuildGeoSameCountry(t *testing.T) {
 		t.Fatal(err)
 	}
 	for ip, want := range map[string]map[string]any{
-		"45.1.1.1":  {"country_code": "US", "country_name": "United States", "city_name": "Dallas"},
+		"45.1.1.1":  {"country_code": "US", "country_name": "United States", "city_name": "Dallas", "city_source": "pdb"},
 		"45.10.0.1": {"country_code": "CA", "country_name": "Canada"},
-		"45.11.0.1": {"country_code": "US", "country_name": "United States", "city_name": "Dallas"},
-		"46.0.0.1":  {"country_code": "FR", "country_name": "France", "city_name": "Paris"}, // nothing was there
+		"45.11.0.1": {"country_code": "US", "country_name": "United States", "city_name": "Dallas", "city_source": "pdb"},
+		"46.0.0.1":  {"country_code": "FR", "country_name": "France", "city_name": "Paris", "city_source": "pdb"}, // nothing was there
 	} {
 		if got := lookupGeo(t, out, ip); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s = %v, want %v", ip, got, want)
@@ -172,7 +172,7 @@ func TestBuildGeoHostileRows(t *testing.T) {
 	}
 	plain := map[string]any{"country_code": "US", "country_name": "United States"}
 	for ip, want := range map[string]map[string]any{
-		"45.10.0.1": {"country_code": "US", "country_name": "United States", "city_name": "Dallas"},
+		"45.10.0.1": {"country_code": "US", "country_name": "United States", "city_name": "Dallas", "city_source": "feeds"},
 		"8.8.8.8":   nil,
 		"45.20.0.1": plain,
 		"45.30.0.1": plain,
@@ -288,5 +288,52 @@ func TestReadLayerShortRows(t *testing.T) {
 	want := []row{{"45.0.0.0/8", "US", ""}, {"45.1.0.0/16", "CA", "Toronto"}, {"", "", ""}, {"45.3.0.0/16", "FR", "Paris"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("rows = %v, want %v", got, want)
+	}
+}
+
+// city_source names the layer that wrote the city, in every mode; a record
+// without a city has none.
+func TestBuildGeoCitySource(t *testing.T) {
+	dir := t.TempDir()
+	rir := writeFile(t, filepath.Join(dir, "10-rir.csv.gz"), "prefix,country,city\n"+
+		"45.0.0.0/16,FR,\n46.0.0.0/16,DE,\n47.0.0.0/16,US,\n48.0.0.0/16,US,\n49.0.0.0/16,US,\n50.0.0.0/16,US,\n")
+	plain := writeFile(t, filepath.Join(dir, "30-pdb.csv.gz"), "prefix,country,city\n"+
+		"46.0.0.0/24,DE,Berlin\n")
+	same := writeFile(t, filepath.Join(dir, "40-hosting.csv.gz"), "prefix,country,city\n"+
+		"47.0.0.0/24,US,Dallas\n"+
+		"46.0.1.0/24,FR,Paris\n"+ // other country: left alone
+		"49.0.0.0/24,US,Reno\n")
+	within := writeFile(t, filepath.Join(dir, "60-whois.csv.gz"), "prefix,country,city\n"+
+		"48.0.0.0/24,US,Austin\n")
+	first := writeFile(t, filepath.Join(dir, "70-geofeeds.csv.gz"), "prefix,country,city\n"+
+		"45.0.0.0/24,FR,Lyon\n"+
+		"49.0.0.0/24,US,\n") // no city: replaces Reno and drops city_source
+	for _, debug := range []bool{false, true} {
+		out := filepath.Join(dir, "ip2geo.mmdb")
+		_, err := buildGeo([]string{rir, plain, same, within, first}, "", out, debug,
+			map[string]bool{"40-hosting.csv.gz": true},
+			map[string]bool{"60-whois.csv.gz": true},
+			map[string]bool{"70-geofeeds.csv.gz": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for ip, want := range map[string]string{
+			"46.0.0.1": "30-pdb",      // plain
+			"47.0.0.1": "40-hosting",  // sameCountry
+			"48.0.0.1": "60-whois",    // withinFirst
+			"45.0.0.1": "70-geofeeds", // firstCountry
+			"46.0.1.1": "",            // sameCountry row skipped, RIR has no city
+			"49.0.0.1": "",            // a later layer without a city drops it
+			"50.0.0.1": "",            // RIR only
+		} {
+			got := lookupGeo(t, out, ip)
+			src, has := got["city_source"].(string)
+			if src != want || has != (want != "") {
+				t.Errorf("debug=%v %s: city_source = %v, want %q (%v)", debug, ip, got["city_source"], want, got)
+			}
+			if want == "" && got["city_name"] != nil {
+				t.Errorf("%s: unexpected city %v", ip, got["city_name"])
+			}
+		}
 	}
 }

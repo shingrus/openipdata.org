@@ -45,8 +45,10 @@ type geoEntry struct {
 	parts  []netip.Prefix // for a firstCountry layer: where the row applies; nil means all of prefix
 }
 
-// place is the value written for a prefix.
-type place struct{ code, city string }
+// place is the value written for a prefix. source is the layer that wrote the
+// city (empty when there is no city), so records are shared per (country,
+// city, source).
+type place struct{ code, city, source string }
 
 // buildGeo builds the ip2geo MMDB from the layer files, in order, and writes
 // it to outPath atomically.
@@ -72,6 +74,12 @@ type place struct{ code, city string }
 // over the parts where the first layer has its country, and the rest is left
 // alone. A row with no such part is skipped and counted in the skipped total.
 // Addresses the first layer has no country for never match.
+//
+// A record has country_code, country_name, city_name and, when it has a city,
+// city_source: the layer file name without .csv.gz (or .csv) of the layer that
+// wrote the city. A layer replaces the whole record, so city_source always
+// names the layer behind the city; a record without a city has none. With
+// debug the record also has network.
 func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool) ([]geoLayerStats, error) {
 	names, err := loadNames(namesPath)
 	if err != nil {
@@ -124,7 +132,10 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 					return
 				}
 			}
-			key := place{code, cleanCity(city)}
+			key := place{code: code, city: cleanCity(city)}
+			if key.city != "" {
+				key.source = layerSource(s.name)
+			}
 			if key.city == "" && strings.TrimSpace(city) != "" {
 				s.noCity++
 			}
@@ -134,6 +145,7 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 				setString(record, "country_code", key.code)
 				setString(record, "country_name", names[key.code])
 				setString(record, "city_name", key.city)
+				setString(record, "city_source", key.source)
 				idx = len(records)
 				places[key] = idx
 				records = append(records, record)
@@ -190,6 +202,12 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 		stats = append(stats, s)
 	}
 	return stats, writeAtomic(writer, outPath)
+}
+
+// layerSource is a layer file's name without the .csv.gz or .csv suffix.
+func layerSource(name string) string {
+	name = strings.TrimSuffix(name, ".gz")
+	return strings.TrimSuffix(name, ".csv")
 }
 
 // blockSet holds the prefixes of one layer, to test whether a prefix lies

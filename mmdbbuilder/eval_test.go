@@ -399,3 +399,90 @@ func TestEvaluateAtlasCity(t *testing.T) {
 		t.Errorf("no GeoNames: %+v %v", m, err)
 	}
 }
+
+func TestEvaluateLayerMetrics(t *testing.T) {
+	dir := t.TempDir()
+	rir := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n"+
+		"45.0.0.0/24,US,\n45.0.1.0/24,DE,\n45.0.2.0/24,FR,\n45.0.3.0/24,US,\n")
+	// Two layers; Dallas and Berlin are right, Paris (Lyon probe) is wrong,
+	// Nowhereville is not in GeoNames.
+	a := writeFile(t, filepath.Join(dir, "30-pdb.csv.gz"), "prefix,country,city\n"+
+		"45.0.0.0/24,US,Dallas\n45.0.2.0/24,FR,Paris\n")
+	b := writeFile(t, filepath.Join(dir, "70.geo-feeds.csv.gz"), "prefix,country,city\n"+
+		"45.0.1.0/24,DE,Berlin\n45.0.3.0/24,US,Nowhereville\n")
+	ours := filepath.Join(dir, "ours.mmdb")
+	if _, err := buildGeo([]string{rir, a, b}, "", ours, false, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A city without city_source, as in an MMDB built before the field.
+	writer, err := newWriter("old", "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range [][3]string{{"45.0.0.0/24", "US", "Dallas"}, {"45.0.1.0/24", "DE", "Berlin"}} {
+		rec := mmdbtype.Map{"country_code": mmdbtype.String(r[1]), "city_name": mmdbtype.String(r[2])}
+		if err := writer.Insert(ipNet(netip.MustParsePrefix(r[0])), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldDB := filepath.Join(dir, "old2.mmdb")
+	if err := writeAtomic(writer, oldDB); err != nil {
+		t.Fatal(err)
+	}
+	geonames := writeFile(t, filepath.Join(dir, "cities1000.txt"),
+		geoNamesLine("1", "Paris", "", "48.85", "2.35", "FR", "2138551")+
+			geoNamesLine("2", "Dallas", "", "32.78", "-96.80", "US", "1197816")+
+			geoNamesLine("3", "Berlin", "", "52.52", "13.41", "DE", "3426354"))
+	atlas := writeFile(t, filepath.Join(dir, "atlas.csv"), "ip,country,lat,lon\n"+
+		"45.0.0.5,US,32.80,-96.80\n"+ // Dallas: right
+		"45.0.1.5,DE,52.50,13.40\n"+ // Berlin: right
+		"45.0.2.5,FR,45.76,4.84\n"+ // Lyon probe, we say Paris: wrong
+		"45.0.3.5,US,40,-100\n") // unresolved city
+
+	m, err := evaluate(evalInputs{db: ours, rir: rir, atlas: atlas, geonames: geonames})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.AtlasCityAnswered == nil || *m.AtlasCityAnswered != 3 || !approx(m.AtlasCityPct, 50) {
+		t.Errorf("totals changed: %+v", m)
+	}
+	want := map[string]float64{
+		"layer_30_pdb_atlas_city_answered":            2,
+		"layer_30_pdb_atlas_city_precision_pct":       50,
+		"layer_70_geo_feeds_atlas_city_answered":      1,
+		"layer_70_geo_feeds_atlas_city_precision_pct": 100,
+		"layer_70_geo_feeds_atlas_city_unresolved":    1,
+	}
+	if !reflect.DeepEqual(m.Layers, want) {
+		t.Errorf("layers = %v, want %v", m.Layers, want)
+	}
+	// The JSON is flat numbers and keeps the totals.
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flat map[string]float64
+	if err := json.Unmarshal(data, &flat); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range want {
+		if flat[k] != v {
+			t.Errorf("json %s = %v, want %v", k, flat[k], v)
+		}
+	}
+	if flat["atlas_city_answered"] != 3 || flat["atlas_city_unresolved"] != 1 {
+		t.Errorf("json totals: %s", data)
+	}
+
+	// No city_source: counted as unknown.
+	m, err = evaluate(evalInputs{db: oldDB, rir: rir, atlas: atlas, geonames: geonames})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Layers["layer_unknown_atlas_city_answered"]; got != 2 || m.Layers["layer_unknown_atlas_city_precision_pct"] != 100 {
+		t.Errorf("unknown: %v", m.Layers)
+	}
+	if k := sourceKey("70-Geo.feeds"); k != "70_geo_feeds" {
+		t.Errorf("sourceKey = %q", k)
+	}
+}
