@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Provision one Ubuntu 24.04 VM to serve openipdata.org behind Cloudflare: nginx, the site binary
-# (from the GitHub release "site"), the MMDB files (release "latest"), updater timers, firewall.
+# (from the GitHub release "site", two instances openipdata-site@8080/@8081 that take turns),
+# the MMDB files (release "latest"), updater timers, firewall.
 # Run from a git clone: cd openipdata.org/infra/site && sudo ./init-openipdata-site.sh
 # Idempotent: rerun after `git pull` to update scripts, units and the nginx file; never overwrites an
 # existing env file. It never obtains the TLS certificate (certbot, Cloudflare DNS challenge, by hand):
@@ -21,9 +22,13 @@ NGINX_SITE=/etc/nginx/sites-available/$DOMAIN.conf
 NGINX_LINK=/etc/nginx/sites-enabled/$DOMAIN.conf
 NGINX_DENY=/etc/nginx/sites-available/default-deny.conf
 NGINX_DENY_LINK=/etc/nginx/sites-enabled/default-deny.conf
+# Upstream files live outside conf.d (it includes every *.conf); the link in conf.d is the live record.
+UPSTREAM_DIR=/etc/nginx/openipdata-site
+LIVE_LINK=/etc/nginx/conf.d/openipdata-site-live.conf
+OLD_UNIT=/etc/systemd/system/openipdata-site.service
 SCRIPTS=(openipdata-site-update openipdata-mmdb-pull openipdata-cf-ips)
 UNITS=(
-    openipdata-site.service
+    openipdata-site@.service
     openipdata-site-update.service openipdata-site-update.timer
     openipdata-mmdb-pull.service openipdata-mmdb-pull.timer
     openipdata-cf-ips.service openipdata-cf-ips.timer
@@ -36,6 +41,62 @@ log() {
     printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
 
+# set_link TARGET LINK: atomic (temporary link, then rename over it).
+set_link() {
+    ln -sfn "$1" "$2.tmp"
+    mv -Tf "$2.tmp" "$2"
+}
+
+# nginx_apply: nginx -t, then reload when nginx runs.
+nginx_apply() {
+    nginx -t >/dev/null 2>&1 || return 1
+    if systemctl is-active --quiet nginx; then systemctl reload nginx || return 1; fi
+    return 0
+}
+
+# Moves the site from the old single service (127.0.0.1:8080, /opt/openipdata-site/current) to the
+# blue/green instances without a gap: the old service keeps 8080 until @8081 answers.
+migrate_old_service() {
+    [[ -f "$OLD_UNIT" ]] || return 0
+    log "migrating from openipdata-site.service to openipdata-site@8081"
+    local target i body ok=0
+    target="$(readlink "$OPT_DIR/current" 2>/dev/null || true)"
+    if [[ -n "$target" && -e "$OPT_DIR/$target/openipdata-site" ]]; then
+        set_link "$target" "$OPT_DIR/slot-8081"
+        systemctl start openipdata-site@8081 || true
+        for ((i = 0; i < 30; i++)); do
+            body="$(curl -fsS -m 2 http://127.0.0.1:8081/healthz 2>/dev/null || true)"
+            if [[ "$body" == ok\ * ]]; then ok=1; break; fi
+            sleep 1
+        done
+        if ((!ok)); then
+            systemctl stop openipdata-site@8081 || true
+            # A rerun may have switched the link already: give 8080 back.
+            if [[ "$(readlink "$LIVE_LINK")" == */upstream-8081.conf ]]; then
+                set_link "$UPSTREAM_DIR/upstream-8080.conf" "$LIVE_LINK"
+                nginx_apply || true
+            fi
+            log "error: openipdata-site@8081 did not answer /healthz in 30 s; the old openipdata-site.service keeps running on 8080 and nothing was changed. See: journalctl -u openipdata-site@8081"
+            exit 1
+        fi
+        set_link "$UPSTREAM_DIR/upstream-8081.conf" "$LIVE_LINK"
+        if ! nginx_apply; then
+            set_link "$UPSTREAM_DIR/upstream-8080.conf" "$LIVE_LINK"
+            systemctl stop openipdata-site@8081 || true
+            log "error: nginx -t or reload failed with the new link; link restored to 8080, the old service keeps running"
+            exit 1
+        fi
+        systemctl enable openipdata-site@8081 >/dev/null 2>&1 || log "warning: could not enable openipdata-site@8081"
+    else
+        log "no current release: only removing the old service (the updater installs the build)"
+    fi
+    systemctl stop openipdata-site.service || true
+    systemctl disable openipdata-site.service >/dev/null 2>&1 || true
+    rm -f "$OLD_UNIT" "$OPT_DIR/current" "$OPT_DIR/current.tmp"
+    systemctl daemon-reload
+    log "migration done: the old openipdata-site.service is gone"
+}
+
 fail() {
     log "error: $*"
     exit 1
@@ -44,7 +105,7 @@ fail() {
 [[ "${EUID}" -eq 0 ]] || fail "run this script as root"
 command -v systemctl >/dev/null 2>&1 || fail "systemd not found"
 command -v apt-get >/dev/null 2>&1 || fail "apt-get not found (Ubuntu or Debian only)"
-for f in "${SCRIPTS[@]}" "${UNITS[@]/#/systemd/}" nginx/openipdata.org.conf nginx/default-deny.conf openipdata-site.env.example; do
+for f in "${SCRIPTS[@]}" "${UNITS[@]/#/systemd/}" nginx/openipdata.org.conf nginx/default-deny.conf nginx/upstream-8080.conf nginx/upstream-8081.conf openipdata-site.env.example; do
     [[ -f "$SCRIPT_DIR/$f" ]] || fail "missing $SCRIPT_DIR/$f (run from a full git clone)"
 done
 
@@ -114,6 +175,15 @@ log "ufw: SSH, 80/tcp, 443/tcp allowed; other incoming denied"
 # nginx: our files, no Ubuntu default site, the default-deny servers (always on, no certificate needed,
 # so the origin is closed before the certificate exists), the Cloudflare ranges, then the site itself
 # if the certificate exists.
+# The upstream must exist before any nginx -t that loads openipdata.org.conf. The live link is the only
+# record of the live port: created once, never changed here (except by the migration below).
+install -d -m 0755 -o root -g root "$UPSTREAM_DIR"
+install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/upstream-8080.conf" "$UPSTREAM_DIR/upstream-8080.conf"
+install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/upstream-8081.conf" "$UPSTREAM_DIR/upstream-8081.conf"
+if [[ ! -e "$LIVE_LINK" && ! -L "$LIVE_LINK" ]]; then
+    ln -s "$UPSTREAM_DIR/upstream-8080.conf" "$LIVE_LINK"
+    log "created $LIVE_LINK -> upstream-8080.conf"
+fi
 install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/openipdata.org.conf" "$NGINX_SITE"
 install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/default-deny.conf" "$NGINX_DENY"
 rm -f /etc/nginx/sites-enabled/default
@@ -154,13 +224,22 @@ else
     log "no certificate in $CERT_DIR yet: the nginx site stays disabled (default-deny is active)"
 fi
 
+# The migration must not interleave with a timer run of the updater: same lock.
+exec 9>/run/openipdata-site-update.lock
+if ! flock -w 300 9; then
+    log "error: openipdata-site-update holds /run/openipdata-site-update.lock for more than 300 s; try again later"
+    exit 1
+fi
+migrate_old_service
+exec 9>&-
+
 # Data and binary. Each unit is a oneshot: start waits until it has finished.
-systemctl enable openipdata-site.service >/dev/null 2>&1
 log "pulling the MMDB files"
 systemctl start openipdata-mmdb-pull.service || log "warning: the MMDB pull failed: journalctl -u openipdata-mmdb-pull"
 log "installing the site binary"
 systemctl start openipdata-site-update.service || log "warning: the binary update failed: journalctl -u openipdata-site-update"
-if [[ ! -e "$OPT_DIR/current/openipdata-site" ]]; then
+live_port="$(readlink "$LIVE_LINK" | sed -n 's/.*upstream-\([0-9]*\)\.conf$/\1/p')"
+if [[ ! -e "$OPT_DIR/slot-${live_port:-8080}/openipdata-site" ]]; then
     log "no site binary installed: the GitHub release 'site' does not exist yet or the build was rejected."
     log "run the 'Publish site binary' workflow (Actions tab, Run workflow, on master) first; the timer installs it within 2 minutes."
 fi
@@ -169,12 +248,17 @@ systemctl enable --now "${TIMERS[@]}" >/dev/null
 
 # Status.
 log "status"
-if [[ -x "$OPT_DIR/current/openipdata-site" ]]; then
-    printf 'binary version: %s\n' "$(setpriv --reuid="$RUN_AS" --regid="$RUN_AS" --clear-groups "$OPT_DIR/current/openipdata-site" -version 2>&1 || true)"
-    printf 'healthz: %s\n' "$(curl -fsS -m 3 http://127.0.0.1:8080/healthz 2>&1 || echo 'not answering')"
+printf 'live port (%s): %s\n' "$LIVE_LINK" "${live_port:-unknown}"
+if [[ -n "$live_port" && -x "$OPT_DIR/slot-$live_port/openipdata-site" ]]; then
+    printf 'binary version: %s\n' "$(timeout 5 setpriv --reuid="$RUN_AS" --regid="$RUN_AS" --clear-groups "$OPT_DIR/slot-$live_port/openipdata-site" -version 2>&1 || echo 'no answer')"
+    printf 'healthz: %s\n' "$(curl -fsS -m 3 "http://127.0.0.1:$live_port/healthz" 2>&1 || echo 'not answering')"
 else
     echo "binary version: not installed"
 fi
+echo "site instances (active / enabled):"
+for p in 8080 8081; do
+    printf '  openipdata-site@%s: %s / %s\n' "$p" "$(systemctl is-active "openipdata-site@$p" 2>&1 || true)" "$(systemctl is-enabled "openipdata-site@$p" 2>&1 || true)"
+done
 echo "MMDB files:"
 shopt -s nullglob
 mmdbs=("$DATA_DIR"/*.mmdb)

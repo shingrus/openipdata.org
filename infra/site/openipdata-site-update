@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
-# Installs a new openipdata-site binary from the rolling GitHub release "site".
+# Installs a new openipdata-site binary from the rolling GitHub release "site", blue/green.
 # Runs as root from openipdata-site-update.service (timer, every 2 minutes).
+# Two instances (openipdata-site@8080 and @8081) take turns. The live port is ALWAYS read from the
+# link LIVE_LINK (/etc/nginx/conf.d/openipdata-site-live.conf -> upstream-<port>.conf); there is no
+# other record of it. A new build starts on the idle port, is checked (-version with a time limit,
+# then /healthz "ok <version>"), and only then is the link switched and nginx reloaded (graceful).
+# After DRAIN seconds the old instance is stopped. The live instance is never touched by a bad build.
+# Every run first starts the live instance if it is not active.
 # Checksum missing or empty, download failed, or binary not matching its checksum:
 # an upload is probably in progress, so try again later (no ping, exit 0).
-# A build that fails its check (-version, then /healthz "ok <version>") is rolled back
-# and remembered in state/bad.sha256; it is never tried again.
+# A build that fails its check is removed and remembered in state/bad.sha256; it is never tried again.
+# A failed "nginx -t" or reload restores the link and stops the idle instance, but does not mark the
+# build bad (nginx is the problem, not the build).
 # Pings: HC_PING_SITE on success, HC_PING_SITE/fail on failure (the URL is never printed).
 #
 # Overrides for tests only (a real run needs none): BASE_URL, INSTALL_DIR, STATE_DIR, LOCK_FILE,
-# HEALTH_URL, SYSTEMCTL, SERVICE_RUNNER (command prefix that runs the new binary unprivileged).
+# SYSTEMCTL, SERVICE_RUNNER (command prefix that runs the new binary unprivileged), HEALTH_WAIT,
+# NGINX, LIVE_LINK, UPSTREAM_DIR, HEALTH_HOST, DRAIN, TIMEOUT.
 set -euo pipefail
 
 GITHUB_REPO="${GITHUB_REPO:-shingrus/openipdata.org}"
@@ -17,13 +25,16 @@ ASSET=openipdata-site-linux-amd64
 INSTALL_DIR="${INSTALL_DIR:-/opt/openipdata-site}"
 STATE_DIR="${STATE_DIR:-/var/lib/openipdata-site/state}"
 LOCK_FILE="${LOCK_FILE:-/run/openipdata-site-update.lock}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/healthz}"
+LIVE_LINK="${LIVE_LINK:-/etc/nginx/conf.d/openipdata-site-live.conf}"
+UPSTREAM_DIR="${UPSTREAM_DIR:-/etc/nginx/openipdata-site}"
+HEALTH_HOST="${HEALTH_HOST:-127.0.0.1}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+NGINX="${NGINX:-nginx}"
+TIMEOUT="${TIMEOUT:-timeout}"
 SERVICE_RUNNER="${SERVICE_RUNNER-setpriv --reuid=openipdata-site --regid=openipdata-site --clear-groups}"
-UNIT=openipdata-site
 RELEASES="$INSTALL_DIR/releases"
-CURRENT="$INSTALL_DIR/current"
 HEALTH_WAIT="${HEALTH_WAIT:-20}"
+DRAIN="${DRAIN:-10}"
 
 log() {
     printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -44,14 +55,39 @@ sha256_of() {
     fi
 }
 
+# set_link TARGET LINK: atomic (temporary link, then rename over it).
+set_link() {
+    ln -sfn "$1" "$2.tmp"
+    mv -Tf "$2.tmp" "$2"
+}
+
+unit() { printf 'openipdata-site@%s' "$1"; }
+
 handled=0
 tmp_sum=""
+# phase: "" before the idle instance is restarted, started (idle instance restarted), switched (link
+# points to the idle port), finished. Used only to undo a half-done switch after an unexpected failure.
+phase=""
 # shellcheck disable=SC2329 # called by the EXIT trap
 on_exit() {
     local rc=$?
     [[ -z "$tmp_sum" ]] || rm -f "$tmp_sum"
     if ((rc != 0 && handled == 0)); then
         log "error: unexpected failure (exit $rc)"
+        # Every step is best effort: the trap must not fail. The build is not marked bad here.
+        if [[ "$phase" == started || "$phase" == switched ]]; then
+            if [[ "$phase" == switched ]]; then
+                set_link "$UPSTREAM_DIR/upstream-$live.conf" "$LIVE_LINK" || true
+                if "$SYSTEMCTL" is-active --quiet nginx; then "$SYSTEMCTL" reload nginx || true; fi
+            fi
+            "$SYSTEMCTL" stop "$(unit "$idle")" || true
+            if [[ -n "$old_idle" ]]; then
+                set_link "$old_idle" "$idle_slot" || true
+            else
+                rm -f "$idle_slot" || true
+            fi
+            rm -f "$LIVE_LINK.tmp" "$idle_slot.tmp" 2>/dev/null || true
+        fi
         ping_hc /fail
     fi
 }
@@ -73,6 +109,36 @@ if ! flock -n 9; then
     log "another update is running"
     handled=1
     exit 0
+fi
+
+# The live port comes only from the link.
+live_target="$(readlink "$LIVE_LINK" 2>/dev/null || true)"
+live=""
+if [[ "${live_target##*/}" =~ ^upstream-(8080|8081)\.conf$ ]]; then
+    live="${BASH_REMATCH[1]}"
+fi
+if [[ -z "$live" ]]; then
+    log "error: $LIVE_LINK is missing or does not point to upstream-8080.conf or upstream-8081.conf: run the init script (infra/site/init-openipdata-site.sh)"
+    ping_hc /fail
+    handled=1
+    exit 1
+fi
+if [[ "$live" == 8080 ]]; then idle=8081; else idle=8080; fi
+live_slot="$INSTALL_DIR/slot-$live"
+idle_slot="$INSTALL_DIR/slot-$idle"
+
+# A crash beyond Restart=always: start the live instance again, but only when it is enabled (the
+# operator stops the site on purpose with "systemctl disable --now"). (No slot link yet: first
+# install, nothing to start.)
+if [[ -e "$live_slot/openipdata-site" ]] && "$SYSTEMCTL" is-enabled --quiet "$(unit "$live")" &&
+    ! "$SYSTEMCTL" is-active --quiet "$(unit "$live")"; then
+    log "live instance $(unit "$live") is enabled but not active, starting it"
+    if ! "$SYSTEMCTL" start "$(unit "$live")"; then
+        log "error: systemctl start $(unit "$live") failed"
+        ping_hc /fail
+        handled=1
+        exit 1
+    fi
 fi
 
 tmp_sum="$(mktemp)"
@@ -122,80 +188,106 @@ fi
 chmod 0755 "$work/openipdata-site"
 
 # The expected version is what the new binary says about itself; the site must report the same.
+# A binary that ignores the flag and starts a server must not block the updater: time limit.
 # shellcheck disable=SC2086
-if ! expected="$($SERVICE_RUNNER "$work/openipdata-site" -version 2>/dev/null)" || [[ -z "$expected" ]]; then
+if ! expected="$($TIMEOUT 10 $SERVICE_RUNNER "$work/openipdata-site" -version 2>/dev/null)" || [[ -z "$expected" ]]; then
     rm -rf "$work"
-    log "error: the new binary ${hex:0:12} cannot print its version"
+    log "error: the new binary ${hex:0:12} cannot print its version (or took more than 10 s)"
     fail_build
 fi
 
-prev="$(readlink "$CURRENT" || true)"
 dir="$RELEASES/$hex"
-if [[ "$prev" == "releases/$hex" ]]; then
-    rm -rf "$work" # already the current directory (state was lost): keep it
-else
-    rm -rf "$dir"
-    mv "$work" "$dir"
+if [[ "$(readlink "$live_slot" 2>/dev/null || true)" == "releases/$hex" ]]; then
+    # Already live (the state file was lost): keep the directory, record it.
+    rm -rf "$work"
+    printf '%s\n' "$hex" >"$STATE_DIR/installed.sha256.tmp"
+    mv -f "$STATE_DIR/installed.sha256.tmp" "$STATE_DIR/installed.sha256"
+    rm -f "$STATE_DIR/bad.sha256"
+    ping_hc
+    log "release ${hex:0:12} is already live on $live"
+    handled=1
+    exit 0
 fi
+old_idle="$(readlink "$idle_slot" 2>/dev/null || true)"
+rm -rf "$dir"
+mv "$work" "$dir"
 
-switch_to() {
-    ln -sfn "$1" "$INSTALL_DIR/current.tmp"
-    mv -Tf "$INSTALL_DIR/current.tmp" "$CURRENT"
-}
-
-# healthy VERSION: /healthz answers exactly "ok VERSION" within HEALTH_WAIT seconds.
+# healthy PORT VERSION: /healthz answers exactly "ok VERSION" within HEALTH_WAIT seconds.
 healthy() {
     local i body
     for ((i = 0; i < HEALTH_WAIT; i++)); do
-        body="$(curl -fsS -m 2 "$HEALTH_URL" 2>/dev/null || true)"
-        [[ "$body" == "ok $1" ]] && return 0
+        body="$(curl -fsS -m 2 "http://$HEALTH_HOST:$1/healthz" 2>/dev/null || true)"
+        [[ "$body" == "ok $2" ]] && return 0
         sleep 1
     done
     return 1
 }
 
-log "switching to ${hex:0:12} (version $expected)"
-switch_to "releases/$hex"
+log "starting ${hex:0:12} (version $expected) on idle port $idle; live is $live"
+set_link "releases/$hex" "$idle_slot"
+phase=started
 restart_ok=1
-"$SYSTEMCTL" restart "$UNIT" || restart_ok=0
-if ((restart_ok)) && healthy "$expected"; then
-    printf '%s\n' "$hex" >"$STATE_DIR/installed.sha256.tmp"
-    mv -f "$STATE_DIR/installed.sha256.tmp" "$STATE_DIR/installed.sha256"
-    rm -f "$STATE_DIR/bad.sha256"
-    # Keep the 3 newest directories and whatever current and the previous one point to.
-    keep=" $hex ${prev#releases/} "
-    n=0
-    while IFS= read -r d; do
-        n=$((n + 1))
-        ((n <= 3)) && continue
-        [[ "$keep" == *" $d "* ]] && continue
-        rm -rf "${RELEASES:?}/${d:?}"
-    done < <(ls -1t "$RELEASES")
-    ping_hc
-    log "updated to $expected"
-    handled=1
-    exit 0
+"$SYSTEMCTL" restart "$(unit "$idle")" || restart_ok=0
+if ((restart_ok)) && healthy "$idle" "$expected"; then
+    :
+else
+    if ((restart_ok)); then
+        log "error: $(unit "$idle") did not report ok $expected within ${HEALTH_WAIT}s"
+    else
+        log "error: systemctl restart $(unit "$idle") failed"
+    fi
+    "$SYSTEMCTL" stop "$(unit "$idle")" || true
+    if [[ -n "$old_idle" ]]; then
+        set_link "$old_idle" "$idle_slot"
+    else
+        rm -f "$idle_slot"
+    fi
+    [[ "$old_idle" == "releases/$hex" ]] || rm -rf "${dir:?}"
+    log "the live instance $(unit "$live") was not touched"
+    fail_build
 fi
 
-if ((restart_ok)); then
-    log "error: $UNIT did not report ok $expected within ${HEALTH_WAIT}s"
-else
-    log "error: systemctl restart $UNIT failed"
+# nginx_fail MESSAGE: put the link back, stop the idle instance; the build is not marked bad.
+nginx_fail() {
+    log "error: $1; restoring the link to upstream-$live.conf"
+    set_link "$UPSTREAM_DIR/upstream-$live.conf" "$LIVE_LINK"
+    if "$SYSTEMCTL" is-active --quiet nginx; then "$SYSTEMCTL" reload nginx || true; fi
+    "$SYSTEMCTL" stop "$(unit "$idle")" || true
+    ping_hc /fail
+    handled=1
+    exit 1
+}
+
+set_link "$UPSTREAM_DIR/upstream-$idle.conf" "$LIVE_LINK"
+phase=switched
+"$NGINX" -t >/dev/null 2>&1 || nginx_fail "nginx -t failed"
+# Not active (site not enabled before the certificate exists): just keep the link.
+if "$SYSTEMCTL" is-active --quiet nginx; then
+    "$SYSTEMCTL" reload nginx || nginx_fail "nginx reload failed"
 fi
-if [[ -n "$prev" && -e "$INSTALL_DIR/$prev" ]]; then
-    switch_to "$prev"
-    "$SYSTEMCTL" restart "$UNIT" || true
-    sleep 3
-    if curl -fsS -m 5 "$HEALTH_URL" >/dev/null 2>&1; then
-        log "rolled back to $prev; the site answers"
-    else
-        log "error: rolled back to $prev but the site does not answer"
-    fi
-    [[ "$prev" == "releases/$hex" ]] || rm -rf "${dir:?}"
-else
-    "$SYSTEMCTL" stop "$UNIT" || true
-    rm -f "$CURRENT"
-    rm -rf "${dir:?}"
-    log "no previous release; $UNIT stopped"
-fi
-fail_build
+"$SYSTEMCTL" enable "$(unit "$idle")" >/dev/null 2>&1 || log "warning: could not enable $(unit "$idle")"
+"$SYSTEMCTL" disable "$(unit "$live")" >/dev/null 2>&1 || log "warning: could not disable $(unit "$live")"
+# DRAIN (10 s) plus the server's own graceful shutdown covers today's tiny responses; raise DRAIN
+# when slow responses exist (ASN pages, API).
+sleep "$DRAIN"
+"$SYSTEMCTL" stop "$(unit "$live")" || log "warning: could not stop $(unit "$live")"
+
+printf '%s\n' "$hex" >"$STATE_DIR/installed.sha256.tmp"
+mv -f "$STATE_DIR/installed.sha256.tmp" "$STATE_DIR/installed.sha256"
+rm -f "$STATE_DIR/bad.sha256"
+
+# Keep the directories both slot links point to and the 3 newest.
+keep=" $(readlink "$INSTALL_DIR/slot-8080" 2>/dev/null || true) $(readlink "$INSTALL_DIR/slot-8081" 2>/dev/null || true) "
+keep="${keep//releases\//}"
+n=0
+while IFS= read -r d; do
+    n=$((n + 1))
+    ((n <= 3)) && continue
+    [[ "$keep" == *" $d "* ]] && continue
+    rm -rf "${RELEASES:?}/${d:?}"
+done < <(ls -1t "$RELEASES")
+ping_hc
+log "live: $idle (version $expected)"
+phase=finished
+handled=1
+exit 0

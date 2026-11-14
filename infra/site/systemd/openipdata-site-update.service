@@ -12,7 +12,9 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 # Sandbox: not yet tested on the VM. systemctl reaches systemd over D-Bus (AF_UNIX socket in /run).
+# /etc/nginx/conf.d: the updater switches the live link there. /var/log/nginx and /var/lib/nginx:
+# "nginx -t" opens the log files and the temp paths. /run: the lock file.
 ProtectSystem=strict
-ReadWritePaths=/opt/openipdata-site /var/lib/openipdata-site/state /run
+ReadWritePaths=/opt/openipdata-site /var/lib/openipdata-site/state /etc/nginx/conf.d /var/log/nginx /var/lib/nginx /run
 PrivateDevices=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

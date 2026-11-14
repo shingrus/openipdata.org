@@ -1,16 +1,20 @@
 [Unit]
-Description=openipdata.org website
+Description=openipdata.org website (port %i)
 After=network-online.target
 Wants=network-online.target
+
+# Template: the instance name is the port (8080 or 8081). Two instances take turns:
+# openipdata-site-update starts the new build on the idle port, then switches nginx.
+# /opt/openipdata-site/slot-<port> is a link to a releases/<sha256> directory.
 
 [Service]
 Type=simple
 User=openipdata-site
 Group=openipdata-site
 # No env file: the site needs no secrets.
-Environment=LISTEN=127.0.0.1:8080
+Environment=LISTEN=127.0.0.1:%i
 Environment=GEO_MMDB=/var/lib/openipdata-site/data/ip2geo-openipdata.mmdb
-ExecStart=/opt/openipdata-site/current/openipdata-site
+ExecStart=/opt/openipdata-site/slot-%i/openipdata-site
 Restart=always
 RestartSec=2
 NoNewPrivileges=yes
