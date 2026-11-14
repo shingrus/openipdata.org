@@ -4,6 +4,7 @@
 //	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>
+//	mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, a layer named in -same-country applies only where the country so
@@ -15,6 +16,10 @@
 //
 // lookup with -in and -out reads an ip2geo MMDB for the IPs of a file (one per
 // line) and writes ip<TAB>country<TAB>city for each one that has a city. See lookup.go.
+//
+// stamp rewrites only the metadata section of an MMDB: description.en becomes a
+// readable build line and description.openipdata the compact JSON of the meta
+// file. See stamp.go.
 //
 // eval scores an ip2geo MMDB (IPv4 only) and prints one JSON object. See eval.go.
 package main
@@ -40,6 +45,8 @@ func main() {
 		runLookup(os.Args[2:])
 	case "eval":
 		runEval(os.Args[2:])
+	case "stamp":
+		runStamp(os.Args[2:])
 	default:
 		usage()
 	}
@@ -50,6 +57,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
 }

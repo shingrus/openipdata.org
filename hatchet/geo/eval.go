@@ -25,6 +25,10 @@ type EvalOutput struct {
 	// eval, Postgres). The task still succeeds so that the run goes on to
 	// publish, which refuses unless force_publish is set.
 	Error string `json:"error,omitempty"`
+	// Stamp is "stamped" when the scores were written into the MMDB's metadata
+	// (mmdbbuilder stamp), or "failed: <reason>"; a failure keeps the unstamped
+	// file and never blocks publishing.
+	Stamp string `json:"stamp,omitempty"`
 }
 
 func (p *Pipeline) evalDir() string { return filepath.Join(p.dir(), "eval") }
@@ -44,6 +48,62 @@ func (p *Pipeline) evalDir() string { return filepath.Join(p.dir(), "eval") }
 // refuses such a result unless forced. Only cancellation and a local file
 // error in the eval directory return an error.
 func (p *Pipeline) Evaluate(ctx context.Context, src Source, mmdbPath string) (EvalOutput, error) {
+	out, err := p.evaluate(ctx, src, mmdbPath)
+	if err != nil {
+		return out, err
+	}
+	out.Stamp = p.stampMMDB(ctx, src, mmdbPath, out)
+	return out, nil
+}
+
+// stampMeta is what mmdbbuilder stamp puts into description.openipdata. It
+// holds no URL, key, IP or reference status text. built_at is added by mmdbbuilder from the MMDB's
+// own build time, so a retried task stamps the same value.
+type stampMeta struct {
+	DateTag   string             `json:"date_tag"`
+	EvalID    int64              `json:"eval_id"`
+	Metrics   map[string]float64 `json:"metrics"`
+	EvalError bool               `json:"eval_error,omitempty"`
+}
+
+// stampMMDB writes the scores into the metadata of the MMDB (the search tree
+// and the data stay the same) through a temporary file and a rename. A
+// failure is returned as text and leaves the MMDB as it was.
+func (p *Pipeline) stampMMDB(ctx context.Context, src Source, mmdbPath string, out EvalOutput) string {
+	fail := func(err error) string {
+		msg := "failed: " + strings.TrimSpace(strings.SplitN(err.Error(), "\n", 2)[0])
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		p.log("eval: stamp %s", msg)
+		return msg
+	}
+	meta := stampMeta{DateTag: src.DateTag, EvalID: out.ID, Metrics: out.Metrics, EvalError: out.Error != ""}
+	if meta.Metrics == nil {
+		meta.Metrics = map[string]float64{}
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return fail(err)
+	}
+	metaPath := filepath.Join(p.evalDir(), "meta.json")
+	if err := os.WriteFile(metaPath, data, 0o640); err != nil {
+		return fail(err)
+	}
+	tmp := mmdbPath + ".stamped.tmp"
+	if _, err := p.runBuilder(ctx, []string{"stamp", "-db", mmdbPath, "-meta", metaPath, "-out", tmp}); err != nil {
+		os.Remove(tmp)
+		return fail(err)
+	}
+	if err := os.Rename(tmp, mmdbPath); err != nil {
+		os.Remove(tmp)
+		return fail(err)
+	}
+	p.log("eval: stamped %s", filepath.Base(mmdbPath))
+	return "stamped"
+}
+
+func (p *Pipeline) evaluate(ctx context.Context, src Source, mmdbPath string) (EvalOutput, error) {
 	started := time.Now()
 	out := EvalOutput{References: map[string]string{}}
 	dir := p.evalDir()

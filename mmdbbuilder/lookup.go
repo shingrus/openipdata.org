@@ -90,6 +90,12 @@ func printLookups(mmdbPath, testIP, ipsPath string) error {
 	fmt.Println("summary:")
 	fmt.Printf("  mmdb: %s (type %s, built %s, %d nodes)\n", mmdbPath, meta.DatabaseType,
 		meta.BuildTime().UTC().Format("2006-01-02 15:04:05 UTC"), meta.NodeCount)
+	if stamp := meta.Description[stampKey]; stamp != "" {
+		if len(stamp) > 200 {
+			stamp = stamp[:200] + "..."
+		}
+		fmt.Printf("  description.openipdata: %s\n", stamp)
+	}
 	if testIP != "" {
 		fmt.Printf("  total IPs: %d (from flag)\n", total)
 	} else {

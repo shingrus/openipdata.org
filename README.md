@@ -1,6 +1,11 @@
 # openipdata.org
 
-Workers, workflows, and builders for the openipdata.org IP databases.
+Workers, workflows, builders, and the independently built Astro SSR website for openipdata.org.
+
+The website lives in [`web/`](web/README.md), uses npm and Node, and renders IP data
+from local MMDB/SQLite artifacts into the first HTML response. It builds separately
+from the Go modules. Application deployment and dataset refresh are independent;
+the initial website is local-only.
 
 A Go [Hatchet](https://hatchet.run) worker runs the workflows on a VM.
 Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the tasks.
@@ -9,6 +14,7 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 
 | Path | Purpose |
 |---|---|
+| `web/` | Astro SSR website with local IP/ASN lookups; npm and Node |
 | `docs/pipeline.md` | the whole pipeline on one page: workflows, data sources, tables, layers |
 | `infra/` | VM provisioning script, systemd unit, env template |
 | `hatchet/` | `openipdata-worker`: the Hatchet worker; one folder per workflow |
@@ -320,6 +326,15 @@ A problem with the evaluation itself (holdout, `mmdbbuilder eval`, Postgres) doe
 a non-retryable error until a run with `{"force_publish": true}`. A retry of `evaluate` replaces the
 unpublished `public.geo_eval` row of the same date.
 
+Metadata: at its end `evaluate` stamps the built MMDB in place (`mmdbbuilder stamp`, through a `.tmp`
+file and a rename), so the file that `publish` uploads carries its own numbers. `description.en` becomes
+`openipdata.org ip2geo, built <date> <time> UTC` and `description.openipdata` holds a compact JSON
+object: `built_at`, `date_tag`, `eval_id`, `metrics` (the `public.geo_eval` scores) and `eval_error` when the evaluation failed. Only the metadata
+section is rewritten; the search tree and the data are byte for byte the same, so lookups are
+unchanged. Read it with Node `maxmind`: `JSON.parse(reader.metadata.description.openipdata)`, or Go:
+`reader.Metadata.Description["openipdata"]`. A stamp failure does not block publishing: the task
+output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is published.
+
 - Layers, in order:
   1. `10-rir`: the five RIRs' delegated stats: the country each block was delegated to (IPv4 and IPv6);
   2. `20-ipverse`: ipverse/geo-ip-blocks (CC0): the country in registration records (IPv4 only);
@@ -543,6 +558,7 @@ mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
+mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 
 ## Build

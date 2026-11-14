@@ -618,3 +618,74 @@ func TestFetchGeoNames(t *testing.T) {
 		}
 	}
 }
+
+// Evaluate stamps the MMDB through mmdbbuilder stamp: the meta file holds the
+// scores, the stamped file replaces the MMDB; a failing stamp keeps the MMDB
+// and only sets Stamp.
+func TestEvaluateStamp(t *testing.T) {
+	src := Source{DateTag: "2026-11-10"}
+	// Postgres is not set up, so the evaluation records an error, which is
+	// stamped too (eval_error).
+	script := `case "$1" in
+eval) echo '{"atlas_country_pct": 97.5}';;
+stamp) echo "$@" > "$(dirname "$0")/stamp-args"; cp "$3" "$7" 2>/dev/null; cat "$5" > "$(dirname "$0")/stamp-meta"
+  [ -f "$(dirname "$0")/stamp-fail" ] && { echo "boom: bad file" >&2; echo more >&2; exit 1; }
+  printf stamped >> "$7";;
+esac`
+	t.Run("stamped", func(t *testing.T) {
+		p := evalPipeline(t, script)
+		mmdb := filepath.Join(p.DataDir, "ip2geo.mmdb")
+		os.WriteFile(mmdb, []byte("MMDB"), 0o640)
+		out, err := p.Evaluate(context.Background(), src, mmdb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Stamp != "stamped" {
+			t.Errorf("Stamp = %q", out.Stamp)
+		}
+		if got, _ := os.ReadFile(mmdb); string(got) != "MMDBstamped" {
+			t.Errorf("mmdb = %q", got)
+		}
+		if _, err := os.Stat(mmdb + ".stamped.tmp"); !os.IsNotExist(err) {
+			t.Errorf("temporary file left: %v", err)
+		}
+		args, _ := os.ReadFile(filepath.Join(p.DataDir, "stamp-args"))
+		want := "stamp -db " + mmdb + " -meta " + filepath.Join(p.evalDir(), "meta.json") + " -out " + mmdb + ".stamped.tmp\n"
+		if string(args) != want {
+			t.Errorf("args = %q, want %q", args, want)
+		}
+		meta, _ := os.ReadFile(filepath.Join(p.DataDir, "stamp-meta"))
+		if strings.Contains(string(meta), "references") {
+			t.Errorf("meta %s holds references", meta)
+		}
+		for _, part := range []string{`"date_tag":"2026-11-10"`, `"eval_id":0`, `"eval_error":true`, `"metrics":{"atlas_country_pct":97.5}`} {
+			if !strings.Contains(string(meta), part) {
+				t.Errorf("meta %s lacks %s", meta, part)
+			}
+		}
+	})
+	t.Run("failed", func(t *testing.T) {
+		p := evalPipeline(t, script)
+		os.WriteFile(filepath.Join(p.DataDir, "stamp-fail"), nil, 0o640)
+		mmdb := filepath.Join(p.DataDir, "ip2geo.mmdb")
+		os.WriteFile(mmdb, []byte("MMDB"), 0o640)
+		var logs []string
+		p.Progress = func(s string) { logs = append(logs, s) }
+		out, err := p.Evaluate(context.Background(), src, mmdb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(out.Stamp, "failed: ") || !strings.Contains(out.Stamp, "boom") || strings.Contains(out.Stamp, "\n") {
+			t.Errorf("Stamp = %q", out.Stamp)
+		}
+		if got, _ := os.ReadFile(mmdb); string(got) != "MMDB" {
+			t.Errorf("mmdb changed: %q", got)
+		}
+		if _, err := os.Stat(mmdb + ".stamped.tmp"); !os.IsNotExist(err) {
+			t.Errorf("temporary file left: %v", err)
+		}
+		if !strings.Contains(strings.Join(logs, "\n"), "eval: stamp failed") {
+			t.Errorf("not logged: %v", logs)
+		}
+	})
+}

@@ -2,11 +2,12 @@
 
 ## Overview
 
-- This repo holds the openipdata.org data workers, workflows, and builders. There is no website or web interface here.
+- This repo holds the openipdata.org data workers, workflows, builders, and the independently built website in `web/`.
 - Workflows are being moved here from another repo step by step. This repo must stay self-contained: no imports, submodules, URLs, or file references to other repos. Reproduce anything needed here.
 
 ## Layout
 
+- `web/`: Astro SSR website, npm package manager, Node runtime, official `@astrojs/node` standalone adapter. This is independent of the Go modules and the worker VM.
 - `infra/`: VM provisioning (`init-hatchet-runner-vm.sh`), systemd unit, env template. No Go code.
 - `hatchet/`: Go module for `openipdata-worker`, the Hatchet worker. `main.go` registers workflows; each workflow lives in its own folder (`hatchet/asn/` for `build-asn-data`, `hatchet/pdb/` for `sync-peeringdb`, `hatchet/domains/` for `update-asn-domains`, `hatchet/geofeeds/` for `sync-geofeeds`, `hatchet/geo/` for `build-geo-data`, `hatchet/rdns/` for `resolve-ips`, `hatchet/rdnsrules/` for `learn-rdns-rules` with its tasks `learn` and `propose-codes`). `hatchet/schema/` creates and upgrades the shared Postgres tables; `hatchet/publish/` uploads artifacts to R2 and GitHub releases (a file that is already there byte-for-byte is not sent again) and downloads the R2 layer files; `hatchet/rirstats/` parses RIR delegated-extended stats and splits address ranges into prefixes; `hatchet/download/` downloads a file unless the local copy is current (the caller passes the HTTP client); `hatchet/outputs/` prunes old output directories and has the small helpers `asn` and `geo` share (last log lines, file size); `hatchet/ipdata/` has what several workflows need about IP space and `public.asn` (public-address check, country-code check, announced prefixes of `public.asn.json`, the `seen_at` filter). Workflows share this code, never each other's downloaded files.
 - `mmdbbuilder/`: Go module for `mmdbbuilder`, a standalone CLI (`package main`) with one subcommand per database (`asn`, `geo`), plus `eval` (scores a geo MMDB) and `lookup` (reads one: a report, or with `-in`/`-out` the city of each IP of a file).
@@ -14,6 +15,18 @@
 - `iplistener/`: standalone Go module (`package main`) plus install script, unit and env template; it runs on the web servers that serve visitors, not on the worker VM. It tails the nginx access log and upserts visitor IPs into `public.visitor_ips`. It must not import `hatchet` or `mmdbbuilder`; it reproduces small helpers (e.g. hiding the DSN in pgx errors).
 - No `go.mod` or Go code at the repo root. Each module builds on its own.
 - `hatchet` must not import `mmdbbuilder`; it runs the `mmdbbuilder` binary (and, for `resolve-ips`, `scamper`) found next to its own executable.
+
+## Website decisions (2026-11-14)
+
+- Use Astro server-side rendering with npm and Node. Do not replace it with Go templates, Bun, React, or a separate lookup service without discussing the change.
+- The homepage renders the request's IP data into its first HTML response. Use local read-only MMDB and SQLite artifacts, with readers reused across requests; no browser fetch, external API, Postgres query, or dataset download is required to render it.
+- Keep the frontend small: plain CSS, SVG where useful, and minimal vanilla JavaScript for interaction. No client framework or map SDK is needed for the first page. Use local/system fonts.
+- Obtain the client IP from the connection by default. Trust forwarded client/protocol headers only after an explicit trusted-proxy configuration. Personalized responses are `private, no-store`.
+- Unknown location, reputation, other IP family, resolver, and browser details stay unknown; never fill them with demonstration values. The local loopback connection is not a public visitor address. Explicit IP/ASN searches work server-side.
+- Website data files are separate published artifacts, never another workflow's cache directories. Data refresh and application deployment are independent. Keep dataset files, secrets, dependency directories, and build output out of Git.
+- Deployment direction: a separate web VM behind nginx; GitHub Actions builds and deploys on pushes to `master`, with serialized deployments, readiness checks, and rollback. This is a future deployment setup until implemented; local website work must not publish or change production.
+- For website implementation, the user prefers a fast, lower-cost implementation subagent and a separate reviewer, followed by fixes and re-review until actionable findings are resolved. The coordinating agent verifies the result.
+- Keep instructions and startup commands in `web/README.md`. Respect pre-existing uncommitted worker changes when working on the website.
 
 ## Hatchet terms
 
@@ -152,6 +165,7 @@
   live in `domains.jsonl`, and the announced prefixes of the ASNs of found domains in `domain-prefixes.csv`, so
   `export-rows` reads no ASN table. A feed that only this source found adds no whois blocks and keeps only rows
   inside those prefixes (drop reason `outside_asn`).
+- `evaluate` stamps the scores into the MMDB's metadata (`mmdbbuilder stamp`: `description.openipdata`, metadata section only, tree and data unchanged; a stamp failure is `EvalOutput.Stamp`, never blocks publish).
 - `build-geo-data` scores each MMDB it builds (`evaluate` task, results in `public.geo_eval`) and `publish` refuses a
   clear drop against the last published row (`geo.ErrGate`). All MMDB reading is done by `mmdbbuilder` (`eval`, `lookup`), never by `hatchet`.
   The holdout leaves out a frozen sample of feeds, read from `public.geofeed_urls` (`id % 10 = 0`, `first_seen_at` before the
