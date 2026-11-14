@@ -513,7 +513,7 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("build-geo-data",
-		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2, RIPE Atlas and a geofeed holdout"),
+		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2 and RIPE Atlas (country, city), and ours also on a geofeed holdout"),
 		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
 		hatchet.WithWorkflowCron("0 7,19 * * *"),
 		// Its own limit, not asn-db: it only reads the ASN tables.

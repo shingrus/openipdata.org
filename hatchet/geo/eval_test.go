@@ -2,6 +2,7 @@ package geo
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -539,5 +540,81 @@ func TestPublishRefusesFailedEvaluation(t *testing.T) {
 	_, err := p.Publish(context.Background(), src, "x.mmdb", EvalOutput{Error: "boom"}, true)
 	if errors.Is(err, ErrGate) || err == nil || !strings.Contains(err.Error(), "R2 is not set") {
 		t.Errorf("forced: %v", err)
+	}
+}
+
+// zipBytes is a GeoNames archive: cities1000.txt among other files.
+func zipBytes(t *testing.T, txt string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range [][2]string{{"readme.txt", "hello"}, {"cities1000.txt", txt}} {
+		w, err := zw.Create(f[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte(f[1]))
+	}
+	zw.Close()
+	return buf.Bytes()
+}
+
+const geoNamesSample = "2988507\tParis\tParis\tParigi\t48.85341\t2.3488\tP\tPPLC\tFR\t\t11\t75\t751\t75056\t2138551\t\t42\tEurope/Paris\t2024-01-01\n"
+
+// A first download unpacks the entry, a copy checked within 7 days is used
+// without a request, and a bad archive falls back to the unpacked copy of an
+// earlier run (or is skipped when there is none).
+func TestFetchGeoNames(t *testing.T) {
+	body, requests := zipBytes(t, geoNamesSample), 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Write(body)
+	}))
+	defer server.Close()
+	p := &Pipeline{refURLs: &evalURLs{geonames: server.URL + "/cities1000.zip"}}
+	ctx, client, dir := context.Background(), server.Client(), t.TempDir()
+	now := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	got, status := p.fetchGeoNames(ctx, client, dir, now)
+	if got != filepath.Join(dir, "cities1000.txt") || status != download.Downloaded || requests != 1 {
+		t.Fatalf("first: %q %q, %d requests", got, status, requests)
+	}
+	if data, err := os.ReadFile(got); err != nil || string(data) != geoNamesSample {
+		t.Errorf("unpacked file: %q %v", data, err)
+	}
+	if _, err := os.Stat(got + ".tmp"); err == nil {
+		t.Error("temporary file left behind")
+	}
+
+	// Within 7 days: no second request.
+	if got, status = p.fetchGeoNames(ctx, client, dir, now.Add(6*24*time.Hour)); got == "" || status != download.Cached || requests != 1 {
+		t.Errorf("age gate: %q %q, %d requests", got, status, requests)
+	}
+	// Older: a request (the server has no ETag, so it sends the file again).
+	if got, _ = p.fetchGeoNames(ctx, client, dir, now.Add(8*24*time.Hour)); got == "" || requests != 2 {
+		t.Errorf("old: %q, %d requests", got, requests)
+	}
+
+	// A bad archive: the earlier unpacked copy stays in use, the archive is dropped.
+	body = []byte("<html>error</html>")
+	got, status = p.fetchGeoNames(ctx, client, dir, now.Add(20*24*time.Hour))
+	if got != filepath.Join(dir, "cities1000.txt") || !strings.HasPrefix(status, "stale: ") {
+		t.Errorf("bad zip with a copy: %q %q", got, status)
+	}
+	for _, f := range []string{"cities1000.zip", "cities1000.zip.etag", "cities1000.zip.checked"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			t.Errorf("%s was kept", f)
+		}
+	}
+	// No copy: skipped. Same for a zip without the entry or with a wrong first line.
+	for name, bad := range map[string][]byte{
+		"not a zip":  body,
+		"wrong file": zipBytes(t, "id\tname\n"),
+		"no id":      zipBytes(t, strings.Replace(geoNamesSample, "2988507", "abc", 1)),
+	} {
+		body = bad
+		if got, status = p.fetchGeoNames(ctx, client, t.TempDir(), now); got != "" || !strings.HasPrefix(status, "skipped: ") {
+			t.Errorf("%s: %q %q", name, got, status)
+		}
 	}
 }

@@ -2,6 +2,8 @@ package geo
 
 import (
 	"archive/tar"
+	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/bzip2"
 	"compress/gzip"
@@ -36,18 +38,22 @@ const (
 	// {"objects": [{"address_v4", "country_code", "latitude", "longitude", "status", ...}]}.
 	atlasURL = "https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest"
 
+	// GeoNames places with 1,000+ people (CC BY 4.0), a zip with cities1000.txt:
+	// build-geo-data's own copy, used to place our city names in the Atlas city score.
+	geonamesURL = "https://download.geonames.org/export/dump/cities1000.zip"
+
 	atlasConnected = 1    // probe status "Connected"
 	minAtlasProbes = 1000 // a dump with fewer public probes is broken
 )
 
 // evalURLs replaces the reference URLs in tests.
-type evalURLs struct{ dbip, maxmind, atlas string }
+type evalURLs struct{ dbip, maxmind, atlas, geonames string }
 
 func (p *Pipeline) urls() evalURLs {
 	if p.refURLs != nil {
 		return *p.refURLs
 	}
-	return evalURLs{dbipURLFormat, maxmindURL, atlasURL}
+	return evalURLs{dbipURLFormat, maxmindURL, atlasURL, geonamesURL}
 }
 
 // useCopy is the fallback for a failed download: a copy kept from an earlier
@@ -398,4 +404,81 @@ func writeAtlasCSV(r io.Reader, w io.Writer) (int, error) {
 	}
 	cw.Flush()
 	return n, cw.Error()
+}
+
+const (
+	// GeoNames publishes daily and the file changes little: a copy checked this recently is used.
+	geonamesMinAge = 7 * 24 * time.Hour
+
+	geonamesEntry   = "cities1000.txt" // the entry of the GeoNames archive
+	geonamesMinCols = 15               // a line has 19 fields; the score reads up to the population (15th)
+)
+
+// looksLikeGeoNames checks the first line: enough tab-separated fields and a numeric geonameid.
+func looksLikeGeoNames(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	line, err := bufio.NewReaderSize(f, 1<<20).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	fields := strings.Split(strings.TrimRight(line, "\r\n"), "\t")
+	if len(fields) < geonamesMinCols {
+		return false
+	}
+	_, err = strconv.ParseUint(fields[0], 10, 64)
+	return err == nil
+}
+
+// fetchGeoNames downloads cities1000.zip (at most every 7 days) and unpacks
+// cities1000.txt. It returns the path (empty if skipped) and the status.
+func (p *Pipeline) fetchGeoNames(ctx context.Context, client *http.Client, dir string, now time.Time) (string, string) {
+	archive, txt := filepath.Join(dir, "cities1000.zip"), filepath.Join(dir, geonamesEntry)
+	status := download.Cached
+	if !recentlyChecked(archive, geonamesMinAge, now) {
+		var err error
+		if status, err = download.File(ctx, client, p.urls().geonames, archive); err != nil {
+			var ok bool
+			if status, ok = useCopy(archive, err); !ok {
+				return "", status
+			}
+		} else {
+			markChecked(archive, now)
+		}
+	}
+	if _, statErr := os.Stat(txt); status == download.Downloaded || statErr != nil {
+		if err := unzipGeoNames(archive, txt); err != nil {
+			dropArchive(archive)
+			// An older unpacked copy is still better than no reference.
+			if looksLikeGeoNames(txt) {
+				return txt, "stale: " + err.Error()
+			}
+			return "", "skipped: " + err.Error()
+		}
+	}
+	return txt, status
+}
+
+// unzipGeoNames writes the cities1000.txt entry of a zip archive to dst
+// through a temporary file and checks its first line.
+func unzipGeoNames(src, dst string) error {
+	zr, err := zip.OpenReader(src)
+	if err != nil {
+		return errors.New("not a zip archive")
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if f.Mode().IsRegular() && path.Base(f.Name) == geonamesEntry {
+			rc, err := f.Open()
+			if err != nil {
+				return errors.New("bad zip entry")
+			}
+			defer rc.Close()
+			return writeChecked(rc, dst, looksLikeGeoNames, "not a GeoNames file")
+		}
+	}
+	return errors.New("archive has no " + geonamesEntry)
 }

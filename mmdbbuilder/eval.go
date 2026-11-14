@@ -7,11 +7,13 @@ package main
 // (both sorted, so one pass), per-probe and per-prefix scores look addresses
 // up. A reference that is not given leaves its scores out of the output.
 //
-// The reference databases (DB-IP, MaxMind GeoLite2 City)
-// are scored like ours: coverage of the RIR space, the RIPE Atlas probes and
-// the holdout rows, each looked up in the reference itself.
+// The reference databases (DB-IP, MaxMind GeoLite2 City) are scored like ours:
+// coverage of the RIR space and the RIPE Atlas probes (country, and city by
+// distance), each looked up in the reference itself. The holdout is scored
+// for ours only: vendors ingest the same geofeeds, so it is not held out from them.
 
 import (
+	"bufio"
 	"encoding/binary"
 	"encoding/csv"
 	"errors"
@@ -21,6 +23,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -33,6 +36,7 @@ type evalInputs struct {
 	dbip         string // DB-IP city MMDB
 	maxmind      string // MaxMind GeoLite2 City MMDB
 	atlas        string // truth CSV ip,country,lat,lon
+	geonames     string // GeoNames cities1000.txt: places our city names for the Atlas city score
 	holdoutDB    string // MMDB built without the held-out geofeeds
 	holdoutTruth string // truth CSV prefix,country,city of the held-out rows
 }
@@ -54,35 +58,41 @@ type evalMetrics struct {
 	AtlasProbes     *int     `json:"atlas_probes,omitempty"`
 	AtlasCountryPct *float64 `json:"atlas_country_pct,omitempty"`
 
+	// Atlas city score: the probes with coordinates whose database names a city
+	// within atlasCityKm of the probe. For ours the city is placed with GeoNames
+	// (-geonames), and AtlasCityUnresolved counts the probes where we named a
+	// city that GeoNames could not place.
+	AtlasCityProbes     *int     `json:"atlas_city_probes,omitempty"`
+	AtlasCityPct        *float64 `json:"atlas_city_pct,omitempty"`
+	AtlasCityUnresolved *int     `json:"atlas_city_unresolved,omitempty"`
+
 	HoldoutPrefixes   *int     `json:"holdout_prefixes,omitempty"`
 	HoldoutCountryPct *float64 `json:"holdout_country_pct,omitempty"`
 	HoldoutCityPct    *float64 `json:"holdout_city_pct,omitempty"`
 
-	// The reference databases scored like ours (the holdout rows are looked up in the reference itself).
-	DBIPCountryPct        *float64 `json:"dbip_country_pct,omitempty"`
-	DBIPCityPct           *float64 `json:"dbip_city_pct,omitempty"`
-	DBIPAtlasCountryPct   *float64 `json:"dbip_atlas_country_pct,omitempty"`
-	DBIPHoldoutCountryPct *float64 `json:"dbip_holdout_country_pct,omitempty"`
-	DBIPHoldoutCityPct    *float64 `json:"dbip_holdout_city_pct,omitempty"`
+	// The reference databases scored like ours.
+	DBIPCountryPct      *float64 `json:"dbip_country_pct,omitempty"`
+	DBIPCityPct         *float64 `json:"dbip_city_pct,omitempty"`
+	DBIPAtlasCountryPct *float64 `json:"dbip_atlas_country_pct,omitempty"`
+	DBIPAtlasCityPct    *float64 `json:"dbip_atlas_city_pct,omitempty"`
 
-	MaxMindCountryPct        *float64 `json:"maxmind_country_pct,omitempty"`
-	MaxMindCityPct           *float64 `json:"maxmind_city_pct,omitempty"`
-	MaxMindAtlasCountryPct   *float64 `json:"maxmind_atlas_country_pct,omitempty"`
-	MaxMindHoldoutCountryPct *float64 `json:"maxmind_holdout_country_pct,omitempty"`
-	MaxMindHoldoutCityPct    *float64 `json:"maxmind_holdout_city_pct,omitempty"`
+	MaxMindCountryPct      *float64 `json:"maxmind_country_pct,omitempty"`
+	MaxMindCityPct         *float64 `json:"maxmind_city_pct,omitempty"`
+	MaxMindAtlasCountryPct *float64 `json:"maxmind_atlas_country_pct,omitempty"`
+	MaxMindAtlasCityPct    *float64 `json:"maxmind_atlas_city_pct,omitempty"`
 }
 
 // refSlots are the places in evalMetrics where the scores of one reference go.
 type refSlots struct {
-	countryAgree, cityAgree, country, city, atlas, holdoutCountry, holdoutCity **float64
+	countryAgree, cityAgree, country, city, atlas, atlasCity **float64
 }
 
 func (m *evalMetrics) slots(key string) refSlots {
 	switch key {
 	case "dbip":
-		return refSlots{&m.DBIPCountryAgreePct, &m.DBIPCityAgreePct, &m.DBIPCountryPct, &m.DBIPCityPct, &m.DBIPAtlasCountryPct, &m.DBIPHoldoutCountryPct, &m.DBIPHoldoutCityPct}
+		return refSlots{&m.DBIPCountryAgreePct, &m.DBIPCityAgreePct, &m.DBIPCountryPct, &m.DBIPCityPct, &m.DBIPAtlasCountryPct, &m.DBIPAtlasCityPct}
 	case "maxmind":
-		return refSlots{&m.MaxMindCountryAgreePct, &m.MaxMindCityAgreePct, &m.MaxMindCountryPct, &m.MaxMindCityPct, &m.MaxMindAtlasCountryPct, &m.MaxMindHoldoutCountryPct, &m.MaxMindHoldoutCityPct}
+		return refSlots{&m.MaxMindCountryAgreePct, &m.MaxMindCityAgreePct, &m.MaxMindCountryPct, &m.MaxMindCityPct, &m.MaxMindAtlasCountryPct, &m.MaxMindAtlasCityPct}
 	}
 	panic("eval: unknown reference " + key)
 }
@@ -368,6 +378,7 @@ func openRanges(path string, ids names, fields placeFields) ([]rng, error) {
 // reference is one reference database loaded as ranges.
 type reference struct {
 	key    string
+	path   string
 	ranges []rng
 }
 
@@ -478,14 +489,14 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 		if err != nil {
 			return nil, err
 		}
-		refs = append(refs, reference{"dbip", ranges})
+		refs = append(refs, reference{"dbip", in.dbip, ranges})
 	}
 	if in.maxmind != "" {
 		ranges, err := openRanges(in.maxmind, ids, geoipFields)
 		if err != nil {
 			return nil, err
 		}
-		refs = append(refs, reference{"maxmind", ranges})
+		refs = append(refs, reference{"maxmind", in.maxmind, ranges})
 	}
 	for _, ref := range refs {
 		slots := m.slots(ref.key)
@@ -508,7 +519,8 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 		m.VendorConsensusCountryAgreePct = ratio(same, both)
 	}
 
-	// Lookups of ours and of each reference, for the probes and the holdout rows.
+	// Lookups of ours and of each reference, for the probes and the holdout rows
+	// (the holdout only for ours).
 	reverse := ids.reverse()
 	if in.atlas != "" {
 		reader, err := maxminddb.Open(in.db)
@@ -530,6 +542,9 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 				*m.slots(ref.key).atlas = ratio(uint64(refOK), uint64(probes))
 			}
 		}
+		if err := scoreAtlasCities(m, in, reader, refs); err != nil {
+			return nil, err
+		}
 	}
 	if in.holdoutDB != "" {
 		reader, err := maxminddb.Open(in.holdoutDB)
@@ -545,15 +560,6 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 			m.HoldoutPrefixes = count(s.rows)
 			m.HoldoutCountryPct = ratio(uint64(s.countryOK), uint64(s.rows))
 			m.HoldoutCityPct = ratio(uint64(s.cityOK), uint64(s.cityRows))
-			for _, ref := range refs {
-				rs, err := scoreHoldout(rangeLookup(ref.ranges, reverse), in.holdoutTruth)
-				if err != nil {
-					return nil, fmt.Errorf("%s: %w", in.holdoutTruth, err)
-				}
-				slots := m.slots(ref.key)
-				*slots.holdoutCountry = ratio(uint64(rs.countryOK), uint64(rs.rows))
-				*slots.holdoutCity = ratio(uint64(rs.cityOK), uint64(rs.cityRows))
-			}
 		}
 	}
 	return m, nil
@@ -693,4 +699,229 @@ func scoreHoldout(lookup lookupFunc, path string) (holdoutScore, error) {
 		}
 	})
 	return s, errors.Join(err, lookupErr)
+}
+
+// atlasCityKm is how close a database's city must be to the probe to count.
+const atlasCityKm = 50
+
+// haversineKm is the great-circle distance between two points in kilometres
+// (Earth radius 6371 km).
+func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const rad = math.Pi / 180
+	dLat, dLon := (lat2-lat1)*rad, (lon2-lon1)*rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return 2 * 6371 * math.Asin(math.Min(1, math.Sqrt(a)))
+}
+
+// cityProbe is an Atlas probe with coordinates.
+type cityProbe struct {
+	addr     netip.Addr
+	lat, lon float64
+}
+
+// readCityProbes returns the probes of the CSV (ip,country,lat,lon) that have
+// an IPv4 address and valid coordinates.
+func readCityProbes(path string) ([]cityProbe, error) {
+	var out []cityProbe
+	err := readTruth(path, []string{"ip", "lat", "lon"}, func(f []string) {
+		addr, err := netip.ParseAddr(strings.TrimSpace(f[0]))
+		lat, latErr := strconv.ParseFloat(strings.TrimSpace(f[1]), 64)
+		lon, lonErr := strconv.ParseFloat(strings.TrimSpace(f[2]), 64)
+		if err != nil || !addr.Unmap().Is4() || latErr != nil || lonErr != nil ||
+			math.Abs(lat) > 90 || math.Abs(lon) > 180 {
+			return
+		}
+		out = append(out, cityProbe{addr.Unmap(), lat, lon})
+	})
+	return out, err
+}
+
+// How a database answered for a probe.
+type cityAnswer int
+
+const (
+	noCity     cityAnswer = iota // no answer, or no city
+	unplaced                     // a city, but its coordinates are unknown
+	placedCity                   // a city with coordinates
+)
+
+// cityPlacer returns the city of an address with its coordinates.
+type cityPlacer func(netip.Addr) (lat, lon float64, answer cityAnswer, err error)
+
+// scoreCities counts the probes whose database city lies within atlasCityKm,
+// and those where a city was named but could not be placed.
+func scoreCities(probes []cityProbe, place cityPlacer) (ok, unresolved int, err error) {
+	for _, p := range probes {
+		lat, lon, answer, err := place(p.addr)
+		if err != nil {
+			return 0, 0, err
+		}
+		switch answer {
+		case unplaced:
+			unresolved++
+		case placedCity:
+			if haversineKm(p.lat, p.lon, lat, lon) <= atlasCityKm {
+				ok++
+			}
+		}
+	}
+	return ok, unresolved, nil
+}
+
+// scoreAtlasCities sets the Atlas city scores: ours (placed with GeoNames) and
+// each reference (its own coordinates).
+func scoreAtlasCities(m *evalMetrics, in evalInputs, ours *maxminddb.Reader, refs []reference) error {
+	probes, err := readCityProbes(in.atlas)
+	if err != nil {
+		return fmt.Errorf("%s: %w", in.atlas, err)
+	}
+	if len(probes) == 0 {
+		return nil
+	}
+	total := uint64(len(probes))
+	m.AtlasCityProbes = count(len(probes))
+	if in.geonames != "" {
+		index, err := loadGeoNames(in.geonames)
+		if err != nil {
+			return fmt.Errorf("%s: %w", in.geonames, err)
+		}
+		ok, unresolved, err := scoreCities(probes, geoNamesPlacer(ours, index))
+		if err != nil {
+			return err
+		}
+		m.AtlasCityPct, m.AtlasCityUnresolved = ratio(uint64(ok), total), count(unresolved)
+	}
+	for _, ref := range refs {
+		reader, err := maxminddb.Open(ref.path)
+		if err != nil {
+			return err
+		}
+		ok, _, err := scoreCities(probes, referencePlacer(reader))
+		reader.Close()
+		if err != nil {
+			return fmt.Errorf("%s: %w", ref.path, err)
+		}
+		*m.slots(ref.key).atlasCity = ratio(uint64(ok), total)
+	}
+	return nil
+}
+
+// gnPlace is a GeoNames place.
+type gnPlace struct {
+	lat, lon float64
+	pop      int64
+	primary  bool // the key is the place's own name or ascii name, not an alternate
+}
+
+// geoNames maps country code + normalized name to the most populous place of that name.
+type geoNames map[string]gnPlace
+
+func geoNamesKey(country, city string) string { return country + "|" + normCity(city) }
+
+// loadGeoNames reads a GeoNames dump (cities1000.txt, tab-separated) and
+// indexes every place by country and by its name, ascii name and each
+// alternate name. On a collision the most populous place wins (the first on a tie).
+func loadGeoNames(path string) (geoNames, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	index := geoNames{}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	for sc.Scan() {
+		fields := strings.Split(sc.Text(), "\t")
+		if len(fields) < 15 {
+			continue
+		}
+		lat, latErr := strconv.ParseFloat(fields[4], 64)
+		lon, lonErr := strconv.ParseFloat(fields[5], 64)
+		country := normCountry(fields[8])
+		if latErr != nil || lonErr != nil || country == "" {
+			continue
+		}
+		pop, _ := strconv.ParseInt(fields[14], 10, 64)
+		set := func(name string, primary bool) {
+			key := geoNamesKey(country, name)
+			old, ok := index[key]
+			// A primary name beats any alternate; otherwise the more populous place wins.
+			if !ok || (primary && !old.primary) || (primary == old.primary && pop > old.pop) {
+				index[key] = gnPlace{lat, lon, pop, primary}
+			}
+		}
+		for _, name := range fields[1:3] {
+			if normCity(name) != "" {
+				set(name, true)
+			}
+		}
+		for _, name := range strings.Split(fields[3], ",") {
+			if hasLatin(normCity(name)) {
+				set(name, false)
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if len(index) == 0 {
+		return nil, errors.New("no places")
+	}
+	return index, nil
+}
+
+// geoNamesPlacer looks addresses up in our MMDB (country_code, city_name) and
+// places the city with GeoNames.
+func geoNamesPlacer(reader *maxminddb.Reader, index geoNames) cityPlacer {
+	return func(addr netip.Addr) (float64, float64, cityAnswer, error) {
+		res := reader.Lookup(addr)
+		if !res.Found() {
+			return 0, 0, noCity, res.Err()
+		}
+		country, city, err := ourFields(res)
+		country, city = normCountry(country), normCity(city)
+		if err != nil || city == "" {
+			return 0, 0, noCity, err
+		}
+		p, ok := index[geoNamesKey(country, city)]
+		if !ok {
+			return 0, 0, unplaced, nil
+		}
+		return p.lat, p.lon, placedCity, nil
+	}
+}
+
+// referencePlacer looks addresses up in a DB-IP or GeoLite2 City MMDB and uses
+// its own coordinates, but only for a record with a city: without one they are
+// a country's centroid.
+func referencePlacer(reader *maxminddb.Reader) cityPlacer {
+	return func(addr netip.Addr) (float64, float64, cityAnswer, error) {
+		res := reader.Lookup(addr)
+		if !res.Found() {
+			return 0, 0, noCity, res.Err()
+		}
+		var r struct {
+			City struct {
+				Names struct {
+					EN string `maxminddb:"en"`
+				} `maxminddb:"names"`
+			} `maxminddb:"city"`
+			Location struct {
+				Latitude  *float64 `maxminddb:"latitude"`
+				Longitude *float64 `maxminddb:"longitude"`
+			} `maxminddb:"location"`
+		}
+		if err := res.Decode(&r); err != nil {
+			return 0, 0, noCity, err
+		}
+		if normCity(r.City.Names.EN) == "" || r.Location.Latitude == nil || r.Location.Longitude == nil {
+			return 0, 0, noCity, nil
+		}
+		return *r.Location.Latitude, *r.Location.Longitude, placedCity, nil
+	}
+}
+
+// hasLatin tells whether a normalized name has a letter a-z.
+func hasLatin(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return r >= 'a' && r <= 'z' })
 }

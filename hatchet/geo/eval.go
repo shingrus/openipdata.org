@@ -33,7 +33,7 @@ func (p *Pipeline) evalDir() string { return filepath.Join(p.dir(), "eval") }
 // public.geo_eval (published = false; Publish flips it).
 //
 // It refreshes the reference databases in DataDir/geo/eval/ (DB-IP city,
-// MaxMind GeoLite2 City, RIPE Atlas probes), builds a second MMDB without a frozen
+// MaxMind GeoLite2 City, RIPE Atlas probes, GeoNames cities1000 to place our cities), builds a second MMDB without a frozen
 // tenth of the geofeeds (holdout.mmdb) to score the lower layers on the
 // held-out rows, and runs "mmdbbuilder eval". A reference that cannot be
 // fetched falls back to its cached copy; with no copy it is skipped, which
@@ -71,6 +71,7 @@ func (p *Pipeline) Evaluate(ctx context.Context, src Source, mmdbPath string) (E
 		{"dbip", "-dbip", p.fetchDBIP},
 		{"maxmind", "-maxmind", p.fetchMaxMind},
 		{"atlas", "-atlas", p.fetchAtlas},
+		{"geonames", "-geonames", p.fetchGeoNames},
 	} {
 		path, status := ref.fetch(ctx, client, dir, now)
 		if err := ctx.Err(); err != nil {

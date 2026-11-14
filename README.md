@@ -311,7 +311,7 @@ layer name (`layerRules`): `30-pdb` `-same-country`, `40-hosting` `-first-countr
 |---|---|---|
 | `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2 |
 | `build-mmdb` | `download` | runs `mmdbbuilder geo` on all the layer files → `ip2geo-openipdata-<date>.mmdb` |
-| `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2) against RIPE Atlas and a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
+| `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2) against RIPE Atlas (country and city) and our MMDB against a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
 
 A problem with the evaluation itself (holdout, `mmdbbuilder eval`, Postgres) does not fail the
@@ -406,13 +406,14 @@ task output (its scores are then left out of `metrics`, never zero):
 |---|---|---|
 | DB-IP Lite city (CC BY 4.0) | `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz`, this month's, last month's if not out yet | country and city agreement |
 | MaxMind GeoLite2 City (GeoLite EULA, attribution required) | `https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=...&suffix=tar.gz`, needs `MAXMIND_LICENSE_KEY`; skipped without it; no request while the local archive was checked less than 3 days ago (30 downloads a day) | country and city agreement, rating scores |
-| RIPE Atlas probes | `https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest` (daily JSON, bzip2): connected probes with a public IPv4 address and a country, kept as `atlas-probes.csv` (`ip,country,lat,lon`) | per-probe country accuracy |
+| RIPE Atlas probes | `https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest` (daily JSON, bzip2): connected probes with a public IPv4 address and a country, kept as `atlas-probes.csv` (`ip,country,lat,lon`) | per-probe country and city accuracy |
+| GeoNames `cities1000` (CC BY 4.0, attribution: GeoNames, geonames.org) | `https://download.geonames.org/export/dump/cities1000.zip`, `cities1000.txt` unpacked; own copy in the eval dir, no request while the local archive was checked less than 7 days ago | places our city names (we have no coordinates) for `atlas_city_pct` |
 | Geofeed holdout | a frozen 10% of the feeds (`public.geofeed_urls` rows with `id % 10 = 0` first seen before 2026-11-11, so the sample does not move when the feed list changes) are left out of a second build, `holdout.mmdb`, with the real build's arguments | how well the lower layers guess what operators declared |
 
 The MaxMind key is a secret and sits in the download URL: every error of that
 request is replaced by a fixed message (an HTTP status stays), so it never reaches a log, a task
 output or a returned error. Attribution for the references when their numbers are shown: DB-IP Lite by
-DB-IP.com (CC BY 4.0); this product includes GeoLite2 data created by MaxMind.
+DB-IP.com (CC BY 4.0); this product includes GeoLite2 data created by MaxMind; city places from GeoNames (geonames.org, CC BY 4.0).
 
 The holdout is scored on the held-out IPv4 rows (`holdout-truth.csv`: `prefix,country,city`) that no
 kept row covers or lies inside, so it measures the lower layers, not the overlap of two feeds. The
@@ -428,6 +429,7 @@ Metrics (percentages with 2 decimals; address-weighted unless said otherwise):
 | `maxmind_country_agree_pct`, `maxmind_city_agree_pct` | the same for MaxMind GeoLite2 City |
 | `vendor_consensus_country_agree_pct` | over addresses where at least two of the references given have a country and a strict majority of them agree, how often we have that country |
 | `atlas_probes`, `atlas_country_pct` | per probe: probes in the file; share whose country we have right (no answer counts as wrong) |
+| `atlas_city_probes`, `atlas_city_pct`, `atlas_city_unresolved` | per probe with coordinates: probes scored; share where we name a city whose GeoNames place (country + name, the most populous on a clash; name, ascii name and alternate names) is within 50 km of the probe (no answer, no city or an unplaced city is a miss); probes where we named a city GeoNames could not place. Left out without `-geonames` |
 | `holdout_prefixes`, `holdout_country_pct`, `holdout_city_pct` | per held-out prefix: prefixes scored; share with the right country; share with the right city among those that name one |
 
 Rating scores: every reference `X` (`dbip`, `maxmind`) is scored like ours, against the
@@ -437,11 +439,13 @@ same truth, with its own data as it is:
 |---|---|
 | `X_country_pct`, `X_city_pct` | share of the IPv4 space in the RIR layer that `X` has a country, a city for |
 | `X_atlas_country_pct` | per probe: share whose country `X` has right (same probes as `atlas_probes`) |
-| `X_holdout_country_pct`, `X_holdout_city_pct` | the held-out prefixes looked up in `X` itself (ours uses `holdout.mmdb`) |
+| `X_atlas_city_pct` | per probe with coordinates (`atlas_city_probes`): share where `X` names a city whose own `location` is within 50 km of the probe; a record without a city (its coordinates are a country centroid) is a miss |
 
-Vendors may ingest the same geofeeds and Atlas data that make up the holdout and the probes, so these
-scores can favor them over a build that leaves the holdout out. Keys of older runs stay in
-`public.geo_eval` as they were.
+The references have no holdout scores (`dbip_holdout_country_pct`, `dbip_holdout_city_pct`,
+`maxmind_holdout_country_pct`, `maxmind_holdout_city_pct` were removed): vendors ingest the same
+geofeeds, so the holdout is not held out from them. Our own `holdout_*` scores stay. Atlas city for ours
+depends on placing our city names (see `atlas_city_unresolved`), while a reference uses its own
+coordinates; vendors may also use Atlas probe locations. Keys of older runs stay in `public.geo_eval` as they were.
 
 Publish gate: before publishing, the new `atlas_country_pct` and `holdout_country_pct` are compared
 with the latest row where `published` is true. If either fell by more than 2.0 points (only scores
@@ -533,7 +537,7 @@ openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule
 openipdata-worker run-rdns-rules -codes [-domains a.net,b.net] [-force] # only the LLM task propose-codes (needs OPENROUTER_API_KEY)
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
-mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f.mmdb>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
+mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
