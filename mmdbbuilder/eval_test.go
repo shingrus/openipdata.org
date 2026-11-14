@@ -11,8 +11,8 @@ import (
 	"github.com/maxmind/mmdbwriter/mmdbtype"
 )
 
-// refDB writes a reference database in the shape of DB-IP (country.iso_code,
-// city.names.en) or, with city empty, IPinfo (country_code).
+// refDB writes a reference database in the shape of DB-IP and GeoLite2
+// (country.iso_code, city.names.en) or, with kind "plain", one with country_code only.
 func refDB(t *testing.T, path, kind string, rows [][3]string) string {
 	t.Helper()
 	writer, err := newWriter(kind, kind)
@@ -21,7 +21,7 @@ func refDB(t *testing.T, path, kind string, rows [][3]string) string {
 	}
 	for _, r := range rows {
 		var record mmdbtype.Map
-		if kind == "dbip" {
+		if kind != "plain" {
 			record = mmdbtype.Map{
 				"country": mmdbtype.Map{"iso_code": mmdbtype.String(r[1])},
 				"city":    mmdbtype.Map{"names": mmdbtype.Map{"en": mmdbtype.String(r[2])}},
@@ -60,12 +60,22 @@ func TestEvaluate(t *testing.T) {
 		{"45.0.2.0/24", "NL", "Paris"},
 		{"45.0.3.0/24", "FR", "Lyon"}, // we have nothing here
 	})
-	ipinfo := refDB(t, filepath.Join(dir, "ipinfo.mmdb"), "ipinfo", [][3]string{
-		{"45.0.0.0/25", "US", ""},
-		{"45.0.0.128/25", "CA", ""},
-		{"45.0.1.0/24", "DE", ""},
-		{"45.0.2.0/24", "NL", ""},
+	maxmind := refDB(t, filepath.Join(dir, "maxmind.mmdb"), "maxmind", [][3]string{
+		{"45.0.0.0/24", "US", "Dallas"},
+		{"45.0.1.0/25", "DE", "Berlin"},
+		{"45.0.1.128/25", "AT", "Vienna"},
+		{"45.0.2.0/24", "FR", "Paris"},
 	})
+	// 45.0.0.0 is 754974720. A row that does not parse, a row without data and
+	// one that overlaps the row before are skipped; "-" is unknown.
+	ip2location := writeFile(t, filepath.Join(dir, "ip2location.csv"),
+		"\"0\",\"16777215\",\"-\",\"-\",\"-\",\"-\",\"0.0\",\"0.0\",\"-\",\"-\"\n"+
+			"\"754974720\",\"754974975\",\"US\",\"United States of America\",\"Texas\",\"Dallas\",\"32.7\",\"-96.8\",\"75201\",\"-06:00\"\n"+
+			"\"abc\",\"def\",\"US\",\"x\",\"x\",\"Nowhere\",\"0\",\"0\",\"-\",\"-\"\n"+
+			"\"754974976\",\"754975231\",\"DE\",\"Germany\",\"Berlin\",\"-\",\"52.5\",\"13.4\",\"-\",\"+01:00\"\n"+
+			"\"754975000\",\"754975100\",\"JP\",\"Japan\",\"Tokyo\",\"Tokyo\",\"0\",\"0\",\"-\",\"-\"\n"+
+			"\"754975232\",\"754975487\",\"NL\",\"Netherlands\",\"Utrecht\",\"Paris\",\"0\",\"0\",\"-\",\"-\"\n"+
+			"\"754975488\",\"754975743\",\"-\",\"-\",\"-\",\"-\",\"0\",\"0\",\"-\",\"-\"\n")
 	atlas := writeFile(t, filepath.Join(dir, "atlas.csv"), "ip,country,lat,lon\n"+
 		"45.0.0.5,US,1,2\n45.0.1.5,DE,1,2\n45.0.2.5,NL,1,2\n45.0.3.5,FR,1,2\nnope,US,1,2\n2a00::1,DE,1,2\n")
 	holdoutRIR := writeFile(t, filepath.Join(dir, "holdout-cities.csv.gz"), "prefix,country,city\n"+
@@ -77,7 +87,7 @@ func TestEvaluate(t *testing.T) {
 	truth := writeFile(t, filepath.Join(dir, "truth.csv"), "prefix,country,city\n"+
 		"45.0.0.0/24,US,Dallas\n45.0.1.0/24,DE,Berlin\n45.0.2.0/24,FR,Paris\n45.0.3.0/24,FR,\n")
 
-	m, err := evaluate(evalInputs{db: ours, rir: rir, dbip: dbip, ipinfo: ipinfo, atlas: atlas, holdoutDB: holdout, holdoutTruth: truth})
+	m, err := evaluate(evalInputs{db: ours, rir: rir, dbip: dbip, maxmind: maxmind, ip2location: ip2location, atlas: atlas, holdoutDB: holdout, holdoutTruth: truth})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,15 +95,40 @@ func TestEvaluate(t *testing.T) {
 		got  *float64
 		want float64
 	}{
-		"country_pct":                 {m.CountryPct, 60},               // 768 of 1,280
-		"city_pct":                    {m.CityPct, 40},                  // Dallas 128, Berlin 256, Paris 128
-		"dbip_country_agree_pct":      {m.DBIPCountryAgreePct, 66.67},   // 512 of 768
-		"dbip_city_agree_pct":         {m.DBIPCityAgreePct, 66.67},      // Berlin 256 agrees, Dallas/Austin 128 does not
-		"ipinfo_country_agree_pct":    {m.IPinfoCountryAgreePct, 50},    // 384 of 768
-		"consensus_country_agree_pct": {m.ConsensusCountryAgreePct, 60}, // US 128, DE 256 and NL 256 agreed; we have FR for NL
-		"atlas_country_pct":           {m.AtlasCountryPct, 50},
-		"holdout_country_pct":         {m.HoldoutCountryPct, 50},
-		"holdout_city_pct":            {m.HoldoutCityPct, 33.33},
+		// Ours: the same numbers as before the references were scored.
+		"country_pct":            {m.CountryPct, 60}, // 768 of 1,280
+		"city_pct":               {m.CityPct, 40},    // Dallas 128, Berlin 256, Paris 128
+		"atlas_country_pct":      {m.AtlasCountryPct, 50},
+		"holdout_country_pct":    {m.HoldoutCountryPct, 50},
+		"holdout_city_pct":       {m.HoldoutCityPct, 33.33},
+		"dbip_country_agree_pct": {m.DBIPCountryAgreePct, 66.67}, // 512 of 768
+		"dbip_city_agree_pct":    {m.DBIPCityAgreePct, 66.67},    // Berlin 256 agrees, Dallas/Austin 128 does not
+
+		"maxmind_country_agree_pct":     {m.MaxMindCountryAgreePct, 83.33}, // 640 of 768: 45.0.1.128/25 is AT
+		"maxmind_city_agree_pct":        {m.MaxMindCityAgreePct, 100},      // 384 of 384
+		"ip2location_country_agree_pct": {m.IP2LocationCountryAgreePct, 66.67},
+		"ip2location_city_agree_pct":    {m.IP2LocationCityAgreePct, 100}, // only Dallas, 128 of 128
+
+		// US, DE, DE (2 of 3 on 45.0.1.128/25) agree with us; NL 256 (2 of 3) does not; 45.0.3.0/24 has one vote.
+		"vendor_consensus_country_agree_pct": {m.VendorConsensusCountryAgreePct, 66.67},
+
+		"dbip_country_pct":         {m.DBIPCountryPct, 80},
+		"dbip_city_pct":            {m.DBIPCityPct, 80},
+		"dbip_atlas_country_pct":   {m.DBIPAtlasCountryPct, 100},
+		"dbip_holdout_country_pct": {m.DBIPHoldoutCountryPct, 75},
+		"dbip_holdout_city_pct":    {m.DBIPHoldoutCityPct, 66.67}, // Berlin, Paris (right city, wrong country)
+
+		"maxmind_country_pct":         {m.MaxMindCountryPct, 60},
+		"maxmind_city_pct":            {m.MaxMindCityPct, 60},
+		"maxmind_atlas_country_pct":   {m.MaxMindAtlasCountryPct, 50},
+		"maxmind_holdout_country_pct": {m.MaxMindHoldoutCountryPct, 75},
+		"maxmind_holdout_city_pct":    {m.MaxMindHoldoutCityPct, 100},
+
+		"ip2location_country_pct":         {m.IP2LocationCountryPct, 60},
+		"ip2location_city_pct":            {m.IP2LocationCityPct, 40},
+		"ip2location_atlas_country_pct":   {m.IP2LocationAtlasCountryPct, 75},
+		"ip2location_holdout_country_pct": {m.IP2LocationHoldoutCountryPct, 50},
+		"ip2location_holdout_city_pct":    {m.IP2LocationHoldoutCityPct, 66.67},
 	} {
 		if !approx(c.got, c.want) {
 			t.Errorf("%s = %v, want %v", name, c.got, c.want)
@@ -101,6 +136,81 @@ func TestEvaluate(t *testing.T) {
 	}
 	if m.AtlasProbes == nil || *m.AtlasProbes != 4 || m.HoldoutPrefixes == nil || *m.HoldoutPrefixes != 4 {
 		t.Errorf("probes %v, holdout prefixes %v", m.AtlasProbes, m.HoldoutPrefixes)
+	}
+
+	// Two references are enough for a consensus; one is not.
+	m, err = evaluate(evalInputs{db: ours, rir: rir, dbip: dbip, maxmind: maxmind})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both agree on US 256 and DE 128 (we agree) and 45.0.2.0/24 never (NL against FR).
+	if !approx(m.VendorConsensusCountryAgreePct, 100) || m.IP2LocationCountryPct != nil || m.IP2LocationAtlasCountryPct != nil {
+		t.Errorf("two references: consensus %v, %+v", m.VendorConsensusCountryAgreePct, m)
+	}
+	if m, err = evaluate(evalInputs{db: ours, rir: rir, ip2location: ip2location}); err != nil || m.VendorConsensusCountryAgreePct != nil || m.IP2LocationCountryAgreePct == nil {
+		t.Errorf("one reference: %+v %v", m, err)
+	}
+}
+
+func TestLoadIP2Location(t *testing.T) {
+	dir := t.TempDir()
+	ids := names{}
+	path := writeFile(t, filepath.Join(dir, "a.csv"), "\"16777216\",\"16777471\",\"AU\",\"Australia\",\"Queensland\",\"South Brisbane\",\"0\",\"0\",\"-\",\"-\"\n"+
+		"\"16777472\",\"16778239\",\"AU\",\"Australia\",\"Queensland\",\" South Brisbane \",\"0\",\"0\",\"-\",\"-\"\n"+ // merges with the row before
+		"\"16778240\",\"16778495\",\"-\",\"x\",\"x\",\"-\",\"0\",\"0\",\"-\",\"-\"\n"+ // no country, no city: nothing
+		"\"5\",\"3\",\"AU\",\"x\",\"x\",\"x\",\"0\",\"0\",\"-\",\"-\"\n"+ // from after to
+		"\"4294967040\",\"4294967295\",\"US\",\"x\",\"x\",\"-\",\"0\",\"0\",\"-\",\"-\"\n")
+	got, err := loadIP2Location(path, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	au, city, us := ids.id("AU"), ids.id("south brisbane"), ids.id("US")
+	want := []rng{{lo: 16777216, hi: 16778239, country: au, city: city}, {lo: 4294967040, hi: math.MaxUint32, country: us}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ranges = %v, want %v", got, want)
+	}
+	lookup := rangeLookup(got, ids.reverse())
+	if c, ci, _ := lookup(netip.MustParseAddr("1.0.3.255")); c != "AU" || ci != "south brisbane" {
+		t.Errorf("lookup = %q %q", c, ci)
+	}
+	for _, a := range []string{"1.0.4.0", "0.0.0.0", "255.255.254.255"} {
+		if c, ci, _ := lookup(netip.MustParseAddr(a)); c != "" || ci != "" {
+			t.Errorf("lookup %s = %q %q", a, c, ci)
+		}
+	}
+	if c, _, _ := lookup(netip.MustParseAddr("255.255.255.255")); c != "US" {
+		t.Errorf("last address = %q", c)
+	}
+	if _, err := loadIP2Location(writeFile(t, filepath.Join(dir, "b.csv"), "<html>limit reached</html>\n"), names{}); err == nil {
+		t.Error("a file without rows: no error")
+	}
+}
+
+func TestSweep(t *testing.T) {
+	type seg struct {
+		lo, hi uint32
+		in     [3]bool
+	}
+	lists := [][]rng{
+		{{lo: 0, hi: 9}, {lo: math.MaxUint32 - 1, hi: math.MaxUint32}},
+		{{lo: 5, hi: 24}},
+		{{lo: 8, hi: 9}, {lo: 30, hi: 30}},
+	}
+	var got []seg
+	sweep(lists, func(lo, hi uint32, active []*rng) {
+		s := seg{lo: lo, hi: hi}
+		for k, r := range active {
+			s.in[k] = r != nil
+		}
+		got = append(got, s)
+	})
+	want := []seg{
+		{0, 4, [3]bool{true, false, false}}, {5, 7, [3]bool{true, true, false}}, {8, 9, [3]bool{true, true, true}},
+		{10, 24, [3]bool{false, true, false}}, {30, 30, [3]bool{false, false, true}},
+		{math.MaxUint32 - 1, math.MaxUint32, [3]bool{true, false, false}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("segments = %v\nwant       %v", got, want)
 	}
 }
 

@@ -149,7 +149,9 @@ type Pipeline struct {
 	GitHubToken string
 	GitHubRepo  string // owner/name of the repo whose "latest" release gets the MMDB
 	HCPing      string // optional healthchecks.io ping URL
-	IPinfoToken string // optional; without it Evaluate skips the IPinfo reference. A secret: never log it
+	// Optional; without one Evaluate skips that reference. Secrets: never log them.
+	MaxMindKey       string // MAXMIND_LICENSE_KEY
+	IP2LocationToken string // IP2LOCATION_TOKEN
 
 	// Tests only.
 	stats        []struct{ Name, URL string }

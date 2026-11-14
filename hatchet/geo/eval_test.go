@@ -1,6 +1,8 @@
 package geo
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -218,59 +220,245 @@ func TestGateDecision(t *testing.T) {
 
 const testToken = "tok-4f9c1d7e-SECRET"
 
-// An error from a request whose URL holds the token must not repeat it, for
-// any kind of failure.
-func TestIPinfoTokenNeverShown(t *testing.T) {
+// tarGzMMDB is a MaxMind archive: GeoLite2-City_YYYYMMDD/GeoLite2-City.mmdb among other files.
+func tarGzMMDB(t *testing.T, mmdb string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, f := range [][2]string{
+		{"GeoLite2-City_20261110/COPYRIGHT.txt", "copyright"},
+		{"GeoLite2-City_20261110/GeoLite2-City.mmdb", mmdb},
+	} {
+		tw.WriteHeader(&tar.Header{Name: f[0], Mode: 0o644, Size: int64(len(f[1])), Typeflag: tar.TypeReg})
+		tw.Write([]byte(f[1]))
+	}
+	tw.Close()
+	gz.Close()
+	return buf.Bytes()
+}
+
+const testIP2LocationRow = "\"16777216\",\"16777471\",\"AU\",\"Australia\",\"Queensland\",\"South Brisbane\",\"-27.4\",\"153.0\",\"4101\",\"+10:00\"\n"
+
+func zipIP2Location(t *testing.T, csv string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range [][2]string{{"LICENSE-CC-BY-SA-4.0.TXT", "license"}, {"IP2LOCATION-LITE-DB11.CSV", csv}} {
+		w, _ := zw.Create(f[0])
+		w.Write([]byte(f[1]))
+	}
+	zw.Close()
+	return buf.Bytes()
+}
+
+// An error from a request whose URL holds the key must not repeat it, for any
+// kind of failure; the age gate keeps the daily limit; a failed or bad
+// download falls back to the copy of an earlier run.
+func TestMaxMindKeyNeverShown(t *testing.T) {
 	dir := t.TempDir()
-	mmdb := []byte("some data\xab\xcd\xefMaxMind.com{metadata}")
-	status := http.StatusOK
+	body := tarGzMMDB(t, "some data\xab\xcd\xefMaxMind.com{metadata}")
+	status, requests := http.StatusOK, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("token") != testToken {
-			t.Errorf("token %q not sent", r.URL.Query().Get("token"))
+		requests++
+		q := r.URL.Query()
+		if q.Get("license_key") != testToken || q.Get("edition_id") != "GeoLite2-City" || q.Get("suffix") != "tar.gz" {
+			t.Errorf("query %q", r.URL.RawQuery)
 		}
 		if status != http.StatusOK {
 			http.Error(w, "no", status)
 			return
 		}
-		w.Write(mmdb)
+		w.Write(body)
 	}))
-	p := &Pipeline{IPinfoToken: testToken, refURLs: &evalURLs{ipinfo: server.URL + "/data/ipinfo_lite.mmdb"}}
+	p := &Pipeline{MaxMindKey: testToken, refURLs: &evalURLs{maxmind: server.URL + "/app/geoip_download"}}
 	ctx, client := context.Background(), server.Client()
-	path := filepath.Join(dir, "ipinfo_lite.mmdb")
+	path := filepath.Join(dir, "geolite2-city.mmdb")
+	now := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
 
-	if got, st := p.fetchIPinfo(ctx, client, dir, time.Now()); got != path || st != download.Downloaded {
+	if got, st := p.fetchMaxMind(ctx, client, dir, now); got != path || st != download.Downloaded || !looksLikeMMDB(path) {
 		t.Fatalf("download: %q %q", got, st)
+	}
+	// Within 3 days there is no request at all, even one that would fail.
+	status = http.StatusInternalServerError
+	if got, st := p.fetchMaxMind(ctx, client, dir, now.Add(2*24*time.Hour)); got != path || st != download.Cached || requests != 1 {
+		t.Errorf("age gate: %q %q after %d requests", got, st, requests)
 	}
 
 	// An HTTP error keeps its status, not the URL; the cached copy is used.
 	status = http.StatusUnauthorized
-	got, st := p.fetchIPinfo(ctx, client, dir, time.Now())
-	if got != path || st != "stale: IPinfo: HTTP 401" {
+	later := now.Add(4 * 24 * time.Hour)
+	got, st := p.fetchMaxMind(ctx, client, dir, later)
+	if got != path || st != "stale: MaxMind: HTTP 401" || requests != 2 {
 		t.Errorf("HTTP 401: %q %q", got, st)
+	}
+
+	// A refused connection: Go's own error holds the URL with the key.
+	server.Close()
+	_, rawErr := download.File(ctx, client, server.URL+"/app/geoip_download?license_key="+testToken, filepath.Join(dir, "raw"))
+	if rawErr == nil || !strings.Contains(rawErr.Error(), testToken) {
+		t.Fatalf("the test needs an error that repeats the key, got %v", rawErr)
+	}
+	got, st = p.fetchMaxMind(ctx, client, dir, later)
+	if got != path || strings.Contains(st, testToken) || st != "stale: "+errMaxMind.Error() {
+		t.Errorf("connection refused with a copy: %q %q", got, st)
+	}
+	if strings.Contains(refError("MaxMind", errMaxMind, rawErr).Error(), testToken) {
+		t.Error("refError repeats the key")
+	}
+	os.Remove(filepath.Join(dir, "geolite2-city.tar.gz"))
+	os.Remove(path)
+	got, st = p.fetchMaxMind(ctx, client, dir, later)
+	if got != "" || strings.Contains(st, testToken) || st != "skipped: "+errMaxMind.Error() {
+		t.Errorf("connection refused, no copy: %q %q", got, st)
+	}
+
+	// No key, no request.
+	p.MaxMindKey = ""
+	if got, st = p.fetchMaxMind(ctx, client, dir, later); got != "" || st != "skipped: MAXMIND_LICENSE_KEY is not set" {
+		t.Errorf("no key: %q %q", got, st)
+	}
+}
+
+// A download that is not an archive with the MMDB drops the bad archive but
+// keeps using an older unpacked copy.
+func TestFetchMaxMindBadArchive(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(body) }))
+	defer server.Close()
+	p := &Pipeline{MaxMindKey: testToken, refURLs: &evalURLs{maxmind: server.URL}}
+	ctx, now := context.Background(), time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	for name, bad := range map[string][]byte{
+		"not gzip":       []byte("Invalid license key"),
+		"no mmdb":        tarGzMMDB(t, "not a database"),
+		"gzip, not tar":  gzipBytes("plain text"),
+		"only a license": nil,
+	} {
+		body = bad
+		dir := t.TempDir()
+		old := filepath.Join(dir, "geolite2-city.mmdb")
+		os.WriteFile(old, []byte("old\xab\xcd\xefMaxMind.com{metadata}"), 0o640)
+		path, status := p.fetchMaxMind(ctx, server.Client(), dir, now)
+		if path != old || !strings.HasPrefix(status, "stale: ") {
+			t.Errorf("%s: old copy: %q %q", name, path, status)
+		}
+		for _, f := range []string{"geolite2-city.tar.gz", "geolite2-city.tar.gz.etag", "geolite2-city.tar.gz.checked"} {
+			if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+				t.Errorf("%s: %s was kept", name, f)
+			}
+		}
+		if path, status = p.fetchMaxMind(ctx, server.Client(), t.TempDir(), now); path != "" || !strings.HasPrefix(status, "skipped: ") {
+			t.Errorf("%s: no old copy: %q %q", name, path, status)
+		}
+	}
+}
+
+func gzipBytes(s string) []byte {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	gz.Write([]byte(s))
+	gz.Close()
+	return buf.Bytes()
+}
+
+func TestIP2LocationTokenNeverShown(t *testing.T) {
+	dir := t.TempDir()
+	zipped := zipIP2Location(t, testIP2LocationRow)
+	status, requests := http.StatusOK, 0
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		q := r.URL.Query()
+		if q.Get("token") != testToken || q.Get("file") != "DB11LITE" {
+			t.Errorf("query %q", r.URL.RawQuery)
+		}
+		if status != http.StatusOK {
+			http.Error(w, "no", status)
+			return
+		}
+		w.Write(body)
+	}))
+	p := &Pipeline{IP2LocationToken: testToken, refURLs: &evalURLs{ip2location: server.URL + "/download/"}}
+	ctx, client := context.Background(), server.Client()
+	path := filepath.Join(dir, "ip2location-lite-db11.csv")
+	now := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	body = zipped
+	if got, st := p.fetchIP2Location(ctx, client, dir, now); got != path || st != download.Downloaded || !looksLikeIP2LocationCSV(path) {
+		t.Fatalf("download: %q %q", got, st)
+	}
+	// Within 7 days there is no request.
+	status = http.StatusInternalServerError
+	if got, st := p.fetchIP2Location(ctx, client, dir, now.Add(6*24*time.Hour)); got != path || st != download.Cached || requests != 1 {
+		t.Errorf("age gate: %q %q after %d requests", got, st, requests)
+	}
+
+	later := now.Add(8 * 24 * time.Hour)
+	status = http.StatusForbidden
+	if got, st := p.fetchIP2Location(ctx, client, dir, later); got != path || st != "stale: IP2Location: HTTP 403" || requests != 2 {
+		t.Errorf("HTTP 403: %q %q", got, st)
+	}
+
+	// HTTP 200 with a text (limit reached, bad token) is a failed download:
+	// the old copy stays, the bad file goes, and the next run asks again.
+	status = http.StatusOK
+	body = []byte("THIS FILE CAN ONLY BE DOWNLOADED 5 TIMES PER DAY")
+	got, st := p.fetchIP2Location(ctx, client, dir, later)
+	if got != path || !strings.HasPrefix(st, "stale: ") || strings.Contains(st, testToken) || !looksLikeIP2LocationCSV(path) {
+		t.Errorf("text body: %q %q", got, st)
+	}
+	for _, f := range []string{"ip2location-lite-db11.zip", "ip2location-lite-db11.zip.etag", "ip2location-lite-db11.zip.checked"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			t.Errorf("%s was kept", f)
+		}
+	}
+	// A second run within a day makes no request; after a day it asks again.
+	if got, st = p.fetchIP2Location(ctx, client, dir, later.Add(23*time.Hour)); got != path || !strings.HasPrefix(st, "stale: ") || requests != 3 {
+		t.Errorf("backoff: %q %q after %d requests", got, st, requests)
+	}
+	later = later.Add(25 * time.Hour)
+	body = zipped
+	if got, st = p.fetchIP2Location(ctx, client, dir, later); got != path || st != download.Downloaded || requests != 4 {
+		t.Errorf("after the text: %q %q after %d requests", got, st, requests)
+	}
+	// A zip without the CSV is bad as well; without an old copy nothing is used.
+	body = func() []byte {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, _ := zw.Create("README.TXT")
+		w.Write([]byte("hi"))
+		zw.Close()
+		return buf.Bytes()
+	}()
+	if got, st = p.fetchIP2Location(ctx, client, t.TempDir(), later); got != "" || !strings.HasPrefix(st, "skipped: ") {
+		t.Errorf("zip without CSV: %q %q", got, st)
 	}
 
 	// A refused connection: Go's own error holds the URL with the token.
 	server.Close()
-	_, rawErr := download.File(ctx, client, server.URL+"/data/ipinfo_lite.mmdb?token="+testToken, filepath.Join(dir, "raw"))
+	_, rawErr := download.File(ctx, client, server.URL+"/download/?token="+testToken, filepath.Join(dir, "raw"))
 	if rawErr == nil || !strings.Contains(rawErr.Error(), testToken) {
 		t.Fatalf("the test needs an error that repeats the token, got %v", rawErr)
 	}
-	got, st = p.fetchIPinfo(ctx, client, dir, time.Now())
-	if got != path || strings.Contains(st, testToken) || st != "stale: "+errIPinfo.Error() {
+	later = later.Add(8 * 24 * time.Hour)
+	got, st = p.fetchIP2Location(ctx, client, dir, later)
+	if got != path || strings.Contains(st, testToken) || st != "stale: "+errIP2Location.Error() {
 		t.Errorf("connection refused with a copy: %q %q", got, st)
 	}
-	os.Remove(path)
-	got, st = p.fetchIPinfo(ctx, client, dir, time.Now())
-	if got != "" || strings.Contains(st, testToken) || st != "skipped: "+errIPinfo.Error() {
-		t.Errorf("connection refused, no copy: %q %q", got, st)
+	if strings.Contains(refError("IP2Location", errIP2Location, rawErr).Error(), testToken) {
+		t.Error("refError repeats the token")
 	}
-	if strings.Contains(ipinfoError(rawErr).Error(), testToken) {
-		t.Error("ipinfoError repeats the token")
+	os.Remove(filepath.Join(dir, "ip2location-lite-db11.zip"))
+	os.Remove(path)
+	got, st = p.fetchIP2Location(ctx, client, dir, later)
+	if got != "" || strings.Contains(st, testToken) || st != "skipped: "+errIP2Location.Error() {
+		t.Errorf("connection refused, no copy: %q %q", got, st)
 	}
 
 	// No token, no request.
-	p.IPinfoToken = ""
-	if got, st = p.fetchIPinfo(ctx, client, dir, time.Now()); got != "" || !strings.HasPrefix(st, "skipped: ") {
+	p.IP2LocationToken = ""
+	if got, st = p.fetchIP2Location(ctx, client, dir, later); got != "" || st != "skipped: IP2LOCATION_TOKEN is not set" {
 		t.Errorf("no token: %q %q", got, st)
 	}
 }

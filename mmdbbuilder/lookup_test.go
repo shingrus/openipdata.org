@@ -97,7 +97,7 @@ func TestWriteCitiesKeepsOldOutputOnFailure(t *testing.T) {
 // Records that are not in the "geo" shape (no city_name) give no row.
 func TestWriteCitiesOtherRecords(t *testing.T) {
 	dir := t.TempDir()
-	db := refDB(t, filepath.Join(dir, "ipinfo.mmdb"), "ipinfo", [][3]string{{"45.0.0.0/24", "US", ""}})
+	db := refDB(t, filepath.Join(dir, "plain.mmdb"), "plain", [][3]string{{"45.0.0.0/24", "US", ""}})
 	in := writeFile(t, filepath.Join(dir, "ips.txt"), "45.0.0.1\n")
 	out := filepath.Join(dir, "cities.tsv")
 	stats, err := writeCities(db, in, out)

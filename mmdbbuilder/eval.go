@@ -6,6 +6,10 @@ package main
 // Address-weighted scores walk the IPv4 networks of two databases together
 // (both sorted, so one pass), per-probe and per-prefix scores look addresses
 // up. A reference that is not given leaves its scores out of the output.
+//
+// The reference databases (DB-IP, MaxMind GeoLite2 City, IP2Location LITE DB11)
+// are scored like ours: coverage of the RIR space, the RIPE Atlas probes and
+// the holdout rows, each looked up in the reference itself.
 
 import (
 	"encoding/binary"
@@ -17,6 +21,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/oschwald/maxminddb-golang/v2"
@@ -27,7 +32,8 @@ type evalInputs struct {
 	db           string // the MMDB to score
 	rir          string // RIR layer: the IPv4 space that should have a country
 	dbip         string // DB-IP city MMDB
-	ipinfo       string // IPinfo country MMDB
+	maxmind      string // MaxMind GeoLite2 City MMDB
+	ip2location  string // IP2Location LITE DB11 CSV (IPv4)
 	atlas        string // truth CSV ip,country,lat,lon
 	holdoutDB    string // MMDB built without the held-out geofeeds
 	holdoutTruth string // truth CSV prefix,country,city of the held-out rows
@@ -39,11 +45,15 @@ type evalMetrics struct {
 	CountryPct *float64 `json:"country_pct,omitempty"`
 	CityPct    *float64 `json:"city_pct,omitempty"`
 
-	DBIPCountryAgreePct *float64 `json:"dbip_country_agree_pct,omitempty"`
-	DBIPCityAgreePct    *float64 `json:"dbip_city_agree_pct,omitempty"`
-
-	IPinfoCountryAgreePct    *float64 `json:"ipinfo_country_agree_pct,omitempty"`
-	ConsensusCountryAgreePct *float64 `json:"consensus_country_agree_pct,omitempty"`
+	// How often our place equals each reference's, over the addresses both have.
+	DBIPCountryAgreePct        *float64 `json:"dbip_country_agree_pct,omitempty"`
+	DBIPCityAgreePct           *float64 `json:"dbip_city_agree_pct,omitempty"`
+	MaxMindCountryAgreePct     *float64 `json:"maxmind_country_agree_pct,omitempty"`
+	MaxMindCityAgreePct        *float64 `json:"maxmind_city_agree_pct,omitempty"`
+	IP2LocationCountryAgreePct *float64 `json:"ip2location_country_agree_pct,omitempty"`
+	IP2LocationCityAgreePct    *float64 `json:"ip2location_city_agree_pct,omitempty"`
+	// Where a strict majority of the references (at least two with a country) agree, how often we do.
+	VendorConsensusCountryAgreePct *float64 `json:"vendor_consensus_country_agree_pct,omitempty"`
 
 	AtlasProbes     *int     `json:"atlas_probes,omitempty"`
 	AtlasCountryPct *float64 `json:"atlas_country_pct,omitempty"`
@@ -51,6 +61,42 @@ type evalMetrics struct {
 	HoldoutPrefixes   *int     `json:"holdout_prefixes,omitempty"`
 	HoldoutCountryPct *float64 `json:"holdout_country_pct,omitempty"`
 	HoldoutCityPct    *float64 `json:"holdout_city_pct,omitempty"`
+
+	// The reference databases scored like ours (the holdout rows are looked up in the reference itself).
+	DBIPCountryPct        *float64 `json:"dbip_country_pct,omitempty"`
+	DBIPCityPct           *float64 `json:"dbip_city_pct,omitempty"`
+	DBIPAtlasCountryPct   *float64 `json:"dbip_atlas_country_pct,omitempty"`
+	DBIPHoldoutCountryPct *float64 `json:"dbip_holdout_country_pct,omitempty"`
+	DBIPHoldoutCityPct    *float64 `json:"dbip_holdout_city_pct,omitempty"`
+
+	MaxMindCountryPct        *float64 `json:"maxmind_country_pct,omitempty"`
+	MaxMindCityPct           *float64 `json:"maxmind_city_pct,omitempty"`
+	MaxMindAtlasCountryPct   *float64 `json:"maxmind_atlas_country_pct,omitempty"`
+	MaxMindHoldoutCountryPct *float64 `json:"maxmind_holdout_country_pct,omitempty"`
+	MaxMindHoldoutCityPct    *float64 `json:"maxmind_holdout_city_pct,omitempty"`
+
+	IP2LocationCountryPct        *float64 `json:"ip2location_country_pct,omitempty"`
+	IP2LocationCityPct           *float64 `json:"ip2location_city_pct,omitempty"`
+	IP2LocationAtlasCountryPct   *float64 `json:"ip2location_atlas_country_pct,omitempty"`
+	IP2LocationHoldoutCountryPct *float64 `json:"ip2location_holdout_country_pct,omitempty"`
+	IP2LocationHoldoutCityPct    *float64 `json:"ip2location_holdout_city_pct,omitempty"`
+}
+
+// refSlots are the places in evalMetrics where the scores of one reference go.
+type refSlots struct {
+	countryAgree, cityAgree, country, city, atlas, holdoutCountry, holdoutCity **float64
+}
+
+func (m *evalMetrics) slots(key string) refSlots {
+	switch key {
+	case "dbip":
+		return refSlots{&m.DBIPCountryAgreePct, &m.DBIPCityAgreePct, &m.DBIPCountryPct, &m.DBIPCityPct, &m.DBIPAtlasCountryPct, &m.DBIPHoldoutCountryPct, &m.DBIPHoldoutCityPct}
+	case "maxmind":
+		return refSlots{&m.MaxMindCountryAgreePct, &m.MaxMindCityAgreePct, &m.MaxMindCountryPct, &m.MaxMindCityPct, &m.MaxMindAtlasCountryPct, &m.MaxMindHoldoutCountryPct, &m.MaxMindHoldoutCityPct}
+	case "ip2location":
+		return refSlots{&m.IP2LocationCountryAgreePct, &m.IP2LocationCityAgreePct, &m.IP2LocationCountryPct, &m.IP2LocationCityPct, &m.IP2LocationAtlasCountryPct, &m.IP2LocationHoldoutCountryPct, &m.IP2LocationHoldoutCityPct}
+	}
+	panic("eval: unknown reference " + key)
 }
 
 // rng is a block of IPv4 addresses lo..hi with its country and city, as ids
@@ -64,6 +110,15 @@ type rng struct {
 // names gives every distinct string an id, so countries and cities of
 // different databases compare as integers.
 type names map[string]uint32
+
+// reverse is the table the other way round: reverse()[id] is the string.
+func (n names) reverse() []string {
+	out := make([]string, len(n)+1)
+	for s, id := range n {
+		out[id] = s
+	}
+	return out
+}
 
 func (n names) id(s string) uint32 {
 	if s == "" {
@@ -102,8 +157,8 @@ func ourFields(res maxminddb.Result) (string, string, error) {
 	return r.Country, r.City, err
 }
 
-// dbipFields: country.iso_code and city.names.en, like GeoLite2.
-func dbipFields(res maxminddb.Result) (string, string, error) {
+// geoipFields: country.iso_code and city.names.en, as in DB-IP and GeoLite2.
+func geoipFields(res maxminddb.Result) (string, string, error) {
 	var r struct {
 		Country struct {
 			ISOCode string `maxminddb:"iso_code"`
@@ -116,15 +171,6 @@ func dbipFields(res maxminddb.Result) (string, string, error) {
 	}
 	err := res.Decode(&r)
 	return r.Country.ISOCode, r.City.Names.EN, err
-}
-
-// ipinfoFields: country_code (IPinfo Lite has no city).
-func ipinfoFields(res maxminddb.Result) (string, string, error) {
-	var r struct {
-		Country string `maxminddb:"country_code"`
-	}
-	err := res.Decode(&r)
-	return r.Country, "", err
 }
 
 var allIPv4 = netip.MustParsePrefix("0.0.0.0/0")
@@ -175,6 +221,63 @@ func loadRanges(reader *maxminddb.Reader, ids names, fields placeFields) ([]rng,
 		slices.SortFunc(out, func(a, b rng) int { return cmpU32(a.lo, b.lo) })
 	}
 	return out, nil
+}
+
+// loadIP2Location reads the IPv4 ranges of an IP2Location LITE DB11 CSV: no
+// header, quoted columns ip_from, ip_to (decimal numbers), country_code,
+// country_name, region_name, city_name, latitude, longitude, ... "-" means
+// unknown. Rows that do not parse (or overlap the row before) are skipped.
+func loadIP2Location(path string, ids names) ([]rng, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+	r.FieldsPerRecord = -1
+	var out []rng
+	for {
+		rec, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || len(rec) < 6 {
+			continue
+		}
+		lo, err1 := strconv.ParseUint(strings.TrimSpace(rec[0]), 10, 32)
+		hi, err2 := strconv.ParseUint(strings.TrimSpace(rec[1]), 10, 32)
+		if err1 != nil || err2 != nil || lo > hi {
+			continue
+		}
+		city := ""
+		if strings.TrimSpace(rec[5]) != "-" {
+			city = rec[5]
+		}
+		x := rng{lo: uint32(lo), hi: uint32(hi), country: ids.id(normCountry(rec[2])), city: ids.id(normCity(city))}
+		if x.country == 0 && x.city == 0 {
+			continue
+		}
+		out = append(out, x)
+	}
+	slices.SortStableFunc(out, func(a, b rng) int { return cmpU32(a.lo, b.lo) })
+	merged := out[:0]
+	for _, x := range out {
+		if n := len(merged); n > 0 {
+			prev := &merged[n-1]
+			if x.lo <= prev.hi {
+				continue // overlaps the row before
+			}
+			if prev.hi+1 == x.lo && prev.country == x.country && prev.city == x.city && prev.hi != math.MaxUint32 {
+				prev.hi = x.hi
+				continue
+			}
+		}
+		merged = append(merged, x)
+	}
+	if len(merged) == 0 {
+		return nil, fmt.Errorf("%s: no usable rows", path)
+	}
+	return merged, nil
 }
 
 func cmpU32(a, b uint32) int {
@@ -265,6 +368,46 @@ func join(a, b []rng, fn func(lo, hi uint32, x, y *rng)) {
 	}
 }
 
+// sweep walks any number of sorted lists of ranges together and calls fn for
+// each run of addresses that lies in the same range (or none) of every list;
+// active[k] is the range of list k, nil where it has none. Runs where no list
+// has a range are not reported. active is reused between calls.
+func sweep(lists [][]rng, fn func(lo, hi uint32, active []*rng)) {
+	idx := make([]int, len(lists))
+	active := make([]*rng, len(lists))
+	var pos uint64 // the first address not reported yet
+	for {
+		start := uint64(math.MaxUint32) + 1
+		for k, l := range lists {
+			for idx[k] < len(l) && uint64(l[idx[k]].hi) < pos {
+				idx[k]++
+			}
+			if idx[k] < len(l) {
+				start = min(start, max(pos, uint64(l[idx[k]].lo)))
+			}
+		}
+		if start > math.MaxUint32 {
+			return
+		}
+		end := uint64(math.MaxUint32)
+		for k, l := range lists {
+			active[k] = nil
+			if idx[k] >= len(l) {
+				continue
+			}
+			r := &l[idx[k]]
+			if uint64(r.lo) <= start {
+				active[k] = r
+				end = min(end, uint64(r.hi))
+			} else {
+				end = min(end, uint64(r.lo)-1)
+			}
+		}
+		fn(uint32(start), uint32(end), active)
+		pos = end + 1
+	}
+}
+
 // ratio is 100*part/total rounded to two decimals; nil when total is 0, so a
 // score without data is left out instead of reading as 0.
 func ratio(part, total uint64) *float64 {
@@ -277,7 +420,7 @@ func ratio(part, total uint64) *float64 {
 
 func count(n int) *int { return &n }
 
-// openDB opens an MMDB and loads its IPv4 ranges.
+// openRanges opens an MMDB and loads its IPv4 ranges.
 func openRanges(path string, ids names, fields placeFields) ([]rng, error) {
 	reader, err := maxminddb.Open(path)
 	if err != nil {
@@ -291,10 +434,91 @@ func openRanges(path string, ids names, fields placeFields) ([]rng, error) {
 	return ranges, nil
 }
 
+// reference is one reference database loaded as ranges.
+type reference struct {
+	key    string
+	ranges []rng
+}
+
+// agreement is how often ours has the same country (and, where both have one,
+// the same city) as the reference, over the addresses where both have a country.
+func agreement(ours, ref []rng) (country, city *float64) {
+	var both, same, cityBoth, citySame uint64
+	join(ours, ref, func(lo, hi uint32, x, y *rng) {
+		if x == nil || y == nil || x.country == 0 || y.country == 0 {
+			return
+		}
+		n := uint64(hi) - uint64(lo) + 1
+		both += n
+		if x.country != y.country {
+			return
+		}
+		same += n
+		if x.city != 0 && y.city != 0 {
+			cityBoth += n
+			if x.city == y.city {
+				citySame += n
+			}
+		}
+	})
+	return ratio(same, both), ratio(citySame, cityBoth)
+}
+
+// coverage is the share of the delegated space that has a country, and a city.
+func coverage(db, space []rng, total uint64) (country, city *float64) {
+	var withCountry, withCity uint64
+	join(db, space, func(lo, hi uint32, x, y *rng) {
+		if x == nil || y == nil {
+			return
+		}
+		n := uint64(hi) - uint64(lo) + 1
+		if x.country != 0 {
+			withCountry += n
+		}
+		if x.city != 0 {
+			withCity += n
+		}
+	})
+	return ratio(withCountry, total), ratio(withCity, total)
+}
+
+// consensus returns the ranges where at least two of the references have a
+// country and a strict majority of those agree, with that country.
+func consensus(refs []reference) []rng {
+	lists := make([][]rng, len(refs))
+	for i, r := range refs {
+		lists[i] = r.ranges
+	}
+	var out []rng
+	votes := map[uint32]int{}
+	sweep(lists, func(lo, hi uint32, active []*rng) {
+		clear(votes)
+		n := 0
+		for _, r := range active {
+			if r != nil && r.country != 0 {
+				votes[r.country]++
+				n++
+			}
+		}
+		if n < 2 {
+			return
+		}
+		for country, v := range votes {
+			if v*2 > n {
+				out = append(out, rng{lo: lo, hi: hi, country: country})
+			}
+		}
+	})
+	return out
+}
+
 // evaluate computes the scores for the inputs that are set.
 func evaluate(in evalInputs) (*evalMetrics, error) {
 	if in.db == "" || in.rir == "" {
 		return nil, errors.New("eval needs -db and -rir")
+	}
+	if (in.holdoutDB == "") != (in.holdoutTruth == "") {
+		return nil, errors.New("eval needs both -holdout-db and -holdout-truth")
 	}
 	ids := names{}
 	space, err := loadSpace(in.rir)
@@ -315,73 +539,39 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 	m := &evalMetrics{}
 
 	// Completeness: how much of the delegated space has a country or a city.
-	var withCountry, withCity uint64
-	join(ours, space, func(lo, hi uint32, x, y *rng) {
-		if x == nil || y == nil {
-			return
-		}
-		n := uint64(hi) - uint64(lo) + 1
-		if x.country != 0 {
-			withCountry += n
-		}
-		if x.city != 0 {
-			withCity += n
-		}
-	})
-	m.CountryPct, m.CityPct = ratio(withCountry, total), ratio(withCity, total)
+	m.CountryPct, m.CityPct = coverage(ours, space, total)
 
-	var dbip, ipinfo []rng
+	var refs []reference
 	if in.dbip != "" {
-		if dbip, err = openRanges(in.dbip, ids, dbipFields); err != nil {
+		ranges, err := openRanges(in.dbip, ids, geoipFields)
+		if err != nil {
 			return nil, err
 		}
-		var both, same, cityBoth, citySame uint64
-		join(ours, dbip, func(lo, hi uint32, x, y *rng) {
-			if x == nil || y == nil || x.country == 0 || y.country == 0 {
-				return
-			}
-			n := uint64(hi) - uint64(lo) + 1
-			both += n
-			if x.country != y.country {
-				return
-			}
-			same += n
-			if x.city != 0 && y.city != 0 {
-				cityBoth += n
-				if x.city == y.city {
-					citySame += n
-				}
-			}
-		})
-		m.DBIPCountryAgreePct, m.DBIPCityAgreePct = ratio(same, both), ratio(citySame, cityBoth)
+		refs = append(refs, reference{"dbip", ranges})
 	}
-	if in.ipinfo != "" {
-		if ipinfo, err = openRanges(in.ipinfo, ids, ipinfoFields); err != nil {
+	if in.maxmind != "" {
+		ranges, err := openRanges(in.maxmind, ids, geoipFields)
+		if err != nil {
 			return nil, err
 		}
-		var both, same uint64
-		join(ours, ipinfo, func(lo, hi uint32, x, y *rng) {
-			if x == nil || y == nil || x.country == 0 || y.country == 0 {
-				return
-			}
-			n := uint64(hi) - uint64(lo) + 1
-			both += n
-			if x.country == y.country {
-				same += n
-			}
-		})
-		m.IPinfoCountryAgreePct = ratio(same, both)
+		refs = append(refs, reference{"maxmind", ranges})
 	}
-	if dbip != nil && ipinfo != nil {
-		// Where the two references agree with each other, do we agree too?
-		var consensus []rng
-		join(dbip, ipinfo, func(lo, hi uint32, x, y *rng) {
-			if x != nil && y != nil && x.country != 0 && x.country == y.country {
-				consensus = append(consensus, rng{lo: lo, hi: hi, country: x.country})
-			}
-		})
+	if in.ip2location != "" {
+		ranges, err := loadIP2Location(in.ip2location, ids)
+		if err != nil {
+			return nil, err
+		}
+		refs = append(refs, reference{"ip2location", ranges})
+	}
+	for _, ref := range refs {
+		slots := m.slots(ref.key)
+		*slots.countryAgree, *slots.cityAgree = agreement(ours, ref.ranges)
+		*slots.country, *slots.city = coverage(ref.ranges, space, total)
+	}
+	if len(refs) >= 2 {
+		// Where most of the references agree with each other, do we agree too?
 		var both, same uint64
-		join(ours, consensus, func(lo, hi uint32, x, y *rng) {
+		join(ours, consensus(refs), func(lo, hi uint32, x, y *rng) {
 			if x == nil || y == nil || x.country == 0 {
 				return
 			}
@@ -391,33 +581,39 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 				same += n
 			}
 		})
-		m.ConsensusCountryAgreePct = ratio(same, both)
+		m.VendorConsensusCountryAgreePct = ratio(same, both)
 	}
 
+	// Lookups of ours and of each reference, for the probes and the holdout rows.
+	reverse := ids.reverse()
 	if in.atlas != "" {
 		reader, err := maxminddb.Open(in.db)
 		if err != nil {
 			return nil, err
 		}
 		defer reader.Close()
-		probes, ok, err := scoreProbes(reader, in.atlas)
+		probes, ok, err := scoreProbes(mmdbLookup(reader), in.atlas)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", in.atlas, err)
 		}
 		if probes > 0 {
 			m.AtlasProbes, m.AtlasCountryPct = count(probes), ratio(uint64(ok), uint64(probes))
+			for _, ref := range refs {
+				_, refOK, err := scoreProbes(rangeLookup(ref.ranges, reverse), in.atlas)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", in.atlas, err)
+				}
+				*m.slots(ref.key).atlas = ratio(uint64(refOK), uint64(probes))
+			}
 		}
 	}
-	if in.holdoutDB != "" || in.holdoutTruth != "" {
-		if in.holdoutDB == "" || in.holdoutTruth == "" {
-			return nil, errors.New("eval needs both -holdout-db and -holdout-truth")
-		}
+	if in.holdoutDB != "" {
 		reader, err := maxminddb.Open(in.holdoutDB)
 		if err != nil {
 			return nil, err
 		}
 		defer reader.Close()
-		s, err := scoreHoldout(reader, in.holdoutTruth)
+		s, err := scoreHoldout(mmdbLookup(reader), in.holdoutTruth)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", in.holdoutTruth, err)
 		}
@@ -425,6 +621,15 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 			m.HoldoutPrefixes = count(s.rows)
 			m.HoldoutCountryPct = ratio(uint64(s.countryOK), uint64(s.rows))
 			m.HoldoutCityPct = ratio(uint64(s.cityOK), uint64(s.cityRows))
+			for _, ref := range refs {
+				rs, err := scoreHoldout(rangeLookup(ref.ranges, reverse), in.holdoutTruth)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", in.holdoutTruth, err)
+				}
+				slots := m.slots(ref.key)
+				*slots.holdoutCountry = ratio(uint64(rs.countryOK), uint64(rs.rows))
+				*slots.holdoutCity = ratio(uint64(rs.cityOK), uint64(rs.cityRows))
+			}
 		}
 	}
 	return m, nil
@@ -473,18 +678,44 @@ func readTruth(path string, columns []string, fn func(fields []string)) error {
 	}
 }
 
-// lookupPlace returns the normalized country and city of one address.
-func lookupPlace(reader *maxminddb.Reader, addr netip.Addr) (country, city string, err error) {
-	res := reader.Lookup(addr)
-	if !res.Found() {
-		return "", "", res.Err()
+// lookupFunc returns the normalized country and city of one IPv4 address.
+type lookupFunc func(netip.Addr) (country, city string, err error)
+
+// mmdbLookup looks addresses up in one of our MMDBs (country_code, city_name).
+func mmdbLookup(reader *maxminddb.Reader) lookupFunc {
+	return func(addr netip.Addr) (string, string, error) {
+		res := reader.Lookup(addr)
+		if !res.Found() {
+			return "", "", res.Err()
+		}
+		country, city, err := ourFields(res)
+		return normCountry(country), normCity(city), err
 	}
-	country, city, err = ourFields(res)
-	return normCountry(country), normCity(city), err
 }
 
-// scoreProbes counts the probes (ip,country,lat,lon) whose country we have right.
-func scoreProbes(reader *maxminddb.Reader, path string) (probes, ok int, err error) {
+// rangeLookup looks addresses up in sorted ranges (a reference database);
+// reverse turns their ids back into strings.
+func rangeLookup(ranges []rng, reverse []string) lookupFunc {
+	return func(addr netip.Addr) (string, string, error) {
+		n := addrNumber(addr)
+		i, found := slices.BinarySearchFunc(ranges, n, func(r rng, n uint32) int {
+			switch {
+			case r.hi < n:
+				return -1
+			case r.lo > n:
+				return 1
+			}
+			return 0
+		})
+		if !found {
+			return "", "", nil
+		}
+		return reverse[ranges[i].country], reverse[ranges[i].city], nil
+	}
+}
+
+// scoreProbes counts the probes (ip,country,lat,lon) and those whose country the database has right.
+func scoreProbes(lookup lookupFunc, path string) (probes, ok int, err error) {
 	var lookupErr error
 	err = readTruth(path, []string{"ip", "country"}, func(f []string) {
 		addr, perr := netip.ParseAddr(strings.TrimSpace(f[0]))
@@ -492,7 +723,7 @@ func scoreProbes(reader *maxminddb.Reader, path string) (probes, ok int, err err
 		if perr != nil || !addr.Unmap().Is4() || want == "" {
 			return
 		}
-		got, _, lerr := lookupPlace(reader, addr.Unmap())
+		got, _, lerr := lookup(addr.Unmap())
 		if lerr != nil {
 			lookupErr = lerr
 			return
@@ -511,8 +742,8 @@ type holdoutScore struct {
 }
 
 // scoreHoldout looks up the first address of each held-out prefix
-// (prefix,country,city) in the database built without its feed.
-func scoreHoldout(reader *maxminddb.Reader, path string) (holdoutScore, error) {
+// (prefix,country,city) in a database.
+func scoreHoldout(lookup lookupFunc, path string) (holdoutScore, error) {
 	var s holdoutScore
 	var lookupErr error
 	err := readTruth(path, []string{"prefix", "country", "city"}, func(f []string) {
@@ -521,7 +752,7 @@ func scoreHoldout(reader *maxminddb.Reader, path string) (holdoutScore, error) {
 		if perr != nil || !p.Addr().Is4() || want == "" {
 			return
 		}
-		got, gotCity, lerr := lookupPlace(reader, p.Masked().Addr())
+		got, gotCity, lerr := lookup(p.Masked().Addr())
 		if lerr != nil {
 			lookupErr = lerr
 			return

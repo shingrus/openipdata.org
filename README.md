@@ -311,7 +311,7 @@ layer name (`layerRules`): `30-pdb` `-same-country`, `40-hosting` `-first-countr
 |---|---|---|
 | `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2 |
 | `build-mmdb` | `download` | runs `mmdbbuilder geo` on all the layer files → `ip2geo-openipdata-<date>.mmdb` |
-| `evaluate` | `download`, `build-mmdb` | scores the MMDB against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
+| `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2, IP2Location LITE) against RIPE Atlas and a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
 
 A problem with the evaluation itself (holdout, `mmdbbuilder eval`, Postgres) does not fail the
@@ -385,7 +385,7 @@ unpublished `public.geo_eval` row of the same date.
 - Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB
   is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2geo-openipdata.mmdb`.
 - Needs `PGSQL` and `R2` always, and `GITHUB_TOKEN` to publish; a missing setting fails
-  `download` without retries. `IPINFO_TOKEN` is optional (see below). Manual runs can pass
+  `download` without retries. `MAXMIND_LICENSE_KEY` and `IP2LOCATION_TOKEN` are optional (see below). Manual runs can pass
   `{"skip_publish": true}` (or `run-geo -skip-publish`) to build and evaluate without uploading,
   and `{"skip_layers": ["40-hosting.csv.gz"]}` to leave an optional layer (`40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`) out of the build
   and the holdout build; any other name fails `download` without retries.
@@ -405,12 +405,16 @@ task output (its scores are then left out of `metrics`, never zero):
 | Reference | Source | Used for |
 |---|---|---|
 | DB-IP Lite city (CC BY 4.0) | `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz`, this month's, last month's if not out yet | country and city agreement |
-| IPinfo Lite (country) | `https://ipinfo.io/data/ipinfo_lite.mmdb?token=...`, needs `IPINFO_TOKEN`; skipped without it | country agreement |
+| MaxMind GeoLite2 City (GeoLite EULA, attribution required) | `https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=...&suffix=tar.gz`, needs `MAXMIND_LICENSE_KEY`; skipped without it; no request while the local archive was checked less than 3 days ago (30 downloads a day) | country and city agreement, rating scores |
+| IP2Location LITE DB11 (CC BY-SA 4.0, attribution required) | `https://www.ip2location.com/download/?token=...&file=DB11LITE` (IPv4 CSV in a zip), needs `IP2LOCATION_TOKEN`; skipped without it; no request for 7 days, and after a failed download none for 1 day; an answer that is not a zip with the CSV (the service sends HTTP 200 and a text when a limit is reached) is a failed download | country and city agreement, rating scores |
 | RIPE Atlas probes | `https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest` (daily JSON, bzip2): connected probes with a public IPv4 address and a country, kept as `atlas-probes.csv` (`ip,country,lat,lon`) | per-probe country accuracy |
 | Geofeed holdout | a frozen 10% of the feeds (`public.geofeed_urls` rows with `id % 10 = 0` first seen before 2026-11-11, so the sample does not move when the feed list changes) are left out of a second build, `holdout.mmdb`, with the real build's arguments | how well the lower layers guess what operators declared |
 
-The IPinfo token is a secret and sits in the download URL: every error of that request is replaced
-by a fixed message, so it never reaches a log, a task output or a returned error.
+The MaxMind key and the IP2Location token are secrets and sit in the download URL: every error of those
+requests is replaced by a fixed message (an HTTP status stays), so they never reach a log, a task
+output or a returned error. Attribution for the references when their numbers are shown: DB-IP Lite by
+DB-IP.com (CC BY 4.0); this product includes GeoLite2 data created by MaxMind; IP2Location LITE data
+(CC BY-SA 4.0) from ip2location.com.
 
 The holdout is scored on the held-out IPv4 rows (`holdout-truth.csv`: `prefix,country,city`) that no
 kept row covers or lies inside, so it measures the lower layers, not the overlap of two feeds. The
@@ -423,10 +427,24 @@ Metrics (percentages with 2 decimals; address-weighted unless said otherwise):
 | `country_pct`, `city_pct` | share of the IPv4 space in the RIR layer (`10-rir.csv.gz`) that has a country, a city |
 | `dbip_country_agree_pct` | our country equals DB-IP's, over addresses both have a country for |
 | `dbip_city_agree_pct` | our city equals DB-IP's (case-insensitive, trimmed), over addresses where both have a city and the same country |
-| `ipinfo_country_agree_pct` | our country equals IPinfo's |
-| `consensus_country_agree_pct` | over addresses where DB-IP and IPinfo agree with each other, how often we agree with them |
+| `maxmind_country_agree_pct`, `maxmind_city_agree_pct` | the same for MaxMind GeoLite2 City |
+| `ip2location_country_agree_pct`, `ip2location_city_agree_pct` | the same for IP2Location LITE DB11 |
+| `vendor_consensus_country_agree_pct` | over addresses where at least two of the references given have a country and a strict majority of them agree, how often we have that country |
 | `atlas_probes`, `atlas_country_pct` | per probe: probes in the file; share whose country we have right (no answer counts as wrong) |
 | `holdout_prefixes`, `holdout_country_pct`, `holdout_city_pct` | per held-out prefix: prefixes scored; share with the right country; share with the right city among those that name one |
+
+Rating scores: every reference `X` (`dbip`, `maxmind`, `ip2location`) is scored like ours, against the
+same truth, with its own data as it is:
+
+| Metric | Meaning |
+|---|---|
+| `X_country_pct`, `X_city_pct` | share of the IPv4 space in the RIR layer that `X` has a country, a city for |
+| `X_atlas_country_pct` | per probe: share whose country `X` has right (same probes as `atlas_probes`) |
+| `X_holdout_country_pct`, `X_holdout_city_pct` | the held-out prefixes looked up in `X` itself (ours uses `holdout.mmdb`) |
+
+Vendors may ingest the same geofeeds and Atlas data that make up the holdout and the probes, so these
+scores can favor them over a build that leaves the holdout out. Keys of older runs stay in
+`public.geo_eval` as they were.
 
 Publish gate: before publishing, the new `atlas_country_pct` and `holdout_country_pct` are compared
 with the latest row where `published` is true. If either fell by more than 2.0 points (only scores
@@ -518,7 +536,7 @@ openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule
 openipdata-worker run-rdns-rules -codes [-domains a.net,b.net] [-force] # only the LLM task propose-codes (needs OPENROUTER_API_KEY)
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
-mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-ipinfo <f>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
+mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f.mmdb>] [-ip2location <f.csv>] [-atlas <probes.csv>] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs

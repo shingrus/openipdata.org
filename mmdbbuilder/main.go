@@ -4,7 +4,7 @@
 //	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>
-//	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
+//	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-ip2location <file.csv>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, a layer named in -same-country applies only where the country so
 // far is the same or unknown. A layer named in -within-first is used only for
@@ -50,7 +50,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-ipinfo <file.mmdb>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-ip2location <file.csv>] [-atlas <probes.csv>] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
 }
 
@@ -134,7 +134,8 @@ func runEval(args []string) {
 	flags.StringVar(&in.db, "db", "", "ip2geo MMDB to score")
 	flags.StringVar(&in.rir, "rir", "", "RIR layer CSV: the IPv4 space that should have a country")
 	flags.StringVar(&in.dbip, "dbip", "", "DB-IP city MMDB (optional)")
-	flags.StringVar(&in.ipinfo, "ipinfo", "", "IPinfo Lite MMDB (optional)")
+	flags.StringVar(&in.maxmind, "maxmind", "", "MaxMind GeoLite2 City MMDB (optional)")
+	flags.StringVar(&in.ip2location, "ip2location", "", "IP2Location LITE DB11 CSV, IPv4 (optional)")
 	flags.StringVar(&in.atlas, "atlas", "", "RIPE Atlas probes CSV ip,country,lat,lon (optional)")
 	flags.StringVar(&in.holdoutDB, "holdout-db", "", "MMDB built without the held-out geofeeds (optional, needs -holdout-truth)")
 	flags.StringVar(&in.holdoutTruth, "holdout-truth", "", "CSV prefix,country,city of the held-out rows (optional, needs -holdout-db)")

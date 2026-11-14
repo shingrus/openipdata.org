@@ -23,8 +23,8 @@
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
-// HC_PING_GEO (optional), IPINFO_TOKEN (optional, a secret: the IPinfo Lite
-// reference of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
+// HC_PING_GEO (optional), MAXMIND_LICENSE_KEY and IP2LOCATION_TOKEN (optional secrets: the
+// MaxMind GeoLite2 City and IP2Location LITE DB11 references of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // mmdbbuilder and scamper (resolve-ips; built without privilege separation) are expected next to this binary.
 package main
 
@@ -170,15 +170,16 @@ func newGeoPipeline(progress func(string)) (*geo.Pipeline, error) {
 		return nil, err
 	}
 	return &geo.Pipeline{
-		DataDir:     dataDir(),
-		PGSQL:       pgsql(),
-		MMDBBuilder: builder,
-		Progress:    progress,
-		R2:          env("R2"),
-		GitHubToken: env("GITHUB_TOKEN"),
-		GitHubRepo:  githubRepo(),
-		HCPing:      env("HC_PING_GEO"),
-		IPinfoToken: env("IPINFO_TOKEN"),
+		DataDir:          dataDir(),
+		PGSQL:            pgsql(),
+		MMDBBuilder:      builder,
+		Progress:         progress,
+		R2:               env("R2"),
+		GitHubToken:      env("GITHUB_TOKEN"),
+		GitHubRepo:       githubRepo(),
+		HCPing:           env("HC_PING_GEO"),
+		MaxMindKey:       env("MAXMIND_LICENSE_KEY"),
+		IP2LocationToken: env("IP2LOCATION_TOKEN"),
 	}, nil
 }
 
@@ -513,7 +514,7 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("build-geo-data",
-		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, IPinfo, RIPE Atlas and a geofeed holdout"),
+		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2, IP2Location LITE, RIPE Atlas and a geofeed holdout"),
 		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
 		hatchet.WithWorkflowCron("0 7,19 * * *"),
 		// Its own limit, not asn-db: it only reads the ASN tables.
