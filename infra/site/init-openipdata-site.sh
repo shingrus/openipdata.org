@@ -190,13 +190,13 @@ The TLS certificate is missing, so the nginx site is not enabled yet. Do this on
 1. Create a Cloudflare API token (My Profile, API Tokens) with the permission Zone:DNS:Edit
    for the zone $DOMAIN, and put it in $CF_CREDENTIALS (mode 0600):
 
-       install -d -m 0700 /root/.secrets
-       printf 'dns_cloudflare_api_token = <the token>\n' > $CF_CREDENTIALS
-       chmod 0600 $CF_CREDENTIALS
+       sudo install -d -m 0700 /root/.secrets
+       printf 'dns_cloudflare_api_token = <the token>\n' | sudo tee $CF_CREDENTIALS >/dev/null
+       sudo chmod 0600 $CF_CREDENTIALS
 
 2. Get the certificate:
 
-       certbot certonly --dns-cloudflare --dns-cloudflare-credentials $CF_CREDENTIALS -d $DOMAIN -d www.$DOMAIN
+       sudo certbot certonly --dns-cloudflare --dns-cloudflare-credentials $CF_CREDENTIALS -d $DOMAIN -d '*.$DOMAIN'
 
 3. Rerun this script:  sudo $SCRIPT_DIR/init-openipdata-site.sh
 MSG
