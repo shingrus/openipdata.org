@@ -190,8 +190,8 @@ func TestNoMMDB(t *testing.T) {
 		if !strings.Contains(body, "tested on devices whose real location is known.") {
 			t.Errorf("%s: sentence", name)
 		}
-		// Only an MMDB that opened can give "updated" (from its build epoch).
-		if got := strings.Contains(body, "updated"); got != (name == "no stamp") {
+		// Only an MMDB that opened can give "Updated" (from its build epoch); match any case.
+		if got := strings.Contains(strings.ToLower(body), "updated"); got != (name == "no stamp") {
 			t.Errorf("%s: updated = %v", name, got)
 		}
 	}
