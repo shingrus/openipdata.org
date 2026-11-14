@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision one Ubuntu 24.04 VM to serve openipdata.org behind Cloudflare: nginx, the site binary
 # (from the GitHub release "site"), the MMDB files (release "latest"), updater timers, firewall.
-# Run from a git clone: cd openipdata.org/site/deploy && sudo ./init-openipdata-site.sh
+# Run from a git clone: cd openipdata.org/infra/site && sudo ./init-openipdata-site.sh
 # Idempotent: rerun after `git pull` to update scripts, units and the nginx file; never overwrites an
 # existing env file. It never obtains the TLS certificate (certbot, Cloudflare DNS challenge, by hand):
 # without it everything else is installed, the nginx site stays disabled and the command is printed.

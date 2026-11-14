@@ -41,7 +41,7 @@ The `Publish site binary` workflow (Actions tab, Publish site binary, Run workfl
 
 One Ubuntu 24.04 VM runs nginx and the site behind Cloudflare. Only Cloudflare reaches nginx. Everything is installed by one script from a git clone:
 
-    cd openipdata.org/site/deploy
+    cd openipdata.org/infra/site
     sudo ./init-openipdata-site.sh
 
 The script is idempotent: rerun it after `git pull` to update scripts, units and the nginx file. It never overwrites `/etc/openipdata-site/openipdata-site.env`.
