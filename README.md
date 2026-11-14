@@ -1,11 +1,12 @@
 # openipdata.org
 
-Workers, workflows, builders, and the independently built Astro SSR website for openipdata.org.
+Workers, workflows, builders, and the website for openipdata.org.
 
-The website lives in [`web/`](web/README.md), uses npm and Node, and renders IP data
-from local MMDB/SQLite artifacts into the first HTML response. It builds separately
-from the Go modules. Application deployment and dataset refresh are independent;
-the initial website is local-only.
+The website lives in [`web/`](web/README.md). It is a Go module (`openipdata-web`):
+one static Go binary that renders pages with `html/template`, served behind nginx and
+Cloudflare. For now it serves the home page with the Accuracy panel, read from the
+scores stamped into the ip2geo MMDB's metadata. Deployment and the data puller are
+not implemented yet. It builds on its own, like the other Go modules.
 
 A Go [Hatchet](https://hatchet.run) worker runs the workflows on a VM.
 Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the tasks.
@@ -14,7 +15,7 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 
 | Path | Purpose |
 |---|---|
-| `web/` | Astro SSR website with local IP/ASN lookups; npm and Node |
+| `web/` | `openipdata-web`: Go website binary (`html/template`), home page with the Accuracy panel |
 | `docs/pipeline.md` | the whole pipeline on one page: workflows, data sources, tables, layers |
 | `infra/` | VM provisioning script, systemd unit, env template |
 | `hatchet/` | `openipdata-worker`: the Hatchet worker; one folder per workflow |
@@ -455,6 +456,8 @@ same truth, with its own data as it is:
 |---|---|
 | `X_country_pct`, `X_city_pct` | share of the IPv4 space in the RIR layer that `X` has a country, a city for |
 | `X_atlas_country_pct` | per probe: share whose country `X` has right (same probes as `atlas_probes`) |
+| `atlas_city_answered`, `atlas_city_precision_pct` | coverage versus accuracy: probes where we named a city GeoNames could place (an unplaced city is not answered), and the share of those within 50 km (`atlas_city_pct` is hits over all probes, so it mixes coverage and precision; precision is hits over answered). Left out without `-geonames` |
+| `X_atlas_city_answered`, `X_atlas_city_precision_pct` | same for `X`: probes where `X` names a city with its own coordinates, and the share of those within 50 km |
 | `X_atlas_city_pct` | per probe with coordinates (`atlas_city_probes`): share where `X` names a city whose own `location` is within 50 km of the probe; a record without a city (its coordinates are a country centroid) is a miss |
 
 The references have no holdout scores (`dbip_holdout_country_pct`, `dbip_holdout_city_pct`,

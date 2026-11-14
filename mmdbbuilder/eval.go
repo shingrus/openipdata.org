@@ -65,6 +65,10 @@ type evalMetrics struct {
 	AtlasCityProbes     *int     `json:"atlas_city_probes,omitempty"`
 	AtlasCityPct        *float64 `json:"atlas_city_pct,omitempty"`
 	AtlasCityUnresolved *int     `json:"atlas_city_unresolved,omitempty"`
+	// Coverage versus accuracy: the probes where the database named a city with
+	// coordinates, and the share of those within atlasCityKm.
+	AtlasCityAnswered     *int     `json:"atlas_city_answered,omitempty"`
+	AtlasCityPrecisionPct *float64 `json:"atlas_city_precision_pct,omitempty"`
 
 	HoldoutPrefixes   *int     `json:"holdout_prefixes,omitempty"`
 	HoldoutCountryPct *float64 `json:"holdout_country_pct,omitempty"`
@@ -76,23 +80,31 @@ type evalMetrics struct {
 	DBIPAtlasCountryPct *float64 `json:"dbip_atlas_country_pct,omitempty"`
 	DBIPAtlasCityPct    *float64 `json:"dbip_atlas_city_pct,omitempty"`
 
+	DBIPAtlasCityAnswered     *int     `json:"dbip_atlas_city_answered,omitempty"`
+	DBIPAtlasCityPrecisionPct *float64 `json:"dbip_atlas_city_precision_pct,omitempty"`
+
 	MaxMindCountryPct      *float64 `json:"maxmind_country_pct,omitempty"`
 	MaxMindCityPct         *float64 `json:"maxmind_city_pct,omitempty"`
 	MaxMindAtlasCountryPct *float64 `json:"maxmind_atlas_country_pct,omitempty"`
 	MaxMindAtlasCityPct    *float64 `json:"maxmind_atlas_city_pct,omitempty"`
+
+	MaxMindAtlasCityAnswered     *int     `json:"maxmind_atlas_city_answered,omitempty"`
+	MaxMindAtlasCityPrecisionPct *float64 `json:"maxmind_atlas_city_precision_pct,omitempty"`
 }
 
 // refSlots are the places in evalMetrics where the scores of one reference go.
 type refSlots struct {
 	countryAgree, cityAgree, country, city, atlas, atlasCity **float64
+	atlasCityAnswered                                        **int
+	atlasCityPrecisionPct                                    **float64
 }
 
 func (m *evalMetrics) slots(key string) refSlots {
 	switch key {
 	case "dbip":
-		return refSlots{&m.DBIPCountryAgreePct, &m.DBIPCityAgreePct, &m.DBIPCountryPct, &m.DBIPCityPct, &m.DBIPAtlasCountryPct, &m.DBIPAtlasCityPct}
+		return refSlots{&m.DBIPCountryAgreePct, &m.DBIPCityAgreePct, &m.DBIPCountryPct, &m.DBIPCityPct, &m.DBIPAtlasCountryPct, &m.DBIPAtlasCityPct, &m.DBIPAtlasCityAnswered, &m.DBIPAtlasCityPrecisionPct}
 	case "maxmind":
-		return refSlots{&m.MaxMindCountryAgreePct, &m.MaxMindCityAgreePct, &m.MaxMindCountryPct, &m.MaxMindCityPct, &m.MaxMindAtlasCountryPct, &m.MaxMindAtlasCityPct}
+		return refSlots{&m.MaxMindCountryAgreePct, &m.MaxMindCityAgreePct, &m.MaxMindCountryPct, &m.MaxMindCityPct, &m.MaxMindAtlasCountryPct, &m.MaxMindAtlasCityPct, &m.MaxMindAtlasCityAnswered, &m.MaxMindAtlasCityPrecisionPct}
 	}
 	panic("eval: unknown reference " + key)
 }
@@ -749,23 +761,25 @@ const (
 type cityPlacer func(netip.Addr) (lat, lon float64, answer cityAnswer, err error)
 
 // scoreCities counts the probes whose database city lies within atlasCityKm,
-// and those where a city was named but could not be placed.
-func scoreCities(probes []cityProbe, place cityPlacer) (ok, unresolved int, err error) {
+// those where a city was named but could not be placed, and those answered
+// with a city that has coordinates.
+func scoreCities(probes []cityProbe, place cityPlacer) (ok, unresolved, answered int, err error) {
 	for _, p := range probes {
 		lat, lon, answer, err := place(p.addr)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, 0, err
 		}
 		switch answer {
 		case unplaced:
 			unresolved++
 		case placedCity:
+			answered++
 			if haversineKm(p.lat, p.lon, lat, lon) <= atlasCityKm {
 				ok++
 			}
 		}
 	}
-	return ok, unresolved, nil
+	return ok, unresolved, answered, nil
 }
 
 // scoreAtlasCities sets the Atlas city scores: ours (placed with GeoNames) and
@@ -785,23 +799,26 @@ func scoreAtlasCities(m *evalMetrics, in evalInputs, ours *maxminddb.Reader, ref
 		if err != nil {
 			return fmt.Errorf("%s: %w", in.geonames, err)
 		}
-		ok, unresolved, err := scoreCities(probes, geoNamesPlacer(ours, index))
+		ok, unresolved, answered, err := scoreCities(probes, geoNamesPlacer(ours, index))
 		if err != nil {
 			return err
 		}
 		m.AtlasCityPct, m.AtlasCityUnresolved = ratio(uint64(ok), total), count(unresolved)
+		m.AtlasCityAnswered, m.AtlasCityPrecisionPct = count(answered), ratio(uint64(ok), uint64(answered))
 	}
 	for _, ref := range refs {
 		reader, err := maxminddb.Open(ref.path)
 		if err != nil {
 			return err
 		}
-		ok, _, err := scoreCities(probes, referencePlacer(reader))
+		ok, _, answered, err := scoreCities(probes, referencePlacer(reader))
 		reader.Close()
 		if err != nil {
 			return fmt.Errorf("%s: %w", ref.path, err)
 		}
-		*m.slots(ref.key).atlasCity = ratio(uint64(ok), total)
+		slots := m.slots(ref.key)
+		*slots.atlasCity = ratio(uint64(ok), total)
+		*slots.atlasCityAnswered, *slots.atlasCityPrecisionPct = count(answered), ratio(uint64(ok), uint64(answered))
 	}
 	return nil
 }

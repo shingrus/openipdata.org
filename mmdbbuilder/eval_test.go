@@ -367,15 +367,34 @@ func TestEvaluateAtlasCity(t *testing.T) {
 		}
 	}
 
+	// Answered = a city with coordinates; precision = hits / answered.
+	// Ours: P1, P2, P3 (P5 unplaced, P4 none), 2 hits. dbip: P1, P2, P3, P5, 3 hits.
+	// maxmind: P1, P2 (P3 has no coordinates), 1 hit.
+	for name, c := range map[string]struct {
+		n    *int
+		pct  *float64
+		wn   int
+		wpct float64
+	}{
+		"ours":    {m.AtlasCityAnswered, m.AtlasCityPrecisionPct, 3, 66.67},
+		"dbip":    {m.DBIPAtlasCityAnswered, m.DBIPAtlasCityPrecisionPct, 4, 75},
+		"maxmind": {m.MaxMindAtlasCityAnswered, m.MaxMindAtlasCityPrecisionPct, 2, 50},
+	} {
+		if c.n == nil || *c.n != c.wn || !approx(c.pct, c.wpct) {
+			t.Errorf("%s answered %v precision %v, want %d, %v", name, c.n, c.pct, c.wn, c.wpct)
+		}
+	}
+
 	// Without Berlin in GeoNames, P2 is unresolved instead of too far: still a miss.
 	in.geonames = noBerlin
-	if m, err = evaluate(in); err != nil || m.AtlasCityUnresolved == nil || *m.AtlasCityUnresolved != 2 || !approx(m.AtlasCityPct, 33.33) {
+	if m, err = evaluate(in); err != nil || m.AtlasCityUnresolved == nil || *m.AtlasCityUnresolved != 2 || !approx(m.AtlasCityPct, 33.33) ||
+		m.AtlasCityAnswered == nil || *m.AtlasCityAnswered != 2 || !approx(m.AtlasCityPrecisionPct, 100) {
 		t.Errorf("no Berlin: %+v %v", m, err)
 	}
 
 	// Without GeoNames ours is left out, the references and the probe count stay.
 	in.geonames = ""
-	if m, err = evaluate(in); err != nil || m.AtlasCityPct != nil || m.AtlasCityUnresolved != nil ||
+	if m, err = evaluate(in); err != nil || m.AtlasCityPct != nil || m.AtlasCityUnresolved != nil || m.AtlasCityAnswered != nil || m.AtlasCityPrecisionPct != nil ||
 		m.AtlasCityProbes == nil || !approx(m.DBIPAtlasCityPct, 50) {
 		t.Errorf("no GeoNames: %+v %v", m, err)
 	}
