@@ -1,6 +1,6 @@
 # Started by hand for now. A `push` to `master` with `paths: [site/**]` will be
 # added once the updater on the web servers is in place.
-name: site
+name: Publish site binary
 
 on:
   workflow_dispatch:
