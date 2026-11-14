@@ -21,7 +21,7 @@
 </header>
 <main>
 <section class="panel">
-<div class="head"><h1>Accuracy</h1>{{if .Updated}} <span class="r">updated <time datetime="{{.UpdatedISO}}">{{.UpdatedISO}}</time></span>{{end}}</div>
+<div class="head"><h1>Accuracy</h1>{{if .Updated}} <span class="r">Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time></span>{{end}}</div>
 <div class="acc">
 {{range .Cards}}<div><span class="num">{{.Num}}{{if .Pct}}<i>%</i>{{end}}</span><span class="lab">{{.Label}}</span><span class="bar" style="--v:{{.Bar}}"></span></div>
 {{end}}</div>
