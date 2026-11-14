@@ -1,0 +1,78 @@
+# Started by hand for now. A `push` to `master` with `paths: [site/**]` will be
+# added once the updater on the web servers is in place.
+name: site
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: site-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: site/go.mod
+          cache-dependency-path: site/go.sum
+
+      - name: Check and test
+        shell: bash
+        working-directory: site
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed for:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+          go vet ./...
+          go test -race ./...
+
+      - name: Build
+        shell: bash
+        working-directory: site
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_SHA}" -o ../dist/openipdata-site-linux-amd64 .
+          cd ../dist
+          sha256sum openipdata-site-linux-amd64 > openipdata-site-linux-amd64.sha256
+
+      # Runs on other branches only test and build.
+      - name: Publish release
+        if: github.ref == 'refs/heads/master'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          notes="Commit ${GITHUB_SHA}, built $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}."
+          if ! out="$(gh release view site --json tagName 2>&1)"; then
+            if grep -qi 'release not found' <<<"$out"; then
+              gh release create site --title "Website binary" --notes "$notes" --target "$GITHUB_SHA" --latest=false
+            else
+              echo "$out" >&2
+              exit 1
+            fi
+          fi
+          # The tag is not moved: with github.token, moving a ref across a change
+          # to .github/workflows can be refused. The commit is in the notes and /healthz.
+          # Binary first, then its checksum: a new checksum always has its binary.
+          # During an upload the binary can be missing for a moment, or newer than
+          # the checksum; the updater on the servers must treat a 404 or a checksum
+          # mismatch as "try again later", never as a failed release.
+          gh release upload site dist/openipdata-site-linux-amd64 --clobber
+          gh release upload site dist/openipdata-site-linux-amd64.sha256 --clobber
+          gh release edit site --latest=false --notes "$notes"

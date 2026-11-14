@@ -2,7 +2,7 @@
 
 Workers, workflows, builders, and the website for openipdata.org.
 
-The website lives in [`web/`](web/README.md). It is a Go module (`openipdata-web`):
+The website lives in [`site/`](site/README.md). It is a Go module (`openipdata-site`):
 one static Go binary that renders pages with `html/template`, served behind nginx and
 Cloudflare. For now it serves the home page with the Accuracy panel, read from the
 scores stamped into the ip2geo MMDB's metadata. Deployment and the data puller are
@@ -15,7 +15,7 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 
 | Path | Purpose |
 |---|---|
-| `web/` | `openipdata-web`: Go website binary (`html/template`), home page with the Accuracy panel |
+| `site/` | `openipdata-site`: Go website binary (`html/template`), home page with the Accuracy panel |
 | `docs/pipeline.md` | the whole pipeline on one page: workflows, data sources, tables, layers |
 | `infra/` | VM provisioning script, systemd unit, env template |
 | `hatchet/` | `openipdata-worker`: the Hatchet worker; one folder per workflow |

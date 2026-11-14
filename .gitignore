@@ -13,3 +13,8 @@
 
 .DS_Store
 .idea/
+
+# Website
+/site/openipdata-site
+!/site/testdata/stamped.mmdb
+!/site/testdata/unstamped.mmdb
