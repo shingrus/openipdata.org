@@ -287,7 +287,12 @@ REDIS
     install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/$BEACON_ZONE.conf" "$NGINX_R"
     if [[ -e "$R_CERT_DIR/fullchain.pem" && -e "$R_CERT_DIR/privkey.pem" ]]; then
         ln -sfn "$NGINX_R" "$NGINX_R_LINK"
-        nginx_apply || fail "nginx -t failed with $NGINX_R; see: nginx -t"
+        if ! nginx_apply; then
+            # Never leave a configuration nginx rejects: it would block every later reload (deploys,
+            # certificate renewals).
+            rm -f "$NGINX_R_LINK"
+            fail "nginx -t failed with $NGINX_R (the site was disabled again); enable it by hand and run nginx -t to see why"
+        fi
         log "nginx site $BEACON_ZONE enabled"
     else
         rm -f "$NGINX_R_LINK"
