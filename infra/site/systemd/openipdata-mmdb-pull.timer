@@ -1,5 +1,5 @@
 [Unit]
-Description=openipdata.org: look for new MMDB files every 10 minutes
+Description=openipdata.org: look for new data files every 10 minutes
 
 [Timer]
 OnCalendar=*:0/10

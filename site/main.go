@@ -8,6 +8,9 @@
 //	          /var/lib/openipdata-site/data/ip2geo-openipdata.mmdb)
 //	ASN_MMDB  path of the ip2asn MMDB: network, AS number and announced prefix
 //	          (default /var/lib/openipdata-site/data/ip2asn-openipdata.mmdb)
+//	ASN_SQLITE  path of the SQLite file with the ASN data, published by the
+//	          worker as asn-openipdata.sqlite3 (default
+//	          /var/lib/openipdata-site/data/asn-openipdata.sqlite3)
 //	REAL_IP_HEADER  header that holds the visitor address (default X-Real-IP;
 //	          set it to empty to use the address of the TCP connection).
 //	          Trusted only when the connection comes from loopback, i.e. from
@@ -21,7 +24,9 @@
 //	          has no second row and no script.
 //
 // Both MMDBs are opened again when their file changes; a missing file only
-// means unknown values on the page. Addresses are never logged.
+// means unknown values on the page. The ASN SQLite file is loaded again when
+// it changes; without it the ASN pages answer 503 and the rest works.
+// Addresses are never logged.
 package main
 
 import (
@@ -46,8 +51,8 @@ import (
 	"time"
 )
 
-//go:embed templates/home.html
-var homeTemplate string
+//go:embed templates/*.html
+var templateFiles embed.FS
 
 //go:embed static/fonts/*.woff2
 var fontFiles embed.FS
@@ -70,6 +75,7 @@ type server struct {
 	scores atomic.Pointer[scores]
 
 	geo, asn *mmdbFile // kept open for lookups
+	asnf     *asnFile  // the ASN data (SQLite), loaded into memory; nothing loaded until useASN
 	realIP   string    // header that holds the visitor address, or ""
 	v4, v6   string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
 	cspFill  string    // csp of a page that has the fill script
@@ -113,13 +119,13 @@ func checkURL(v string) error {
 }
 
 func newServer(geoPath, asnPath, realIP string) (*server, error) {
-	tmpl, err := template.New("home").Parse(homeTemplate)
+	tmpl, err := template.ParseFS(templateFiles, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
 	s := &server{
 		tmpl: tmpl, csp: csp(), fonts: map[string][]byte{},
-		geo: &mmdbFile{path: geoPath}, asn: &mmdbFile{path: asnPath},
+		geo: &mmdbFile{path: geoPath}, asn: &mmdbFile{path: asnPath}, asnf: &asnFile{},
 		realIP: realIP, public: isPublic,
 	}
 	for _, name := range []string{"geist-latin.woff2", "geist-mono-latin.woff2"} {
@@ -138,6 +144,15 @@ func newServer(geoPath, asnPath, realIP string) (*server, error) {
 	return s, nil
 }
 
+// useASN sets the SQLite file of the ASN pages and loads it. A missing or
+// unreadable file is not fatal: the ASN pages then answer 503 until check
+// finds a readable file.
+func (s *server) useASN(path string) {
+	s.asnf.path = path
+	s.asnf.onLoad = s.renderASNPages
+	s.asnf.reload()
+}
+
 // check opens the two MMDBs again when their files changed and takes the
 // scores from the new ip2geo file. A failed reload keeps what is in use (the
 // readers and the scores) and logs one line per distinct error.
@@ -147,6 +162,7 @@ func (s *server) check() {
 		s.scores.Store(&sc)
 	}
 	s.asn.reload()
+	s.asnf.reload()
 }
 
 func (s *server) watch(ctx context.Context) {
@@ -173,6 +189,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveHome(w, r)
 	case p == "/ip":
 		s.serveIP(w, r)
+	case s.serveASN(w, r):
 	case p == "/healthz":
 		w.Header().Set("Cache-Control", "no-store")
 		plain(w, http.StatusOK, "ok "+version+"\n")
@@ -221,6 +238,11 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		h.Set("Location", loc)
 		w.WriteHeader(http.StatusFound)
 		return
+	case "asn":
+		h.Set("Cache-Control", cache)
+		h.Set("Location", pagePath+q.asn)
+		w.WriteHeader(http.StatusFound)
+		return
 	case "bad":
 		code, input, cache = http.StatusBadRequest, q.input, "no-store"
 		p = panel{Title: "Lookup", Msg: "Not an IP address"}
@@ -243,7 +265,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	if fill {
 		h.Set("Content-Security-Policy", s.cspFill)
 	}
-	body, err := render(s.tmpl, v)
+	body, err := render(s.tmpl, "home.html", v)
 	if err != nil {
 		plain(w, http.StatusInternalServerError, "error\n")
 		return
@@ -332,6 +354,13 @@ func main() {
 	if info, err := os.Stat(asnDB); err == nil && info.IsDir() {
 		fatal("ASN_MMDB", errors.New("is a directory"))
 	}
+	asnSQLite := os.Getenv("ASN_SQLITE")
+	if asnSQLite == "" {
+		asnSQLite = "/var/lib/openipdata-site/data/asn-openipdata.sqlite3"
+	}
+	if info, err := os.Stat(asnSQLite); err == nil && info.IsDir() {
+		fatal("ASN_SQLITE", errors.New("is a directory"))
+	}
 	// Unset means X-Real-IP, so a new binary under an older unit still sees
 	// the visitor behind nginx; set but empty means no header is trusted.
 	realIP, isSet := os.LookupEnv("REAL_IP_HEADER")
@@ -357,6 +386,7 @@ func main() {
 		fatal("start", err)
 	}
 	s.useURLs(urls["V4_URL"], urls["V6_URL"])
+	s.useASN(asnSQLite)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go s.watch(ctx)
@@ -374,7 +404,7 @@ func main() {
 	if err != nil {
 		fatal("LISTEN", err)
 	}
-	log.Printf("openipdata-site %s listening on %s, geo %s, asn %s, real ip header %q", version, listen, mmdb, asnDB, realIP)
+	log.Printf("openipdata-site %s listening on %s, geo %s, asn %s, asn data %s, real ip header %q", version, listen, mmdb, asnDB, asnSQLite, realIP)
 	done := make(chan struct{})
 	go func() {
 		<-ctx.Done()

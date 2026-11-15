@@ -22,6 +22,9 @@ var styleCSS string
 // from scriptText(): the file without its first comment line and without
 // surrounding white space. Never built from request data.
 //
+//go:embed static/asn.css
+var asnCSS string
+
 //go:embed static/head.js
 var headSrc string
 
@@ -52,19 +55,24 @@ type card struct {
 	Pct             bool
 }
 
-type view struct {
+// pageBase is what every page has: the header, the lookup bar and the scripts.
+type pageBase struct {
 	HeadJS, ThemeJS template.JS
 	Fill            bool // the page has a row for fillJS to fill
 	FillJS          template.JS
 	CSS             template.CSS
-	Cards           []card
-	Probes          string
-	Updated         bool
-	UpdatedISO      string
-	UpdatedText     string
-	Panel           *panel
-	Input           string // lookup bar value
 	Title           string // the page title
+	Input           string // lookup bar value
+}
+
+type view struct {
+	pageBase
+	Cards       []card
+	Probes      string
+	Updated     bool
+	UpdatedISO  string
+	UpdatedText string
+	Panel       *panel
 }
 
 // fmtPct returns the number with one decimal, or false when v is missing,
@@ -96,7 +104,7 @@ func makeCard(label string, v float64) card {
 
 func makeView(s scores) view {
 	v := view{
-		HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), CSS: template.CSS(styleCSS),
+		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), CSS: template.CSS(styleCSS)},
 		Cards: []card{
 			makeCard("right country", s.Country),
 			makeCard("right city", s.City),
@@ -114,10 +122,10 @@ func makeView(s scores) view {
 	return v
 }
 
-// render executes the page template for v.
-func render(t *template.Template, v view) ([]byte, error) {
+// render executes the named page template for v.
+func render(t *template.Template, name string, v any) ([]byte, error) {
 	var b bytes.Buffer
-	if err := t.Execute(&b, v); err != nil {
+	if err := t.ExecuteTemplate(&b, name, v); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil

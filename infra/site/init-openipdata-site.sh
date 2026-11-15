@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision one Ubuntu 24.04 VM to serve openipdata.org behind Cloudflare: nginx, the site binary
 # (from the GitHub release "site", two instances openipdata-site@8080/@8081 that take turns),
-# the MMDB files (release "latest"), updater timers, firewall.
+# the data files (release "latest"), updater timers, firewall.
 # Run from a git clone: cd openipdata.org/infra/site && sudo ./init-openipdata-site.sh
 # Idempotent: rerun after `git pull` to update scripts, units and the nginx file; never overwrites an
 # existing env file. It never obtains the TLS certificate (certbot, Cloudflare DNS challenge, by hand):
@@ -239,8 +239,8 @@ migrate_old_service
 exec 9>&-
 
 # Data and binary. Each unit is a oneshot: start waits until it has finished.
-log "pulling the MMDB files"
-systemctl start openipdata-mmdb-pull.service || log "warning: the MMDB pull failed: journalctl -u openipdata-mmdb-pull"
+log "pulling the data files"
+systemctl start openipdata-mmdb-pull.service || log "warning: the data pull failed: journalctl -u openipdata-mmdb-pull"
 log "installing the site binary"
 systemctl start openipdata-site-update.service || log "warning: the binary update failed: journalctl -u openipdata-site-update"
 live_port="$(readlink "$LIVE_LINK" | sed -n 's/.*upstream-\([0-9]*\)\.conf$/\1/p')"
@@ -264,10 +264,10 @@ echo "site instances (active / enabled):"
 for p in 8080 8081; do
     printf '  openipdata-site@%s: %s / %s\n' "$p" "$(systemctl is-active "openipdata-site@$p" 2>&1 || true)" "$(systemctl is-enabled "openipdata-site@$p" 2>&1 || true)"
 done
-echo "MMDB files:"
+echo "data files:"
 shopt -s nullglob
-mmdbs=("$DATA_DIR"/*.mmdb)
-if ((${#mmdbs[@]})); then ls -l "${mmdbs[@]}"; else echo "  none yet"; fi
+files=("$DATA_DIR"/*.mmdb "$DATA_DIR"/*.sqlite3)
+if ((${#files[@]})); then ls -l "${files[@]}"; else echo "  none yet"; fi
 echo "timers:"
 systemctl list-timers --no-pager 'openipdata-*' || true
 

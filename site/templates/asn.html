@@ -1,0 +1,31 @@
+{{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
+{{template "top" .}}{{with .Notice}}<section class="panel">
+<div class="head"><h1>{{$.NoticeHead}}</h1></div>
+<p class="msg">{{.}}</p>
+</section>
+{{end}}{{with .Place}}<section class="panel">
+<div class="head"><h1>{{.Title}}</h1>{{if .JSON}}<a class="r" href="{{.JSON}}">JSON</a>{{end}}</div>
+<div class="conn w">
+<div class="place{{if .None}} none{{end}}{{if .Small}} s{{end}}"><h2>{{.Big}}</h2>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
+<dl>
+{{range .Rows}}<div><dt>{{.K}}</dt><dd>{{if .Href}}<a class="lnk" href="{{.Href}}">{{.V}}</a>{{else}}{{.V}}{{end}}</dd></div>
+{{end}}</dl>
+</div>
+</section>
+{{end}}{{range .Tables}}<section class="panel">
+<div class="head">{{if .H1}}<h1>{{.Title}}</h1>{{else}}<h2>{{.Title}}</h2>{{end}}{{if .Right}}<span class="r">{{.Right}}</span>{{end}}</div>
+<table class="tbl">
+<thead><tr>{{range .Cols}}<th{{if .Class}} class="{{.Class}}"{{end}}>{{.Name}}</th>{{end}}</tr></thead>
+<tbody>
+{{range .Rows}}<tr>{{template "cells" .}}</tr>
+{{end}}</tbody>
+</table>
+{{if .Note}}<p class="note">{{.Note}}{{if .NoteHref}} · <a href="{{.NoteHref}}">{{.NoteLink}}</a>{{end}}</p>
+{{end}}</section>
+{{end}}{{with .Pfx}}<section class="panel">
+<div class="head"><h2>Prefixes</h2></div>
+{{range .Groups}}<div class="pf"><h3>{{.Family}}</h3><ul>{{range .List}}<li>{{.}}</li>{{end}}</ul></div>
+{{end}}{{if .Note}}<p class="note">{{.Note}} <a href="{{.NoteHref}}">{{.NoteLink}}</a></p>
+{{end}}</section>
+{{end}}{{if .Tabs}}<nav class="links" aria-label="Rankings">{{range .Tabs}}{{if .Cur}}<span>{{.Text}}</span>{{else}}<a href="{{.Href}}">{{.Text}}</a>{{end}}{{end}}</nav>
+{{end}}{{template "bottom" .}}

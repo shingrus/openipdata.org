@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pulls the MMDB files from the rolling GitHub release "latest" into the site's data directory.
+# Pulls the data files (the two MMDBs and the ASN SQLite file) from the rolling GitHub release "latest" into the site's data directory.
 # Runs as openipdata-site from openipdata-mmdb-pull.service (timer, every 10 minutes).
 # One unauthenticated, conditional API call per run (ETag, 304 reuses the saved JSON). A file is downloaded only when its change key differs
 # from the saved one (<name>.key): the asset digest when GitHub gives one, else updated_at|size.
@@ -11,7 +11,9 @@ set -euo pipefail
 GITHUB_REPO="${GITHUB_REPO:-shingrus/openipdata.org}"
 API_URL="${API_URL:-https://api.github.com/repos/$GITHUB_REPO/releases/tags/latest}"
 DATA_DIR="${DATA_DIR:-/var/lib/openipdata-site/data}"
-ASSETS=(ip2geo-openipdata.mmdb ip2asn-openipdata.mmdb)
+ASSETS=(ip2geo-openipdata.mmdb ip2asn-openipdata.mmdb asn-openipdata.sqlite3)
+# Not in the release until the worker has published it once: absent with no local copy is "not published yet", not a failure.
+LATE_ASSET=asn-openipdata.sqlite3
 
 log() {
     printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -88,6 +90,10 @@ for name in "${ASSETS[@]}"; do
     row="$(jq -r --arg n "$name" '[.assets[]? | select(.name == $n)][0] // empty
         | [(.digest // "-"), (.updated_at // "-"), ((.size // 0) | tostring), (.browser_download_url // "-")] | @tsv' <<<"$json" 2>/dev/null || true)"
     if [[ -z "$row" ]]; then
+        if [[ "$name" == "$LATE_ASSET" && ! -e "$file" ]]; then
+            log "$name is not published yet"
+            continue
+        fi
         log "error: $name is not in the release; keeping the old file"
         failures=$((failures + 1))
         continue

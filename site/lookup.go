@@ -99,8 +99,9 @@ func clientAddr(r *http.Request, header string) (netip.Addr, bool) {
 
 // query is what the raw query string of "/" asks for.
 type query struct {
-	kind  string     // "visitor" (the home page), "lookup" (the canonical address), "redirect" (to "/" or to the canonical URL) or "bad"
+	kind  string     // "visitor" (the home page), "lookup" (the canonical address), "redirect" (to "/" or to the canonical URL), "asn" (redirect to the page of an AS number) or "bad"
 	addr  netip.Addr // lookup, and redirect to the canonical URL (invalid: redirect to "/")
+	asn   string     // asn: the number without leading zeros
 	input string     // bad: the text to put back into the input, already cut
 }
 
@@ -135,6 +136,9 @@ func parseQuery(raw string) query {
 	} else if t, err := url.PathUnescape(raw); err == nil {
 		text = t
 	}
+	if n, ok := asnInput(text); ok {
+		return query{kind: "asn", asn: n}
+	}
 	if a, ok := parseAddr(text); ok {
 		if kind == "lookup" && raw != a.String() {
 			kind = "redirect" // another spelling of the address
@@ -142,6 +146,20 @@ func parseQuery(raw string) query {
 		return query{kind: kind, addr: a}
 	}
 	return query{kind: "bad", input: cut(text)}
+}
+
+// asnInput reads "AS15169" or "as15169" (no space, any case, the number in
+// range 1 to 4294967295; a bare number is not an AS).
+func asnInput(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 3 || !strings.EqualFold(s[:2], "as") {
+		return "", false
+	}
+	n, canon, ok := asNumber(s[2:])
+	if !ok || n == 0 {
+		return "", false
+	}
+	return canon, true
 }
 
 // cut shortens s for the lookup input.
@@ -246,6 +264,7 @@ type asnRecord struct {
 
 type row struct {
 	K, V, A string // label, value, accent text after the value
+	Href    string // A is a link to this page
 	Fam     string // "4" or "6": a row the page script fills in with the address of that family, found at From
 	From    string
 	Own     bool // the row of the address family that is looked up (addFill places the other family's row by it)
@@ -316,7 +335,11 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	if a.Is4() {
 		family = "IPv4"
 	}
-	p.Rows = []row{{K: "Network", V: network, A: as}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx}}
+	href := ""
+	if as != "" {
+		href = s.asnLink(n.ASN)
+	}
+	p.Rows = []row{{K: "Network", V: network, A: as, Href: href}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx}}
 	return p
 }
 

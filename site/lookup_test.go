@@ -94,10 +94,10 @@ func TestParseQuery(t *testing.T) {
 		{"q=+1.1.1.1+", "redirect", "1.1.1.1"},
 		{"q=", "redirect", ""}, // the empty lookup box: back to the home page
 		{"q=++", "redirect", ""},
-		{"q=AS15169", "bad", ""},
+		{"q=15169", "bad", ""},
 		{"q=example.com", "bad", ""},
 		{"x=1.1.1.1", "visitor", ""}, // not our parameter: the home page
-		{"AS15169", "bad", ""},
+		{"15169", "bad", ""},
 		{"example.com", "bad", ""},
 		{"1.1.1.1:80", "bad", ""},
 		{"1.1.1.1/24", "bad", ""},
@@ -158,8 +158,8 @@ func TestPanelStates(t *testing.T) {
 			[]string{`<h1>Location unknown</h1>`, `class="place none"`, "<dt>Network</dt><dd>—</dd>", "<dt>IPv4</dt><dd>192.0.2.1</dd>"}, []string{"<p>city unknown"}},
 		{"not public", "/?10.1.2.3", 200,
 			[]string{"10.1.2.3", "Not a public address", `value="10.1.2.3"`}, []string{"<dt>", "Prefix"}},
-		{"not an IP", "/?AS15169", 400,
-			[]string{"<h2>Lookup</h2>", "Not an IP address", `value="AS15169"`}, []string{"<dt>", "Not a public"}},
+		{"not an IP", "/?15169", 400,
+			[]string{"<h2>Lookup</h2>", "Not an IP address", `value="15169"`}, []string{"<dt>", "Not a public"}},
 		{"escaped", "/?%3Cscript%3Ealert(1)%3C/script%3E", 400,
 			[]string{"Not an IP address", "&lt;script&gt;"}, []string{"<script>alert"}},
 	} {
@@ -408,7 +408,7 @@ func TestEmptyBoxAndTitles(t *testing.T) {
 	for target, title := range map[string]string{
 		"/":             "<title>openipdata.org</title>",
 		"/?203.0.113.9": "<title>203.0.113.9 · openipdata.org</title>",
-		"/?AS15169":     "<title>openipdata.org</title>",
+		"/?15169":       "<title>openipdata.org</title>",
 	} {
 		if body := get(s, "GET", target).Body.String(); !strings.Contains(body, title) {
 			t.Errorf("%s: page lacks %q", target, title)

@@ -1,5 +1,5 @@
 [Unit]
-Description=openipdata.org: pull the MMDB files from the GitHub release "latest"
+Description=openipdata.org: pull the data files (MMDBs and the ASN SQLite file) from the GitHub release "latest"
 After=network-online.target
 Wants=network-online.target
 
