@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# Installs new openipdata-worker and mmdbbuilder binaries from the rolling GitHub release "worker".
+# Runs as root from openipdata-worker-update.service (timer, every 2 minutes).
+#
+# The release has the two binaries and one manifest, worker.sha256, uploaded last: two lines
+# "<sha256>  <asset name>" (openipdata-worker-linux-amd64, mmdbbuilder-linux-amd64) and the line
+# "version <version>". A manifest that is missing, empty or not exactly that, a download that
+# fails, or a binary that does not match its hash means an upload is probably in progress: try
+# again later (no ping, exit 0).
+# The installed files are the only record of what is installed: their hashes are compared with the
+# manifest (no "installed" state file). A manifest whose build failed a check is remembered in
+# STATE_DIR/bad.sha256 (the sha256 of the manifest text) and never tried again.
+# A new build is run unprivileged with `version` (time limit 10 s) and must print the manifest's
+# version. It is installed only while no task runs (the worker keeps the file DATA_DIR/worker-busy
+# while one does); after MAX_WAIT seconds (45 minutes) it is installed anyway, and Hatchet retries
+# the interrupted tasks. The old binaries are kept as <name>.prev. After the restart the service
+# must stay active for VERIFY_WAIT seconds with no automatic restart; otherwise the .prev binaries
+# come back, the build is marked bad and /fail is pinged.
+# Never touched: scamper, the unit, the env file, unbound. No secret is read: the env file is only
+# searched (quietly) for the presence of the token line.
+# Pings: HC_PING_WORKER_UPDATE on success, HC_PING_WORKER_UPDATE/fail on failure (the URL is never printed).
+#
+# Overrides for tests only (a real run needs none): BASE_URL, BIN_DIR, STATE_DIR, DATA_DIR,
+# LOCK_FILE, ENV_FILE, SYSTEMCTL, TIMEOUT, SERVICE_RUNNER (command prefix that runs a new binary
+# unprivileged), VERIFY_WAIT, MAX_WAIT.
+set -euo pipefail
+
+GITHUB_REPO="${GITHUB_REPO:-shingrus/openipdata.org}"
+BASE_URL="${BASE_URL:-https://github.com/$GITHUB_REPO/releases/download/worker}"
+MANIFEST=worker.sha256
+WORKER_ASSET=openipdata-worker-linux-amd64
+BUILDER_ASSET=mmdbbuilder-linux-amd64
+BIN_DIR="${BIN_DIR:-/opt/openipdata/bin}"
+STATE_DIR="${STATE_DIR:-/var/lib/openipdata-update}"
+DATA_DIR="${DATA_DIR:-/var/lib/openipdata}"
+LOCK_FILE="${LOCK_FILE:-/run/openipdata-worker-deploy.lock}"
+ENV_FILE="${ENV_FILE:-/etc/openipdata/worker.env}"
+SERVICE="${SERVICE:-openipdata-worker}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+TIMEOUT="${TIMEOUT:-timeout}"
+SERVICE_RUNNER="${SERVICE_RUNNER-setpriv --reuid=nobody --regid=nogroup --clear-groups}"
+VERIFY_WAIT="${VERIFY_WAIT:-30}"
+MAX_WAIT="${MAX_WAIT:-2700}"
+BUSY_FILE="$DATA_DIR/worker-busy"
+
+log() {
+    printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+# ping_hc [/fail]: a ping failure only logs, and never shows the URL.
+ping_hc() {
+    [[ -n "${HC_PING_WORKER_UPDATE:-}" ]] || return 0
+    curl -fsS -m 10 --retry 3 -o /dev/null "${HC_PING_WORKER_UPDATE}${1:-}" >/dev/null 2>&1 || log "warning: health ping failed"
+    return 0
+}
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+handled=0
+work=""
+# phase: "" before a binary is replaced, swapping (binaries replaced, not yet verified), finished.
+# Used only to undo a half-done install after an unexpected failure.
+phase=""
+manifest_sha=""
+restarted=0
+# rollback: put the .prev binaries back (atomic rename of a copy) and restart. Best effort.
+rollback() {
+    local name
+    for name in openipdata-worker mmdbbuilder; do
+        if [[ -e "${BIN_DIR:?}/$name.prev" ]]; then
+            cp -p "${BIN_DIR:?}/$name.prev" "${BIN_DIR:?}/.$name.rollback" && mv -f "${BIN_DIR:?}/.$name.rollback" "${BIN_DIR:?}/$name" || true
+        fi
+    done
+    if [[ "$restarted" == 1 ]]; then "$SYSTEMCTL" restart "$SERVICE" || true; fi
+}
+# shellcheck disable=SC2329 # called by the EXIT trap
+on_exit() {
+    local rc=$?
+    [[ -z "$work" ]] || rm -rf "${work:?}"
+    if ((rc != 0 && handled == 0)); then
+        log "error: unexpected failure (exit $rc)"
+        if [[ "$phase" == swapping ]]; then
+            log "putting the previous binaries back"
+            rollback || true
+        fi
+        rm -f "${BIN_DIR:?}"/.openipdata-worker.* "${BIN_DIR:?}"/.mmdbbuilder.* 2>/dev/null || true
+        ping_hc /fail
+    fi
+}
+trap on_exit EXIT
+
+# mark_bad: remember the manifest, alert, stop.
+mark_bad() {
+    printf '%s\n' "$manifest_sha" >"$STATE_DIR/bad.sha256.tmp"
+    mv -f "$STATE_DIR/bad.sha256.tmp" "$STATE_DIR/bad.sha256"
+    ping_hc /fail
+    handled=1
+    exit 1
+}
+
+mkdir -p "$STATE_DIR"
+chmod 0700 "$STATE_DIR"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    # The init script or another update is running.
+    handled=1
+    exit 0
+fi
+
+# 1. The manifest.
+work="$(mktemp -d)"
+# The unprivileged smoke test must be able to reach the binaries.
+chmod 0755 "$work"
+if ! curl -fsSL -m 30 --max-filesize 4096 -o "$work/$MANIFEST" "$BASE_URL/$MANIFEST" 2>/dev/null; then
+    log "no release yet or upload in progress (no manifest), trying later"
+    handled=1
+    exit 0
+fi
+mapfile -t lines <"$work/$MANIFEST" || lines=()
+worker_hex=""
+builder_hex=""
+version=""
+if ((${#lines[@]} == 3)) &&
+    [[ "${lines[0]}" =~ ^([0-9a-f]{64})\ \ $WORKER_ASSET$ ]] && worker_hex="${BASH_REMATCH[1]}" &&
+    [[ "${lines[1]}" =~ ^([0-9a-f]{64})\ \ $BUILDER_ASSET$ ]] && builder_hex="${BASH_REMATCH[1]}" &&
+    [[ "${lines[2]}" =~ ^version\ ([A-Za-z0-9._@-]+)$ ]]; then
+    version="${BASH_REMATCH[1]}"
+else
+    log "no release yet or upload in progress (the manifest is not valid), trying later"
+    handled=1
+    exit 0
+fi
+manifest_sha="$(sha256_of "$work/$MANIFEST")"
+
+# 2. Up to date?
+cur_worker=""
+cur_builder=""
+if [[ -f "$BIN_DIR/openipdata-worker" ]]; then cur_worker="$(sha256_of "$BIN_DIR/openipdata-worker")"; fi
+if [[ -f "$BIN_DIR/mmdbbuilder" ]]; then cur_builder="$(sha256_of "$BIN_DIR/mmdbbuilder")"; fi
+if [[ "$cur_worker" == "$worker_hex" && "$cur_builder" == "$builder_hex" ]]; then
+    rm -f "${STATE_DIR:?}/waiting-since"
+    ping_hc
+    handled=1
+    exit 0
+fi
+
+# 3. A build that failed before.
+bad=""
+if [[ -f "$STATE_DIR/bad.sha256" ]]; then read -r bad <"$STATE_DIR/bad.sha256" || true; fi
+if [[ "$manifest_sha" == "$bad" ]]; then
+    log "release $version failed its check before, not trying it again"
+    ping_hc /fail
+    handled=1
+    exit 0
+fi
+
+# wait_for_idle: succeeds when the install may go on. A running task (service active and the busy
+# marker present) holds it back, quietly, for at most MAX_WAIT seconds from the first time it was
+# seen for this manifest.
+wait_for_idle() {
+    local since="" since_sha="" now waited
+    if ! "$SYSTEMCTL" is-active --quiet "$SERVICE" || [[ ! -e "$BUSY_FILE" ]]; then
+        return 0
+    fi
+    now="$(date +%s)"
+    if [[ -f "$STATE_DIR/waiting-since" ]]; then read -r since since_sha <"$STATE_DIR/waiting-since" || true; fi
+    if [[ ! "$since" =~ ^[0-9]+$ || "$since_sha" != "$manifest_sha" ]]; then
+        printf '%s %s\n' "$now" "$manifest_sha" >"$STATE_DIR/waiting-since.tmp"
+        mv -f "$STATE_DIR/waiting-since.tmp" "$STATE_DIR/waiting-since"
+        log "release $version is waiting for the worker to be idle"
+        return 1
+    fi
+    waited=$((now - since))
+    if ((waited > MAX_WAIT)); then
+        log "the worker has been busy for ${waited}s (more than ${MAX_WAIT}s): installing anyway; Hatchet retries interrupted tasks"
+        return 0
+    fi
+    return 1
+}
+
+# 6. (Checked before the download too, so a busy worker does not fetch the files every 2 minutes.)
+if ! wait_for_idle; then
+    handled=1
+    exit 0
+fi
+
+# 4. Download both assets and check their hashes.
+for pair in "$WORKER_ASSET:$worker_hex" "$BUILDER_ASSET:$builder_hex"; do
+    asset="${pair%%:*}"
+    hex="${pair##*:}"
+    if ! curl -fsSL -m 300 --retry 3 -o "$work/$asset" "$BASE_URL/$asset" 2>/dev/null; then
+        log "download of $asset failed (upload in progress?), trying later"
+        handled=1
+        exit 0
+    fi
+    if [[ "$(sha256_of "$work/$asset")" != "$hex" ]]; then
+        log "$asset does not match the manifest (upload in progress?), trying later"
+        handled=1
+        exit 0
+    fi
+    chmod 0755 "$work/$asset"
+done
+
+# 5. Smoke test: each new binary, unprivileged and with a time limit, must print the manifest's
+# version (a binary that ignores the argument and starts must not block the updater).
+for asset in "$WORKER_ASSET" "$BUILDER_ASSET"; do
+    # shellcheck disable=SC2086
+    if ! out="$($TIMEOUT 10 $SERVICE_RUNNER "$work/$asset" version 2>/dev/null)" || [[ "$out" != "$version" ]]; then
+        log "error: $asset of release $version does not print its version (or took more than 10 s)"
+        mark_bad
+    fi
+done
+
+# 6 again: a task may have started during the download.
+if ! wait_for_idle; then
+    handled=1
+    exit 0
+fi
+
+# 7. Install.
+service_up=0
+if "$SYSTEMCTL" is-enabled --quiet "$SERVICE" && grep -Eq '^HATCHET_CLIENT_TOKEN=.+' "$ENV_FILE" 2>/dev/null; then
+    service_up=1
+fi
+nrestarts_before=0
+if ((service_up)); then
+    nrestarts_before="$("$SYSTEMCTL" show -p NRestarts --value "$SERVICE" 2>/dev/null || echo 0)"
+    [[ "$nrestarts_before" =~ ^[0-9]+$ ]] || nrestarts_before=0
+fi
+log "installing release $version"
+for name in openipdata-worker mmdbbuilder; do
+    if [[ -e "$BIN_DIR/$name" ]]; then
+        cp -p "$BIN_DIR/$name" "$BIN_DIR/.$name.prevtmp"
+        mv -f "$BIN_DIR/.$name.prevtmp" "$BIN_DIR/$name.prev"
+    else
+        rm -f "${BIN_DIR:?}/${name:?}.prev"
+    fi
+done
+phase=swapping
+install -m 0755 -o root -g root "$work/$WORKER_ASSET" "$BIN_DIR/.openipdata-worker.new"
+install -m 0755 -o root -g root "$work/$BUILDER_ASSET" "$BIN_DIR/.mmdbbuilder.new"
+mv -f "$BIN_DIR/.mmdbbuilder.new" "$BIN_DIR/mmdbbuilder"
+mv -f "$BIN_DIR/.openipdata-worker.new" "$BIN_DIR/openipdata-worker"
+
+# 8. Restart and watch for a crash loop (Restart=always hides it from "is-active" for a moment).
+if ((service_up)); then
+    restarted=1
+    ok=1
+    if ! "$SYSTEMCTL" restart "$SERVICE"; then
+        log "error: systemctl restart $SERVICE failed"
+        ok=0
+    fi
+    for ((i = 0; ok && i < VERIFY_WAIT; i++)); do
+        sleep 1
+        n="$("$SYSTEMCTL" show -p NRestarts --value "$SERVICE" 2>/dev/null || echo 0)"
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        if ! "$SYSTEMCTL" is-active --quiet "$SERVICE" || ((n > nrestarts_before)); then
+            log "error: $SERVICE is not staying up with release $version"
+            ok=0
+        fi
+    done
+    if ((!ok)); then
+        log "putting the previous binaries back"
+        rollback || true
+        phase=""
+        mark_bad
+    fi
+else
+    log "the service is not enabled or HATCHET_CLIENT_TOKEN is empty: installed without starting it"
+fi
+
+phase=finished
+rm -f "${STATE_DIR:?}/bad.sha256" "${STATE_DIR:?}/waiting-since"
+ping_hc
+log "installed: version $version"
+handled=1
+exit 0

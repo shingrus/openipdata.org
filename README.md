@@ -35,6 +35,14 @@ directories, last log lines, file size). `sync-geofeeds`, `sync-bgp`, `import-ml
 The worker runs `mmdbbuilder` as an external binary; it does not import it.
 The repo root has no Go code.
 
+## Worker deploy
+
+A push to `master` that changes `hatchet/` or `mmdbbuilder/` is tested and built by GitHub
+(`.github/workflows/worker.yml`), which publishes `openipdata-worker`, `mmdbbuilder` and a
+checksum manifest to the rolling release `worker`. A timer on the worker VM checks the release every
+2 minutes, installs a new build when no task is running and puts the old one back if the worker
+does not stay up. Details and rollback: [`infra/README.md`](infra/README.md).
+
 ## Workflows
 
 Each Postgres table has exactly one writer; the other workflows only read it:

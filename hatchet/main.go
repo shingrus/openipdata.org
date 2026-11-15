@@ -1,6 +1,7 @@
 // Command openipdata-worker runs the openipdata workflows as a Hatchet worker,
 // or runs a workflow once locally without Hatchet.
 //
+//	openipdata-worker version                    # print the build version and exit (no environment needed)
 //	openipdata-worker                            # serve: connect to Hatchet (HATCHET_CLIENT_TOKEN)
 //	openipdata-worker run-asn [-skip-publish]    # build-asn-data
 //	openipdata-worker run-pdb                    # sync-peeringdb
@@ -133,6 +134,9 @@ type LearnRDNSRulesInput struct {
 	Force bool `json:"force"`
 }
 
+// version is set at build time (-ldflags "-X main.version=..."); "dev" for a plain go build.
+var version = "dev"
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -141,6 +145,11 @@ func main() {
 	command := "serve"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
+	}
+	if command == "version" {
+		// Needs no environment: the updater runs it as an unprivileged user.
+		fmt.Println(version)
+		return
 	}
 	var err error
 	if command == "serve" || command == "run-rdns" || command == "run-mlab" {
@@ -172,7 +181,7 @@ func main() {
 	case "run-rdns-rules":
 		err = runRDNSRules(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-geo, run-rdns, or run-rdns-rules)", command)
+		err = fmt.Errorf("unknown command %q (want serve, version, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-geo, run-rdns, or run-rdns-rules)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -333,7 +342,12 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create worker: %w", err)
 	}
-	slog.Info("worker starting")
+	// The marker file tells the updater that a task runs; a leftover of a killed process goes first.
+	busy := newBusyMarker(dataDir())
+	busy.reset()
+	defer busy.reset()
+	worker.Use(busy.middleware)
+	slog.Info("worker starting", "version", version)
 	return worker.StartBlocking(ctx)
 }
 

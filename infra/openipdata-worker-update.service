@@ -1,0 +1,23 @@
+[Unit]
+Description=openipdata.org: install new worker binaries from the GitHub release "worker"
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Optional: GITHUB_REPO and HC_PING_WORKER_UPDATE (the file may be missing).
+EnvironmentFile=-/etc/openipdata/worker-update.env
+ExecStart=/opt/openipdata/bin/openipdata-worker-update
+# Two downloads, a restart (the worker may need up to 60 s to stop) and 30 s of watching.
+TimeoutStartSec=15min
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# Sandbox: not yet tested on the VM. systemctl reaches systemd over D-Bus (AF_UNIX socket in /run).
+# /opt/openipdata/bin: the binaries and their .prev copies. /var/lib/openipdata-update: bad.sha256 and
+# waiting-since. /run: the lock file. /var/lib/openipdata is only read (the busy marker).
+# No capability limit: setpriv (the unprivileged smoke test) and install -o root need the usual ones.
+ProtectSystem=strict
+ReadWritePaths=/opt/openipdata/bin /var/lib/openipdata-update /run
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

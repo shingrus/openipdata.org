@@ -2,7 +2,11 @@
 # Prepare an Ubuntu (x86_64) VM to run openipdata-worker, and build and install
 # openipdata-worker and mmdbbuilder from this checkout, and scamper from a pinned upstream tarball.
 # Run from a checkout of this repo: sudo bash infra/init-hatchet-runner-vm.sh
-# Idempotent: re-run after `git pull` to redeploy; never overwrites an existing env file.
+# Idempotent: never overwrites an existing env file. It is for the first setup and for changes to
+# scamper, unbound, the units and this script; new worker code is installed by the timer
+# openipdata-worker-update (from the GitHub release "worker") by itself.
+# It holds the lock /run/openipdata-worker-deploy.lock for its whole run, so the updater never swaps
+# binaries during a build.
 set -euo pipefail
 
 RUN_AS=openipdata
@@ -11,6 +15,10 @@ DATA_DIR=/var/lib/openipdata
 ETC_DIR=/etc/openipdata
 ENV_FILE=$ETC_DIR/worker.env
 SERVICE_NAME=openipdata-worker
+UPDATE_NAME=openipdata-worker-update
+UPDATE_STATE_DIR=/var/lib/openipdata-update
+UPDATE_ENV_FILE=$ETC_DIR/worker-update.env
+LOCK_FILE=/run/openipdata-worker-deploy.lock
 
 # Go toolchain used only for the build. It and the module/build caches are kept in
 # CACHE_DIR so redeploys only recompile what changed; delete CACHE_DIR to start clean.
@@ -43,13 +51,18 @@ fail() {
 command -v apt-get >/dev/null 2>&1 || fail "apt-get not found; this script targets Ubuntu/Debian"
 [[ "$(uname -m)" == "x86_64" ]] || fail "unsupported architecture $(uname -m); x86_64 required"
 
+# The updater (a timer) takes the same lock without waiting and then does nothing.
+exec 9>"$LOCK_FILE"
+flock -w 900 9 || fail "another deploy holds $LOCK_FILE"
+
 log "installing OS packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 # git: the worker clones source repos into the data dir. curl: Go download.
 # build-essential: only to build scamper below. unbound: the local resolver of the worker's PTR
-# lookups; bind9-dnsutils (dig): only for its smoke test below.
-apt-get install -y -q --no-install-recommends ca-certificates curl git build-essential unbound bind9-dnsutils
+# lookups; dns-root-data: the root key file the packaged unbound configuration names;
+# bind9-dnsutils (dig): only for its smoke test below.
+apt-get install -y -q --no-install-recommends ca-certificates curl git build-essential unbound dns-root-data bind9-dnsutils
 # The apt scamper is setuid root and cannot start under the unit; keep it off the PATH.
 if [[ "$(dpkg-query -W -f='${Status}' scamper 2>/dev/null)" == "install ok installed" ]]; then
     log "removing the apt package scamper"
@@ -190,8 +203,20 @@ if ! cmp -s "$UNBOUND_TMP" "$UNBOUND_CONF"; then
 fi
 mv "$UNBOUND_TMP" "$UNBOUND_CONF"
 
+# The packaged configuration names /var/lib/unbound/root.key (auto-trust-anchor-file). The service
+# makes it at its first start, but unbound-checkconf wants it before that: put the packaged key there.
+UNBOUND_ROOT_KEY=/var/lib/unbound/root.key
+if [[ ! -e "$UNBOUND_ROOT_KEY" ]]; then
+    if [[ -r /usr/share/dns/root.key ]]; then
+        install -m 0644 -o unbound -g unbound /usr/share/dns/root.key "$UNBOUND_ROOT_KEY" || log "warning: could not install $UNBOUND_ROOT_KEY"
+    else
+        log "warning: /usr/share/dns/root.key is missing (package dns-root-data)"
+    fi
+fi
+
 UNBOUND_OK=0
-if unbound-checkconf >/dev/null 2>&1; then
+# Its output names the option or file it rejects (no secret is in this configuration).
+if UNBOUND_CHECK="$(unbound-checkconf 2>&1)"; then
     systemctl enable unbound >/dev/null 2>&1 || log "warning: could not enable unbound"
     if [[ "$UNBOUND_CHANGED" -eq 1 ]] || ! systemctl is-active --quiet unbound; then
         log "restarting unbound"
@@ -200,6 +225,7 @@ if unbound-checkconf >/dev/null 2>&1; then
     UNBOUND_OK=1
 else
     log "warning: unbound-checkconf rejects the configuration; removing $UNBOUND_CONF, the worker keeps the system DNS"
+    log "unbound-checkconf said: $(printf '%s' "$UNBOUND_CHECK" | tail -n 3 | tr '\n' ' ')"
     rm -f "$UNBOUND_CONF"
     systemctl disable --now unbound >/dev/null 2>&1 || true
 fi
@@ -270,6 +296,21 @@ if ! grep -Eq '"type":"trace".*"hops":\[' <<<"$SMOKE_OUT"; then
     fail "scamper smoke test: no trace with a hop in the output: $(printf '%s' "$SMOKE_OUT" | tail -n 3 | head -c 500)"
 fi
 log "smoke test passed: scamper traced 1.1.1.1 as $RUN_AS"
+
+# The updater: installs new worker binaries from the GitHub release "worker" (see infra/README.md).
+log "installing the updater: $UPDATE_NAME"
+install -d -m 0700 -o root -g root "$UPDATE_STATE_DIR"
+install -m 0755 -o root -g root "$SCRIPT_DIR/$UPDATE_NAME" "$BIN_DIR/$UPDATE_NAME"
+install -m 0644 -o root -g root "$SCRIPT_DIR/$UPDATE_NAME.service" "/etc/systemd/system/$UPDATE_NAME.service"
+install -m 0644 -o root -g root "$SCRIPT_DIR/$UPDATE_NAME.timer" "/etc/systemd/system/$UPDATE_NAME.timer"
+if [[ -f "$UPDATE_ENV_FILE" ]]; then
+    log "keeping existing $UPDATE_ENV_FILE"
+else
+    log "installing env template: $UPDATE_ENV_FILE"
+    install -m 0600 -o root -g root "$SCRIPT_DIR/$UPDATE_NAME.env.example" "$UPDATE_ENV_FILE"
+fi
+systemctl daemon-reload
+systemctl enable --now "$UPDATE_NAME.timer" >/dev/null
 
 if grep -Eq '^HATCHET_CLIENT_TOKEN=.+' "$ENV_FILE"; then
     log "restarting $SERVICE_NAME"
