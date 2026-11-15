@@ -74,14 +74,14 @@
   `asn_geo_pdb.fac_count`/`fac_city`/`fac_country` (facilities only, city set only if all are in one city) feed `40-hosting`.
 - ip2geo layers have ONE format and ONE name in every stage: a gzipped CSV in the geofeed (RFC 8805) layout, header
   `prefix,country,region,city,source`, named `NN-name.csv.gz` (`10-rir`, `20-ipverse`, `30-pdb`, `35-rdns-wide`, `40-hosting`,
-  `50-ix`, `60-whois`, `65-rdns`, `70-geofeeds`; steps of 5 or 10, the name is the order). `build-geo-data` `download` empties its layers dir, each
+  `38-asn-geofeed`, `50-ix`, `60-whois`, `65-rdns`, `70-geofeeds`; the number is the order). `build-geo-data` `download` empties its layers dir, each
   source writes its file through the one shared writer (`.tmp` plus rename), and the R2 layers are put in as they are (see the R2 rule below: the last download of each stays in `geo/downloads/` with its ETag, and an unchanged object is copied from there).
   The build passes every `*.csv.gz` in the dir, sorted by name, to `mmdbbuilder geo` (one reader, columns found by header);
   there is no per-layer code and no layer list in the build. Special rules live only in `layerRules` (`geo/pipeline.go`),
   one line per layer name; a rule for an absent file is not passed. A new layer is a new file name, not new code.
-  Optional layers (`35-rdns-wide`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns`) that are absent are listed in
+  Optional layers (`35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns`) that are absent are listed in
   `Source.SkippedLayers` for reporting (the two rDNS layers are written from `public.rdns_geo_layer` by scope, both
-  with `-same-country`: they add cities, never change a country); an R2 layer (`60-whois`, `70-geofeeds`) that is missing or older than 3 days skips the `HC_PING_GEO` ping.
+  with `-same-country`: they add cities, never change a country); `38-asn-geofeed` is the ASN dominant geofeed city: an ASN whose own geofeed rows (from `70-geofeeds`, attributed by the longest announced prefix of `public.asn` containing them; prefixes announced by more than one ASN are ignored) put at least 80% of the addresses of their geofeed rows (rows without a city count in the total) in one city, from at least 2 rows, per address family, gives that city to all its announced prefixes (`-same-country`); `download` reads `public.asn` once and saves the prefixes in `geo/asn-prefixes.csv.gz` (outside the layers dir), and the holdout build recomputes the layer from the kept feeds so held-out feeds never reach it; an R2 layer (`60-whois`, `70-geofeeds`) that is missing or older than 3 days skips the `HC_PING_GEO` ping.
 - `public.asn_domain` holds the final domain per ASN (`source` = `pdb` or `rdap`); PeeringDB wins over RDAP.
   Domain cleanup rules (registered domain, rejection list) live in `hatchet/domains/clean.go`.
 - `resolve-ips` (cron every 30 minutes, tasks `pick-networks` → `trace` → `resolve-names` → `locate`, own `rdns` limit) reads and deletes rows of

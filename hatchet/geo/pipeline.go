@@ -17,6 +17,10 @@
 //	              most /16) got from the PTR names of routers near them; applied only
 //	              where the earlier layers give the same country; skipped while the
 //	              table has no such rows
+//	38-asn-geofeed  the dominant geofeed city of an ASN (Postgres announced prefixes, the
+//	              geofeed layer): every announced prefix of an ASN whose own geofeed rows
+//	              put 80% of their addresses in one city; applied only where the earlier
+//	              layers give the same country; skipped while there are no such ASNs
 //	40-hosting    hosting networks whose PeeringDB facilities are all in one city: that
 //	              city and country for every announced prefix (Postgres); applied only
 //	              where the RIR stats give the same country, so it can only change a
@@ -88,6 +92,7 @@ const (
 	IPverseLayer  = "20-ipverse.csv.gz"
 	PDBLayer      = "30-pdb.csv.gz"
 	RDNSWideLayer = "35-rdns-wide.csv.gz"
+	ASNFeedLayer  = "38-asn-geofeed.csv.gz"
 	HostingLayer  = "40-hosting.csv.gz"
 	IXLayer       = "50-ix.csv.gz"
 	WhoisLayer    = geofeeds.WhoisRowsFile // 60-whois.csv.gz
@@ -103,8 +108,9 @@ const (
 //   - -same-country: the PeeringDB rows only refine. An ASN's city must not
 //     replace more specific networks that the registration data puts in another
 //     country.
-//   - -same-country also holds for both rDNS layers: they add cities and never change a country
-//     (a router name is evidence of a city, not of who holds the block).
+//   - -same-country also holds for both rDNS layers and the ASN geofeed layer: they add cities and
+//     never change a country (a router name is evidence of a city, not of who holds the block; the
+//     ASN geofeed rows extend an ASN's own geofeed evidence to its other prefixes).
 //   - -first-country: a hosting row applies only where the RIR stats (the first
 //     layer) give the row's country, so the layer can only change a country back
 //     to the delegated one; PeeringDB facility lists can be incomplete.
@@ -122,13 +128,14 @@ var layerRules = map[string]string{
 	WhoisLayer:    "-within-first",
 	RDNSLayer:     "-same-country",
 	FeedsLayer:    "-within-first",
+	ASNFeedLayer:  "-same-country",
 }
 
 // optionalLayers may be missing: a run without one is reported in
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{RDNSWideLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer}
+var optionalLayers = []string{RDNSWideLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -153,13 +160,14 @@ type Pipeline struct {
 	MaxMindKey string // MAXMIND_LICENSE_KEY
 
 	// Tests only.
-	stats        []struct{ Name, URL string }
-	geoBlocks    string
-	refURLs      *evalURLs
-	writeIX      func(ctx context.Context, w *csv.Writer) (int, error)
-	writeHosting func(ctx context.Context, w *csv.Writer) (int, error)
-	writeRDNS    func(ctx context.Context, scope string, w *csv.Writer) (int, error)
-	heldOutURLs  func(ctx context.Context) (map[string]bool, error)
+	stats         []struct{ Name, URL string }
+	geoBlocks     string
+	refURLs       *evalURLs
+	writeIX       func(ctx context.Context, w *csv.Writer) (int, error)
+	writeHosting  func(ctx context.Context, w *csv.Writer) (int, error)
+	writeRDNS     func(ctx context.Context, scope string, w *csv.Writer) (int, error)
+	readAnnounced func(ctx context.Context) ([]asnPrefix, error)
+	heldOutURLs   func(ctx context.Context) (map[string]bool, error)
 }
 
 // Source is what Download prepared for the run.
@@ -169,6 +177,8 @@ type Source struct {
 	StatsStatus map[string]string `json:"stats_status"`
 	GeoBlocks   string            `json:"geo_ip_blocks_status"`
 	PDBASNs     int               `json:"pdb_asns"`
+	// ASNFeedASNs is the number of ASNs in the 38-asn-geofeed layer.
+	ASNFeedASNs int `json:"asn_feed_asns"`
 	// R2Uploaded tells when sync-geofeeds uploaded each R2 layer in the build.
 	R2Uploaded map[string]string `json:"r2_layers_uploaded"`
 	// R2Reused lists the R2 layers that were not downloaded because the copy saved by
@@ -384,7 +394,67 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 	if err := p.downloadR2Layers(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
 		return src, err
 	}
+
+	// 10. The dominant geofeed city of each ASN, from the geofeed layer just downloaded.
+	if err := p.downloadASNFeed(ctx, layers, &src); err != nil {
+		return src, err
+	}
 	return src, nil
+}
+
+// downloadASNFeed writes the 38-asn-geofeed layer from the geofeed layer in the
+// layers directory and the announced prefixes in Postgres (read once). The prefixes
+// are saved in the geo directory, outside the layers, for the holdout build. The
+// layer is skipped (src.SkippedLayers) when there is no geofeed layer or no ASN
+// has a dominant city; a database error fails.
+func (p *Pipeline) downloadASNFeed(ctx context.Context, layers string, src *Source) error {
+	prefixesPath := filepath.Join(p.dir(), asnPrefixesFile)
+	// An old copy must not outlive this run: the holdout build trusts it matches the layer.
+	if err := os.Remove(prefixesPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	feeds := filepath.Join(layers, FeedsLayer)
+	if _, err := os.Stat(feeds); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		src.SkippedLayers = append(src.SkippedLayers, ASNFeedLayer)
+		p.log("download: WARNING no %s; building without the %s layer", FeedsLayer, ASNFeedLayer)
+		return nil
+	}
+	read := p.readAnnounced
+	if read == nil {
+		read = func(ctx context.Context) ([]asnPrefix, error) { return readAnnounced(ctx, p.PGSQL) }
+	}
+	announced, err := read(ctx)
+	if err != nil {
+		return fmt.Errorf("ASN announced prefixes: %w", err)
+	}
+	if err := writeAnnouncedFile(prefixesPath, announced); err != nil {
+		return fmt.Errorf("save ASN announced prefixes: %w", err)
+	}
+	asns := 0
+	rows, err := writeLayer(filepath.Join(layers, ASNFeedLayer), func(w *csv.Writer) error {
+		var n int
+		var err error
+		asns, n, err = asnFeedRows(feeds, announced, w)
+		if err == nil && n == 0 {
+			err = ErrNoRows
+		}
+		return err
+	})
+	if errors.Is(err, ErrNoRows) {
+		src.SkippedLayers = append(src.SkippedLayers, ASNFeedLayer)
+		p.log("download: WARNING no ASN has a dominant geofeed city; building without the %s layer", ASNFeedLayer)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("ASN geofeed rows: %w", err)
+	}
+	src.ASNFeedASNs = asns
+	src.Rows[ASNFeedLayer] = rows
+	p.log("download: ASN geofeed city for %d ASNs, %d prefixes", asns, rows)
+	return nil
 }
 
 // r2Fetch is publish.R2.DownloadIfChanged: it saves the object at key to path
@@ -600,10 +670,12 @@ func (p *Pipeline) layerFiles() ([]string, error) {
 // geoArgs are the arguments of "mmdbbuilder geo": every layer file in the layers
 // directory in name order (the first must be RIRLayer, which the
 // -within-first and -first-country rules judge rows against), each rule of layerRules named for the layers that
-// are there (a rule for an absent file is not passed), and, if feeds is not
-// empty, that file in place of the FeedsLayer one (the holdout build). BuildMMDB
-// and the holdout build both go through here, so they use the same layers and rules.
-func (p *Pipeline) geoArgs(out, feeds string) ([]string, error) {
+// are there (a rule for an absent file is not passed). replace maps a layer name
+// to another file passed in its place (the holdout build: the kept feeds, the
+// ASN layer recomputed from them); an empty path leaves that layer out, and
+// out of its rule flag. BuildMMDB passes none, and it and the holdout build both
+// go through here, so they use the same layers and rules.
+func (p *Pipeline) geoArgs(out string, replace map[string]string) ([]string, error) {
 	names, err := p.layerFiles()
 	if err != nil {
 		return nil, err
@@ -612,6 +684,7 @@ func (p *Pipeline) geoArgs(out, feeds string) ([]string, error) {
 	if len(names) == 0 || names[0] != RIRLayer {
 		return nil, fmt.Errorf("the layers must start with %s, not %v", RIRLayer, names)
 	}
+	names = slices.DeleteFunc(names, func(name string) bool { path, ok := replace[name]; return ok && path == "" })
 	args := []string{"geo", "-out", out, "-names", filepath.Join(p.layersDir(), NamesFile)}
 	// One flag per distinct rule of layerRules, sorted, naming its layers that are there.
 	var flags []string
@@ -633,8 +706,8 @@ func (p *Pipeline) geoArgs(out, feeds string) ([]string, error) {
 		}
 	}
 	for _, name := range names {
-		if name == FeedsLayer && feeds != "" {
-			args = append(args, feeds)
+		if path := replace[name]; path != "" {
+			args = append(args, path)
 		} else {
 			args = append(args, filepath.Join(p.layersDir(), name))
 		}
@@ -662,7 +735,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	}
 	// mmdbbuilder writes through a temporary file and renames it into place.
 	final := filepath.Join(dir, fmt.Sprintf(mmdbFileFormat, src.DateTag))
-	args, err := p.geoArgs(final, "")
+	args, err := p.geoArgs(final, nil)
 	if err != nil {
 		return BuildMMDBOutput{}, err
 	}

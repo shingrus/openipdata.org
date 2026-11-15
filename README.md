@@ -308,13 +308,13 @@ the city (a record without a city has none). `eval` scores our cities per `city_
 
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
-The file name carries the order, in steps of 10: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `30-pdb.csv.gz`,
-`40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
+The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `30-pdb.csv.gz`,
+`38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
 `/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
 `.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
-layer name (`layerRules`): `30-pdb` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+layer name (`layerRules`): `30-pdb` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
 `70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
 
 | Task | Runs after | Does |
@@ -338,7 +338,7 @@ unchanged. Read it with Node `maxmind`: `JSON.parse(reader.metadata.description.
 `reader.Metadata.Description["openipdata"]`. A stamp failure does not block publishing: the task
 output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is published.
 
-- Layers, in order:
+- Layers, in order (`38-asn-geofeed`, optional, is described after the list):
   1. `10-rir`: the five RIRs' delegated stats: the country each block was delegated to (IPv4 and IPv6);
   2. `20-ipverse`: ipverse/geo-ip-blocks (CC0): the country in registration records (IPv4 only);
   3. `30-pdb`: PeeringDB: country and city for every announced prefix of an ASN that has one dominant
@@ -379,7 +379,15 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
      A row broader than one RIR block (layer 1)
      is skipped (`-within-first`), so a feed cannot change the country of networks that belong
      to someone else; a row inside a block, or equal to it, is used. Required.
-- The optional layers are `40-hosting`, `50-ix` and `60-whois`. One that is not in the build this run (no rows,
+- `38-asn-geofeed` (optional, `-same-country`: it adds cities, never changes a country) extends an ASN's own
+  geofeed evidence to its other prefixes. After the R2 layers are in, `download` reads the announced prefixes of
+  `public.asn` once (same `seen_at` rule as layer 3; saved as `geo/asn-prefixes.csv.gz`, outside the layers dir),
+  gives each `70-geofeeds` row that has a city to the ASN of the longest announced prefix containing it (a
+  prefix announced by more than one ASN is ignored; a row broader than the announcement is ignored), and weighs
+  the rows per ASN and address family by addresses (IPv4) or /64s (IPv6). When one city has at least 80% of the
+  weight of all its attributed rows (rows without a city count in the total) and comes from at least 2 rows, every announced prefix of the ASN in that family gets it (source
+  `asn:<number>`). The holdout build recomputes the layer from the kept feeds, so held-out feeds do not leak into it.
+- The optional layers are `35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois` and `65-rdns`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.

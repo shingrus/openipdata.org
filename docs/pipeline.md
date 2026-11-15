@@ -93,7 +93,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `discover` | reads the whois and IRR dumps, saved RDAP results, domain-found feeds, `feeds.txt` and CAIDA's lists; adds every URL to `public.geofeed_urls`; writes the whois blocks that link feeds; builds `60-whois.csv.gz` from `geoloc:` |
 | | `check-feeds` | fetches every due feed, keeps a checked copy of each working one, writes its status to `public.geofeed_urls`, writes the URL lists |
 | | `export-rows` | writes the rows of working feeds that pass the ownership check to `70-geofeeds.csv.gz`; uploads both layers to R2 behind their row-drop gates |
-| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `65-rdns` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2 |
+| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `65-rdns` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2, then writes `38-asn-geofeed` from the geofeed layer |
 | | `build-mmdb` | runs `mmdbbuilder geo` on the layers in name order with the rules table → `ip2geo-openipdata-<date>.mmdb` |
 | | `evaluate` | builds the holdout MMDB, scores both with `mmdbbuilder eval` (DB-IP, MaxMind GeoLite2, Atlas probes, GeoNames to place our cities; holdout for ours only), stores a row in `public.geo_eval`, then stamps the scores into the MMDB's metadata (`description.openipdata`; a failure never blocks publish) |
 | | `publish` | applies the 2-point gate, uploads to R2 and the GitHub release, marks the row published, pings the health check |
@@ -165,13 +165,15 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | 20 | `20-ipverse.csv.gz` | ipverse/geo-ip-blocks | country | — |
 | 30 | `30-pdb.csv.gz` | `public.asn_geo_pdb`: ASN's dominant city (≥30% of its presence) | city | same-country (only refines) |
 | 35 | `35-rdns-wide.csv.gz` | `public.rdns_geo_layer`, scope `wide`: the city most traced /24s of an announced prefix (at most /16) got from router names; a trial | city | same-country (only refines) |
+| 38 | `38-asn-geofeed.csv.gz` | the ASN's own geofeed rows (`70-geofeeds` attributed by announced prefix, MOAS prefixes ignored): an ASN with ≥80% of the addresses of its feed rows (country-only rows count in the total) in one city, from ≥2 rows, per address family, gives that city to all its announced prefixes | city | same-country (only refines) |
 | 40 | `40-hosting.csv.gz` | single-city PeeringDB `Content` networks, non-Global scope | city | first-country (only back to the RIR country) |
 | 50 | `50-ix.csv.gz` | `public.geo_ix_pdb`: exchange peering LANs | city | — |
 | 60 | `60-whois.csv.gz` | whois `geoloc:`, most populous place within 25 km (measured 85.8% within 100 km) | city | within-first |
 | 65 | `65-rdns.csv.gz` | `public.rdns_geo_layer`, scope `traced`: a /24 whose traceroute passed a router with a city in its name | city | same-country (only refines) |
 | 70 | `70-geofeeds.csv.gz` | operator geofeeds | city | within-first |
 
-- Optional layers (35, 40, 50, 60, 65) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
+- `38-asn-geofeed` is computed in `download` from the geofeed layer and `public.asn` (read once, saved as `geo/asn-prefixes.csv.gz`); the holdout build recomputes it from the kept feeds, so held-out feeds do not leak into it.
+- Optional layers (35, 38, 40, 50, 60, 65) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
 - `35-rdns-wide` sits right after `30-pdb` and `65-rdns` between whois and geofeeds, so every measured layer overwrites the greedy wide rows. `35-rdns-wide` is kept only if `holdout_city_pct` and the Atlas scores do not drop.
 
 ## Evaluation and publish gate

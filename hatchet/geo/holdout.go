@@ -277,8 +277,18 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 	if stats.KeptRows == 0 || stats.TruthRows == 0 {
 		return "", "", "skipped: " + summary, nil
 	}
+	replace := map[string]string{FeedsLayer: kept}
+	// The ASN layer is built from the geofeeds: recompute it from the kept feeds, or the
+	// held-out feeds would reach the holdout build through it.
+	if _, err := os.Stat(filepath.Join(p.layersDir(), ASNFeedLayer)); err == nil {
+		note, err := p.holdoutASNFeed(kept, filepath.Join(keptDir, ASNFeedLayer), replace)
+		if err != nil {
+			return "", "", "", err
+		}
+		summary += note
+	}
 	mmdbPath = filepath.Join(dir, "holdout.mmdb")
-	args, err := p.geoArgs(mmdbPath, kept)
+	args, err := p.geoArgs(mmdbPath, replace)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -286,4 +296,32 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 		return "", "", "", fmt.Errorf("holdout build: %w", err)
 	}
 	return mmdbPath, truthPath, summary, nil
+}
+
+// holdoutASNFeed recomputes the ASN geofeed layer from the kept feeds file and the
+// announced prefixes Download saved, into out, and sets replace[ASNFeedLayer] to it.
+// When the saved prefixes are missing or the result has no rows, the layer is left
+// out of the holdout build (replace[...] = "") and the returned note says so.
+func (p *Pipeline) holdoutASNFeed(kept, out string, replace map[string]string) (note string, err error) {
+	replace[ASNFeedLayer] = ""
+	announced, err := readAnnouncedFile(filepath.Join(p.dir(), asnPrefixesFile))
+	if os.IsNotExist(err) {
+		return "; " + ASNFeedLayer + " left out: no saved ASN prefixes", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("holdout ASN prefixes: %w", err)
+	}
+	rows, err := writeLayer(out, func(w *csv.Writer) error {
+		_, _, err := asnFeedRows(kept, announced, w)
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("holdout ASN geofeed rows: %w", err)
+	}
+	if rows == 0 {
+		os.Remove(out)
+		return "; " + ASNFeedLayer + " left out: no rows from the kept feeds", nil
+	}
+	replace[ASNFeedLayer] = out
+	return "", nil
 }

@@ -237,8 +237,8 @@ func TestHostingQuery(t *testing.T) {
 // The layer names carry the order, in steps of 10, and the R2 layers are named as
 // sync-geofeeds uploads them.
 func TestLayerNames(t *testing.T) {
-	names := []string{RIRLayer, IPverseLayer, PDBLayer, RDNSWideLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, FeedsLayer}
-	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "30-pdb.csv.gz", "35-rdns-wide.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "65-rdns.csv.gz", "70-geofeeds.csv.gz"}
+	names := []string{RIRLayer, IPverseLayer, PDBLayer, RDNSWideLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, FeedsLayer}
+	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "30-pdb.csv.gz", "35-rdns-wide.csv.gz", "38-asn-geofeed.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "65-rdns.csv.gz", "70-geofeeds.csv.gz"}
 	if !reflect.DeepEqual(names, want) || !sort.StringsAreSorted(names) {
 		t.Errorf("layer names = %v", names)
 	}
@@ -261,7 +261,11 @@ func TestGeoArgs(t *testing.T) {
 	p := &Pipeline{DataDir: t.TempDir()}
 	layers := p.layersDir() + "/"
 	args := func(feeds string) string {
-		got, err := p.geoArgs("out.mmdb", feeds)
+		var replace map[string]string
+		if feeds != "" {
+			replace = map[string]string{FeedsLayer: feeds}
+		}
+		got, err := p.geoArgs("out.mmdb", replace)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -314,17 +318,17 @@ func TestGeoArgs(t *testing.T) {
 	// -within-first and -first-country judge rows against the first layer passed:
 	// a file that sorts before 10-rir would take its place, so it is an error.
 	touchLayers(t, p, FeedsLayer, RIRLayer, "05-first.csv.gz")
-	if _, err := p.geoArgs("out.mmdb", ""); err == nil || !strings.Contains(err.Error(), RIRLayer) {
+	if _, err := p.geoArgs("out.mmdb", nil); err == nil || !strings.Contains(err.Error(), RIRLayer) {
 		t.Errorf("a layer before %s: %v", RIRLayer, err)
 	}
 	os.Remove(filepath.Join(p.layersDir(), RIRLayer))
 	os.Remove(filepath.Join(p.layersDir(), "05-first.csv.gz"))
-	if _, err := p.geoArgs("out.mmdb", ""); err == nil {
+	if _, err := p.geoArgs("out.mmdb", nil); err == nil {
 		t.Error("no error without the RIR layer")
 	}
 
 	// No layers directory: an error.
-	if _, err := (&Pipeline{DataDir: t.TempDir()}).geoArgs("out.mmdb", ""); err == nil {
+	if _, err := (&Pipeline{DataDir: t.TempDir()}).geoArgs("out.mmdb", nil); err == nil {
 		t.Error("no error without a layers directory")
 	}
 }
@@ -456,7 +460,7 @@ func TestSkipLayers(t *testing.T) {
 	if len(logs) != 1 || !strings.Contains(logs[0], HostingLayer) || !strings.Contains(logs[0], "skip_layers") {
 		t.Errorf("logs = %v", logs)
 	}
-	got, err := p.geoArgs("out.mmdb", "")
+	got, err := p.geoArgs("out.mmdb", nil)
 	args := strings.Join(got, " ")
 	if err != nil || strings.Contains(args, HostingLayer) || strings.Contains(args, "-first-country") || !strings.Contains(args, IXLayer) {
 		t.Errorf("args = %s, %v", args, err)
