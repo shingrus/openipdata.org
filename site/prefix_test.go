@@ -543,25 +543,25 @@ func TestPrefixLinksOnOtherPages(t *testing.T) {
 
 	// The lookup panel shows the longest announced prefix and links it.
 	for _, c := range []struct{ target, want string }{
-		{"/?203.0.113.9", `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`},
-		{"/?203.0.113.200", `<dd><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></dd>`}, // the MMDB says /24
+		{"/?203.0.113.9", ` · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`},
+		{"/?203.0.113.200", ` · <a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></dd>`}, // the MMDB says /24
 		{"/?2001:db8::5", `<a href="/prefix/2001:db8::/32">2001:db8::/32</a>`},
 	} {
 		if b := get(s, "GET", c.target).Body.String(); !strings.Contains(b, c.want) {
 			t.Errorf("%s: no %q", c.target, c.want)
 		}
 	}
-	// No announced prefix: the MMDB value, not linked. (198.51.100.1 is announced by 64500; 192.0.2.1 is in no file.)
-	if b := get(s, "GET", "/?192.0.2.1").Body.String(); !strings.Contains(b, "<dt>Prefix</dt><dd>—</dd>") {
+	// No announced prefix: no prefix part, a dash. (198.51.100.1 is announced by 64500; 192.0.2.1 is in no file.)
+	if b := get(s, "GET", "/?192.0.2.1").Body.String(); !strings.Contains(b, "<dt>Network</dt><dd>—</dd>") || strings.Contains(b, "<dt>Prefix") {
 		t.Error("an address with no prefix")
 	}
-	// The visitor's page stays private and has no Prefix row, so no prefix link.
+	// The visitor's page stays private; its Network row links the prefix, and there is no Prefix row.
 	w := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "203.0.113.9")
-	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || strings.Contains(w.Body.String(), `href="/prefix/`) {
+	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || strings.Contains(w.Body.String(), "<dt>Prefix") || !strings.Contains(w.Body.String(), ` · <a href="/prefix/203.0.113.0/24">`) {
 		t.Errorf("visitor page: %v", w.Header())
 	}
-	// Without the ASN data the panel keeps today's value, unlinked.
-	if b := get(fixtureServer(t), "GET", "/?203.0.113.9").Body.String(); !strings.Contains(b, "<dt>Prefix</dt><dd>203.0.113.0/24</dd>") {
+	// Without the ASN data the MMDB tree prefix is linked after the MMDB text.
+	if b := get(fixtureServer(t), "GET", "/?203.0.113.9").Body.String(); !strings.Contains(b, `<dd>Example Net · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
 		t.Errorf("no ASN data: %s", b)
 	}
 }

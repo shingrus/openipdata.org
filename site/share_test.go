@@ -289,7 +289,7 @@ func TestShareSnapshotOnVisit(t *testing.T) {
 	sn := m.snapshot(t, id)
 	if sn.Created != "2026-11-15T16:50:12Z" || sn.IP != "203.0.113.9" || sn.Family != 4 || sn.Other != "" || sn.Resolver != nil ||
 		sn.Place.City != "Lisbon" || sn.Place.Country != "Portugal" || sn.Place.CC != "PT" || sn.Place.Lat == nil || sn.Place.Lon == nil ||
-		sn.Network.ASN != 64500 || sn.Network.Handle != "EXAMPLE-NET" || sn.Network.Category != "isp" || sn.Network.Domain != "example.net" || sn.Network.Org != "Example Net" {
+		sn.Network.ASN != 64500 || sn.Network.Handle != "EXAMPLE-NET" || sn.Network.Slug != "example-net" || sn.Network.Prefix != "203.0.113.0/24" || sn.Network.Category != "" || sn.Network.Domain != "" || sn.Network.Org != "Example Net" {
 		t.Errorf("snapshot: %+v", sn)
 	}
 	for _, bad := range []string{"User-Agent", "Mozilla", "Referer", "X-Real-IP", "headers"} {
@@ -480,14 +480,14 @@ func TestReportPage(t *testing.T) {
 		"<title>Shared report · openipdata.org</title>", `<meta name="robots" content="noindex">`, "<h2>Shared report</h2>", `<span class="r">Shared 15 Nov 2026 16:50 UTC</span>`,
 		`<dt>IPv4</dt><dd class="c"><span class="w"><span class="v">203.0.113.9</span><button class="cp"`, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::9</span><button class="cp"`,
 		`<dt>DNS resolver</dt><dd class="od"><a href="/?203.0.113.50">203.0.113.50</a><a class="dn" href="/asn-example-net">EXAMPLE-NET</a></dd>`,
-		`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · <a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`,
+		`<dt>Network</dt><dd><a href="/asn-example-net">EXAMPLE-NET</a> · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
 		"<h1>Lisbon</h1>", "<p>Portugal</p>", `class="place mapped"`, `<svg class="map"`,
 	} {
 		if !strings.Contains(b, x) {
 			t.Errorf("report lacks %q", x)
 		}
 	}
-	for _, bad := range []string{"fetch(", `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>", "Prefix"} {
+	for _, bad := range []string{"fetch(", `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>", "<dt>Prefix"} {
 		if strings.Contains(b, bad) {
 			t.Errorf("report has %q", bad)
 		}
@@ -538,20 +538,33 @@ func TestReportPage(t *testing.T) {
 	}
 }
 
-// A report shows the values of the visit, not what the data says now.
+// A report shows the values of the visit, not what the data says now. Older
+// snapshots have no slug and no prefix: the handle links to the network page
+// and there is no prefix part.
 func TestReportShownAsStored(t *testing.T) {
 	s, m := shareServer(t)
 	_, id, _ := visit(s, "203.0.113.9")
-	sn := m.snapshot(t, id)
-	sn.Network.Handle, sn.Network.ASN, sn.Network.Domain, sn.Network.Category = "OLD-NAME", 1, "", ""
-	sn.Place = placeSnap{Country: "Spain", CC: "ES"}
-	b, _ := json.Marshal(sn)
-	m.mu.Lock()
-	m.kv["report:"+id] = string(b)
-	m.mu.Unlock()
-	body := get(s, "GET", "/report/"+id).Body.String()
-	if !strings.Contains(body, `<dd><a href="/as1">OLD-NAME</a></dd>`) || !strings.Contains(body, "<h1>Spain</h1>") || strings.Contains(body, "Lisbon") || !strings.Contains(body, `class="here"`) {
-		t.Error("the report is not shown as stored")
+	for _, c := range []struct {
+		name         string
+		slug, prefix string
+		want         string
+	}{
+		{"older snapshot: no slug, no prefix", "", "", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a></dd>`},
+		{"slug and prefix", "old-name", "198.51.100.0/24", `<dt>Network</dt><dd><a href="/asn-old-name">OLD-NAME</a> · <a href="/prefix/198.51.100.0/24">198.51.100.0/24</a></dd>`},
+		{"slug, prefix outside the page range: plain", "old-name", "2.0.0.0/7", `<dt>Network</dt><dd><a href="/asn-old-name">OLD-NAME</a> · 2.0.0.0/7</dd>`},
+		{"prefix, no slug", "", "198.51.100.0/24", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a> · <a href="/prefix/198.51.100.0/24">198.51.100.0/24</a></dd>`},
+	} {
+		sn := m.snapshot(t, id)
+		sn.Network = netSnap{ASN: 1, Handle: "OLD-NAME", Slug: c.slug, Prefix: c.prefix}
+		sn.Place = placeSnap{Country: "Spain", CC: "ES"}
+		b, _ := json.Marshal(sn)
+		m.mu.Lock()
+		m.kv["report:"+id] = string(b)
+		m.mu.Unlock()
+		body := get(s, "GET", "/report/"+id).Body.String()
+		if !strings.Contains(body, c.want) || !strings.Contains(body, "<h1>Spain</h1>") || strings.Contains(body, "Lisbon") || !strings.Contains(body, `class="here"`) {
+			t.Errorf("%s: the report is not shown as stored", c.name)
+		}
 	}
 }
 

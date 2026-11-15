@@ -202,8 +202,8 @@ func TestAddFillIgnoresOtherRows(t *testing.T) {
 		addr string
 		want []string
 	}{
-		{"203.0.113.9", []string{"X", "IPv4", "IPv6", "Network", "Y", "Prefix"}},
-		{"2001:db8::9", []string{"X", "IPv4", "IPv6", "Network", "Y", "Prefix"}},
+		{"203.0.113.9", []string{"X", "IPv4", "IPv6", "Network", "Y"}},
+		{"2001:db8::9", []string{"X", "IPv4", "IPv6", "Network", "Y"}},
 	} {
 		a := netip.MustParseAddr(c.addr)
 		p := s.panelFor("Your connection", a)

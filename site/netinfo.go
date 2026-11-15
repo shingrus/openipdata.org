@@ -1,25 +1,25 @@
 package main
 
 // What the connection panel says about a network: its short name (handle),
-// category and domain, from the loaded ASN data. Read per page view, one row
-// by number with parameters only, under the read lock of asnFile like the
-// network page (nothing is written to the client under it).
+// the organisation it links to and the announced prefix, from the loaded ASN
+// data (the in-memory records; no database read per page view).
 
 import (
-	"context"
-	"database/sql"
-	"regexp"
+	"net/netip"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 )
 
 // netSnap is what is known about the network of an address; it is also the
-// network part of a saved report. Handle is only ever read from the ASN data.
+// network part of a saved report. Handle and Slug are only ever read from the
+// ASN data. Category and Domain are no longer shown or filled; they stay so
+// that older saved reports still read.
 type netSnap struct {
 	ASN      uint32 `json:"asn,omitempty"`
 	Handle   string `json:"handle,omitempty"`
+	Slug     string `json:"slug,omitempty"`   // the organisation's slug: the handle links to /asn-<slug>
+	Prefix   string `json:"prefix,omitempty"` // the announced prefix of the address
 	Category string `json:"category,omitempty"`
 	Domain   string `json:"domain,omitempty"`
 	Org      string `json:"org,omitempty"` // the organisation (or name) text of the ip2asn MMDB
@@ -45,60 +45,42 @@ func (s *server) networkInfo(n asnRecord) netSnap {
 		return ns
 	}
 	ns.ASN = num
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	s.asnf.read(func(db *sql.DB, d *asnData) {
-		nw, found := d.find(num)
-		if !found {
-			return
+	if d := s.asnf.data(); d != nil {
+		if nw, found := d.find(num); found {
+			ns.Handle, ns.Slug = clip(nw.handle, 120), nw.slug
 		}
-		ns.Handle = nw.handle
-		var cat, jhandle sql.NullString
-		// One row by number; the JSON is read only for two small values, and only when valid.
-		err := db.QueryRowContext(ctx, `SELECT CASE WHEN json_valid(json) THEN json_extract(json, '$.metadata.category') END,
- CASE WHEN json_valid(json) THEN json_extract(json, '$.metadata.handle') END FROM asn WHERE asn = ?`, int64(num)).Scan(&cat, &jhandle)
-		if err == nil {
-			ns.Category = clip(cat.String, 40)
-			if ns.Handle == "" {
-				ns.Handle = jhandle.String
-			}
-		}
-		ns.Handle = clip(ns.Handle, 120)
-		var dom sql.NullString
-		// A missing domain, or a file without that table, only means unknown.
-		if err := db.QueryRowContext(ctx, `SELECT domain FROM asn_domain WHERE asn = ?`, int64(num)).Scan(&dom); err == nil {
-			ns.Domain = clip(dom.String, 100)
-		}
-	})
+	}
 	return ns
 }
 
-// parts are the pieces of the Network row: the handle (a link to the network
-// page), the category and the domain; a part that is unknown is left out. With
-// none of them the MMDB text, else the AS number, else a dash.
-// domainRE is a plain lower-case host name with at least one dot.
-var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
-
+// parts are the pieces of the Network row: the short name (handle) as a link
+// to the organisation page (to the network page when the organisation has no
+// page), then the announced prefix as a link to its page; a part that is
+// unknown is left out. With no handle the MMDB text, else the AS number, stands
+// in its place; with nothing at all a dash.
 func (ns netSnap) parts() []part {
 	var l []part
-	if ns.Handle != "" && ns.ASN != 0 {
+	switch {
+	case ns.Handle != "" && validSlug(ns.Slug):
+		l = append(l, part{Text: ns.Handle, Href: orgPathPrefix + ns.Slug})
+	case ns.Handle != "" && ns.ASN != 0:
 		l = append(l, part{Text: ns.Handle, Href: asnHref(ns.ASN)})
-	} else if ns.Handle != "" {
+	case ns.Handle != "":
 		l = append(l, part{Text: ns.Handle})
+	case ns.Org != "":
+		l = append(l, part{Text: ns.Org})
+	case ns.ASN != 0:
+		l = append(l, part{Text: "AS" + strconv.FormatUint(uint64(ns.ASN), 10)})
 	}
-	if ns.Domain != "" {
-		p := part{Text: ns.Domain}
-		if domainRE.MatchString(ns.Domain) { // only a plain host name becomes a link
-			p.Href, p.Ext = "https://"+ns.Domain+"/?utm_source=openipdata.org", true
+	if p, err := netip.ParsePrefix(ns.Prefix); err == nil && p == p.Masked() {
+		pp := part{Text: p.String()}
+		if prefixOK(p) {
+			pp.Href = prefixHref(p)
 		}
-		l = append(l, p)
+		l = append(l, pp)
 	}
-	if len(l) > 0 {
-		return l
+	if len(l) == 0 {
+		return []part{{Text: dash}}
 	}
-	text := ns.Org
-	if text == "" && ns.ASN != 0 {
-		text = "AS" + strconv.FormatUint(uint64(ns.ASN), 10)
-	}
-	return []part{{Text: orElseDash(text)}}
+	return l
 }

@@ -156,12 +156,12 @@ func TestPanelStates(t *testing.T) {
 		want, not    []string
 	}{
 		{"city", "/?203.0.113.9", 200,
-			[]string{"<h2>Lookup</h2>", "<h1>Lisbon</h1>", "<p>Portugal</p>", "<dt>Network</dt>", `<dd class="c"><span class="w"><span class="v">203.0.113.9</span>`, "Example Net", "<dt>Prefix</dt><dd>203.0.113.0/24</dd>", `value="203.0.113.9"`}, []string{"Your connection", "Location unknown"}},
+			[]string{"<h2>Lookup</h2>", "<h1>Lisbon</h1>", "<p>Portugal</p>", "<dt>Network</dt>", `<dd class="c"><span class="w"><span class="v">203.0.113.9</span>`, "Example Net · <a href=\"/prefix/203.0.113.0/24\">203.0.113.0/24</a>", `value="203.0.113.9"`}, []string{"Your connection", "Location unknown", "<dt>Prefix"}},
 		{"city v6", "/?2001:db8::5", 200,
-			[]string{"<h1>Lisbon</h1>", "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">2001:db8::5</span><button class=\"cp\"", "<dt>Prefix</dt><dd>2001:db8::/32</dd>", "Example Net"}, nil},
+			[]string{"<h1>Lisbon</h1>", "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">2001:db8::5</span><button class=\"cp\"", "Example Net · <a href=\"/prefix/2001:db8::/32\">2001:db8::/32</a>"}, nil},
 		{"IPv4", "/?203.0.113.9", 200, []string{"<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\"", `value="203.0.113.9"`}, []string{"::ffff"}},
 		{"country only", "/?198.51.100.1", 200,
-			[]string{"<h1>Spain</h1>", `<div class="place mapped"><svg class="map"`, "<dt>Network</dt><dd>—</dd>", "<dt>Prefix</dt><dd>—</dd>"}, []string{"Lisbon", "city unknown", "<p>"}},
+			[]string{"<h1>Spain</h1>", `<div class="place mapped"><svg class="map"`, "<dt>Network</dt><dd>—</dd>"}, []string{"<dt>Prefix", "Lisbon", "city unknown", "<p>"}},
 		{"nothing", "/?192.0.2.1", 200,
 			[]string{`<h1>Location unknown</h1>`, `class="place none"`, "<dt>Network</dt><dd>—</dd>", "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">192.0.2.1</span><button class=\"cp\""}, []string{"city unknown"}},
 		{"not public", "/?10.1.2.3", 200,
@@ -309,7 +309,7 @@ func TestLookupFilesMissing(t *testing.T) {
 	s.public = func(netip.Addr) bool { return true }
 	w := get(s, "GET", "/?203.0.113.9")
 	body := w.Body.String()
-	for _, x := range []string{"Location unknown", "<dt>Network</dt><dd>—</dd>", "<dt>Prefix</dt><dd>—</dd>", "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\""} {
+	for _, x := range []string{"Location unknown", "<dt>Network</dt><dd>—</dd>", "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\""} {
 		if w.Code != 200 || !strings.Contains(body, x) {
 			t.Errorf("no files: %d lacks %q", w.Code, x)
 		}

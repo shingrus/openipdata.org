@@ -423,9 +423,9 @@ func TestASNLookupRedirectAndLink(t *testing.T) {
 		}
 	}
 
-	// The Network row of the panel links the handle to the network page when the network is in the data.
+	// The Network row of the panel links the handle to the organisation page when the network is in the data.
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
-	if !strings.Contains(body, `<dd><a href="/as64500">EXAMPLE-NET</a> · <a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`) {
+	if !strings.Contains(body, `<dd><a href="/asn-example-net">EXAMPLE-NET</a> · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
 		t.Errorf("no link in the panel: %s", body)
 	}
 }
@@ -441,7 +441,7 @@ func TestASNLinkNeedsTheNetwork(t *testing.T) {
 	s.public = func(netip.Addr) bool { return true }
 	s.useASN(path)
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
-	if !strings.Contains(body, `<dt>Network</dt><dd>Example Net</dd>`) || strings.Contains(body, `href="/as64500"`) {
+	if !strings.Contains(body, `<dt>Network</dt><dd>Example Net · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) || strings.Contains(body, `href="/as64500"`) {
 		t.Error("a link to a network that is not in the data")
 	}
 }
@@ -480,7 +480,7 @@ func TestASNNotLoaded(t *testing.T) {
 		if w := get(s, "GET", "/"); w.Code != 200 {
 			t.Errorf("%s: home %d", name, w.Code)
 		}
-		if body := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(body, `<dt>Network</dt><dd>Example Net</dd>`) || strings.Contains(body, `href="/as64500"`) {
+		if body := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(body, `<dt>Network</dt><dd>Example Net · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) || strings.Contains(body, `href="/as64500"`) {
 			t.Errorf("%s: the AS text is not plain", name)
 		}
 		if w := get(s, "GET", "/healthz"); w.Code != 200 {

@@ -353,7 +353,6 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		if a, ok := clientAddr(r, s.realIP); ok {
 			input = a.String()
 			p = s.panelFor("Your connection", a)
-			visitorRows(&p)
 			fill = s.addFill(&p, a)
 			res = s.addDNS(&p)
 			if r.Method == http.MethodGet { // a HEAD request (a monitor) saves nothing

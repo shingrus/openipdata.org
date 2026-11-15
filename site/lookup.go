@@ -453,25 +453,21 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	var n asnRecord
 	prefix, found := s.asn.lookup(a, &n)
 	info := s.networkInfo(n)
-	pfx, pfxHref := dash, ""
 	if found && prefix.IsValid() {
-		pfx = prefix.String()
+		info.Prefix = prefix.String()
 	}
 	// With the ASN data loaded the prefix is the longest announced one: the
 	// MMDB tree may hold only a piece of it (a more specific prefix splits it).
 	if d := s.asnf.data(); d != nil {
 		if lp, _, ok := d.idx.longest(a); ok {
-			pfx = lp.String()
-			if prefixOK(lp) {
-				pfxHref = prefixHref(lp)
-			}
+			info.Prefix = lp.String()
 		}
 	}
 	family, fam := "IPv6", 6
 	if a.Is4() {
 		family, fam = "IPv4", 4
 	}
-	p.Rows = []row{{K: family, V: a.String(), Own: true, Copy: true}, {K: "Network", Parts: info.parts()}, {K: "Prefix", V: pfx, VHref: pfxHref}}
+	p.Rows = []row{{K: family, V: a.String(), Own: true, Copy: true}, {K: "Network", Parts: info.parts()}}
 	p.Copy = true
 	p.snap = &snapshot{Created: s.now().UTC().Format(time.RFC3339), IP: a.String(), Family: fam, Network: info}
 	if g.CityName != "" || g.CountryCode != "" || g.CountryName != "" {
@@ -481,12 +477,6 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 		}
 	}
 	return p
-}
-
-// visitorRows turns the panel of the visitor's own address into the rows of
-// the visitor's page: no Prefix row.
-func visitorRows(p *panel) {
-	p.Rows = slices.DeleteFunc(p.Rows, func(r row) bool { return r.K == "Prefix" })
 }
 
 // orgLink is the organisation page of the network of this record, from the
