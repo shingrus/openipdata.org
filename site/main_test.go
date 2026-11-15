@@ -124,7 +124,7 @@ func TestHome(t *testing.T) {
 			t.Errorf("script %d: hash %s, CSP has %s", i, got, hashes[i][1])
 		}
 	}
-	for _, want := range []string{"default-src 'none'", "font-src 'self'", "img-src data:", "base-uri 'none'", "frame-ancestors 'none'"} {
+	for _, want := range []string{"default-src 'none'", "font-src 'self'", "img-src 'self' data:", "base-uri 'none'", "frame-ancestors 'none'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP lacks %q: %s", want, csp)
 		}

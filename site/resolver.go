@@ -4,7 +4,7 @@ package main
 // page's one-time name. Our DNS server writes the resolver address to Redis;
 // the answer holds that address (the resolver's, not the visitor's), its
 // network name and a page link. Neither the token nor the address is logged.
-// With a saved report (see share.go) the answer is also added to it.
+// It reads Redis only; it never touches a shared report.
 
 import (
 	"encoding/json"
@@ -60,9 +60,6 @@ func (s *server) serveResolver(w http.ResponseWriter, r *http.Request) {
 	} else if a, ok := parseAddr(val); ok && s.public(a) {
 		info := s.resolverNetwork(a)
 		body, _ = json.Marshal(info)
-		if r.Method == http.MethodGet {
-			s.noteResolver(t[0], info) // the report of the page that made this name, if it has one
-		}
 	}
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(code)

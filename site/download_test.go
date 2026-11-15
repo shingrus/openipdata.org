@@ -56,7 +56,7 @@ func TestDownloadPage(t *testing.T) {
 		t.Error("no size")
 	}
 	// Same policy as every page with panel.js; the data block needs no hash.
-	if got, want := w.Header().Get("Content-Security-Policy"), s.pageCSP(false, false, true); got != want {
+	if got, want := w.Header().Get("Content-Security-Policy"), s.pageCSP(false, false, true, false); got != want {
 		t.Errorf("CSP %q, want %q", got, want)
 	}
 	if got := get(s, "GET", "/?203.0.113.9").Header().Get("Content-Security-Policy"); got == w.Header().Get("Content-Security-Policy") {

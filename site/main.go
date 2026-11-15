@@ -29,10 +29,9 @@
 //	REDIS_ADDR  loopback address of the Redis where our DNS server records the
 //	          resolver of each name, and where shared reports are kept (default
 //	          127.0.0.1:6379).
-//	SHARE     on (default) or off: save a snapshot of every visit of the home page
-//	          for 30 days so the Share button can link to it, and serve
-//	          /report/<id>. Needs Redis; with it off nothing is written and
-//	          /report/... answers 404.
+//	SHARE     on (default) or off: POST /share (the Share button) saves a report
+//	          for 30 days and /report/<id> serves it; a page view never writes.
+//	          Needs Redis; with it off /share and /report/... answer 404.
 //	SITE_ORIGIN  origin of the share links, the canonical URLs, robots.txt and the
 //	          sitemaps (default https://openipdata.org; an absolute https URL
 //	          without path).
@@ -72,6 +71,13 @@ var templateFiles embed.FS
 //go:embed static/fonts/*.woff2
 var fontFiles embed.FS
 
+// The home-screen icon (180x180, the orange dot of the favicon on the dark
+// background), asked for as /apple-touch-icon.png and, by iOS, as the
+// -precomposed name.
+//
+//go:embed static/apple-touch-icon.png
+var touchIcon []byte
+
 // version is the commit the binary was built from; the release build sets it
 // with -ldflags "-X main.version=<sha>".
 var version = "dev"
@@ -104,7 +110,7 @@ type server struct {
 	seo        atomic.Pointer[seoStatic] // robots.txt, llms.txt and the fixed sitemaps for s.origin
 	dl         dlCache                   // the rendered /download page
 	shareMu    [64]sync.Mutex            // updates of one report run one after another (see updateReport)
-	cspPnl     [4]string                 // csp of a page that has panel.js, by fill (1) and res (2)
+	cspPnl     [8]string                 // csp of a page that has panel.js, by fill (1), res (2) and the Share button (4)
 	public     func(netip.Addr) bool
 	world      *world           // country outlines for the map, decoded once at start
 	placeLimit int              // most MMDB records read for the places of a prefix page
@@ -141,18 +147,29 @@ func (s *server) buildCSP() {
 		s.cspRes = cspWith(nil, s.zone)
 		s.cspBoth = cspWith(s.origins, s.zone)
 	}
-	// The same four with panel.js.
-	s.cspPnl[0] = cspFor(nil, "", true)
-	s.cspPnl[1] = cspFor(s.origins, "", true)
-	s.cspPnl[2] = cspFor(nil, s.zone, true)
-	s.cspPnl[3] = cspFor(s.origins, s.zone, true)
+	// The same four with panel.js, and the four again for the page with the Share button
+	// (its POST goes to the same origin).
+	for i := range s.cspPnl {
+		var o []string
+		if i&1 != 0 {
+			o = s.origins
+		}
+		z := ""
+		if i&2 != 0 {
+			z = s.zone
+		}
+		s.cspPnl[i] = cspFor(o, z, true, i&4 != 0)
+	}
 }
 
 // pageCSP is the policy of a page with the fill script, the DNS row script
 // and/or the panel script (copy and share buttons).
-func (s *server) pageCSP(fill, res, pnl bool) string {
+func (s *server) pageCSP(fill, res, pnl, share bool) string {
 	if pnl {
 		i := 0
+		if share {
+			i |= 4
+		}
 		if fill {
 			i |= 1
 		}
@@ -257,6 +274,10 @@ func (s *server) watch(ctx context.Context) {
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/share" { // the only route that takes POST
+		s.serveShare(w, r)
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		plain(w, http.StatusMethodNotAllowed, "method not allowed\n")
@@ -288,6 +309,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/healthz":
 		w.Header().Set("Cache-Control", "no-store")
 		plain(w, http.StatusOK, "ok "+version+"\n")
+	case p == "/apple-touch-icon.png" || p == "/apple-touch-icon-precomposed.png":
+		h := w.Header()
+		h.Set("Content-Type", "image/png")
+		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Content-Length", strconv.Itoa(len(touchIcon)))
+		w.Write(touchIcon)
 	case p == "/favicon.ico":
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		w.WriteHeader(http.StatusNoContent)
@@ -365,9 +393,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 			p = s.panelFor("Your connection", a)
 			fill = s.addFill(&p, a)
 			res = s.addDNS(&p)
-			if r.Method == http.MethodGet { // a HEAD request (a monitor) saves nothing
-				s.startShare(&p)
-			}
+			p.Share = s.shareOn() && p.Msg == "" // a page view stores nothing; the button makes the report
 		} else {
 			p = panel{Title: "Your connection", Msg: "Address unknown"}
 		}
@@ -375,10 +401,12 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	v := makeView(*s.scores.Load())
 	v.Panel, v.Input, v.Title, v.Fill, v.Res = &p, input, title, fill, res
 	v.Pnl = p.Copy
+	share := p.Share
+	v.Share = share
 	v.Desc, v.Canon = desc, canon
 	v.NoIndex = q.kind == "bad" || q.kind == "lookup"
 	if fill || res || v.Pnl {
-		h.Set("Content-Security-Policy", s.pageCSP(fill, res, v.Pnl))
+		h.Set("Content-Security-Policy", s.pageCSP(fill, res, v.Pnl, share))
 	}
 	body, err := render(s.tmpl, "home.html", v)
 	if err != nil {

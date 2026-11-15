@@ -129,6 +129,7 @@ env_value() {
 
 beacon=0          # 1 when the public IPv4 is known: the beacon is installed
 beacon_changed=0  # 1 when Knot's files changed and Knot must be restarted
+beacon_unit_changed=0 # 1 when the installed openipdata-beacon.service differs from the one in the repo (restart it)
 PUBLIC_IPV4=""
 PUBLIC_IPV6=""
 
@@ -191,7 +192,7 @@ beacon_prepare() {
     # flood of random names must not fill the memory) and the shared reports of the website (30 days,
     # visitor addresses included; see AGENTS.md, "Share"), which must survive a restart and must not be
     # pushed out by beacon keys. So: RDB snapshots on (appendonly stays off), and a memory limit with
-    # volatile-ttl, which drops the keys that expire soonest first (beacons, 10 minutes or less, before
+    # volatile-ttl, which drops the keys that expire soonest first (beacons, an hour or less, before
     # reports, 30 days). (save lines add up, so the empty save first clears the distribution's own list.)
     # A marked block at the end of the file (the last setting wins); rewritten on every run.
     local tmp
@@ -328,7 +329,11 @@ beacon_start() {
         systemctl restart knot || log "warning: knot did not start: journalctl -u knot"
     fi
     if [[ -x "$BIN_DIR/openipdata-beacon" ]]; then
-        systemctl start openipdata-beacon.service || log "warning: openipdata-beacon did not start: journalctl -u openipdata-beacon"
+        if ((beacon_unit_changed)) && systemctl is-active --quiet openipdata-beacon.service; then
+            systemctl restart openipdata-beacon.service || log "warning: openipdata-beacon did not restart: journalctl -u openipdata-beacon"
+        else
+            systemctl start openipdata-beacon.service || log "warning: openipdata-beacon did not start: journalctl -u openipdata-beacon"
+        fi
     else
         log "the beacon binary is not installed yet (release asset openipdata-beacon-linux-amd64; the updater installs it within 2 minutes after the workflow ran)"
     fi
@@ -427,6 +432,10 @@ done
 log "installed scripts in $BIN_DIR"
 
 for u in "${UNITS[@]}"; do
+    # A changed beacon unit (e.g. BEACON_TTL) only takes effect after a restart: beacon_start does it.
+    if [[ "$u" == openipdata-beacon.service ]] && ! cmp -s "$SCRIPT_DIR/systemd/$u" "/etc/systemd/system/$u"; then
+        beacon_unit_changed=1
+    fi
     install -m 0644 -o root -g root "$SCRIPT_DIR/systemd/$u" "/etc/systemd/system/$u"
 done
 systemctl daemon-reload

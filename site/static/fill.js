@@ -1,4 +1,4 @@
-// Fills the row of the other address family; a failed, slow (4 s) or implausible answer leaves the dash.
+// Fills the row of the other address family; a failed, slow (4 s) or implausible answer shows none (until then, and without JavaScript, the dash).
 (function () {
   var d = document.getElementById("other");
   if (!d) return;
@@ -10,15 +10,18 @@
     }
     return s.length < 40 && /^[0-9a-f:]+$/i.test(s) && s.split(":").length > 2;
   }
+  function no() {
+    if (v) { v.textContent = "none"; d.classList.add("none"); }
+  }
   function go() {
     try {
       var c = new AbortController(), k = setTimeout(function () { c.abort(); }, 4000);
       fetch(u, { signal: c.signal, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
         .then(function (r) { return r.ok ? r.text() : ""; })
-        .then(function (t) { t = t.trim(); if (v && ok(t)) { v.textContent = t; if (b) b.hidden = false; } })
-        .catch(function () {})
+        .then(function (t) { t = t.trim(); if (v && ok(t)) { v.textContent = t; if (b) b.hidden = false; } else no(); })
+        .catch(no)
         .then(function () { clearTimeout(k); });
-    } catch (e) {}
+    } catch (e) { no(); }
   }
   document.readyState == "loading" ? document.addEventListener("DOMContentLoaded", go) : go();
 })();

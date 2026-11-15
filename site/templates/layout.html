@@ -9,6 +9,9 @@
 {{end}}{{if .LD}}<script type="application/ld+json">{{.LD}}</script>
 {{end}}{{if .NoIndex}}<meta name="robots" content="noindex">
 {{end}}<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0a0c0f" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3f4f2" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23ff7d1f'/%3E%3C/svg%3E">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/geist-latin.woff2">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/geist-mono-latin.woff2">
@@ -30,12 +33,12 @@
 </form>
 {{end}}
 {{define "panel"}}<section class="panel">
-<div class="head{{if .Share}} hs{{end}}"><h2>{{.Title}}</h2>{{if .Share}}<button class="sh" type="button" hidden data-url="{{.Share}}">Share</button>{{end}}{{if .Right}}<span class="r">{{.Right}}</span>{{end}}</div>
+<div class="head{{if .Share}} hs{{end}}"><h2>{{.Title}}</h2>{{if .Share}}<button class="sh" type="button" hidden>Share</button>{{end}}{{if .Right}}<span class="r">{{.Right}}</span>{{end}}</div>
 {{if .Msg}}<p class="msg">{{if .Addr}}<span class="mono">{{.Addr}}</span>{{end}}{{.Msg}}</p>
 {{else}}<div class="conn">
 <div class="place{{if .None}} none{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
 <dl>
-{{range .Rows}}<div><dt>{{.K}}</dt><dd{{if .Fam}} id="other" class="c o{{.Fam}}" data-fam="{{.Fam}}" data-from="{{.From}}"{{else if .Zone}} id="dns" class="od" data-zone="{{.Zone}}"{{if .Token}} data-token="{{.Token}}"{{end}}{{else if .Copy}} class="c"{{else if .VHref}}{{if .Parts}} class="od"{{end}}{{end}}>{{if .Copy}}<span class="w"><span class="v">{{.V}}</span><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button></span>{{else if .VHref}}<a href="{{.VHref}}">{{.V}}</a>{{range .Parts}}{{if .Href}}<a class="dn" href="{{.Href}}">{{.Text}}</a>{{else}}<span class="dn">{{.Text}}</span>{{end}}{{end}}{{else if .Parts}}{{template "parts" .Parts}}{{else}}{{.V}}{{end}}</dd></div>
+{{range .Rows}}<div><dt>{{.K}}</dt><dd{{if .Fam}} id="other" class="c o{{.Fam}}" data-fam="{{.Fam}}" data-from="{{.From}}"{{else if .Zone}} id="dns" class="od" data-zone="{{.Zone}}"{{else if .Copy}} class="c"{{else if .VHref}}{{if .Parts}} class="od"{{end}}{{end}}>{{if .Copy}}<span class="w"><span class="v">{{.V}}</span><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button></span>{{else if .VHref}}<a href="{{.VHref}}">{{.V}}</a>{{range .Parts}}{{if .Href}}<a class="dn" href="{{.Href}}">{{.Text}}</a>{{else}}<span class="dn">{{.Text}}</span>{{end}}{{end}}{{else if .Parts}}{{template "parts" .Parts}}{{else}}{{.V}}{{end}}</dd></div>
 {{end}}</dl>
 </div>
 {{if .Copy}}<svg width="0" height="0" class="sy" aria-hidden="true"><symbol id="i-cp" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></symbol><symbol id="i-ck" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8.5 3.2 3.2L13 4.8"/></symbol></svg>
@@ -47,6 +50,7 @@
 {{if .Fill}}<script>{{.FillJS}}</script>
 {{end}}{{if .Res}}<script>{{.ResJS}}</script>
 {{end}}{{if .Pnl}}<script>{{.PnlJS}}</script>
+{{end}}{{if .Share}}<script>{{.ShareJS}}</script>
 {{end}}</body>
 </html>
 {{end}}

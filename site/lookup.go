@@ -353,7 +353,6 @@ type row struct {
 	Fam   string // "4" or "6": a row the page script fills in with the address of that family, found at From
 	From  string
 	Zone  string // the DNS row: the page script fills it in with the address and company of the visitor's DNS resolver, using names under this zone
-	Token string // the DNS row: the one-time name the page asks for (made by the server when the visit is saved); empty = the script makes its own
 	Copy  bool   // V is an address with a copy button (hidden until the page script runs)
 	Own   bool   // the row of the address family that is looked up (addFill places the other family's row by it)
 }
@@ -369,7 +368,7 @@ type panel struct {
 	Map   template.HTML // the outline map behind the place (see worldmap.go), or empty
 	Rows  []row
 	Right string // right side of the head (the time of a shared report)
-	Share string // the link the Share button copies; empty = no button
+	Share bool   // the visitor's own page has the (hidden) Share button, which makes a report on demand (POST /share)
 	Copy  bool   // a row has a copy button: the page has panel.js
 
 	snap *snapshot // what a visit of the home page saves (see share.go); nil on other pages

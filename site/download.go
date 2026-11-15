@@ -209,7 +209,7 @@ func (s *server) serveDownload(w http.ResponseWriter, r *http.Request) {
 		plain(w, http.StatusInternalServerError, "error\n")
 		return
 	}
-	pageHeaders(w.Header(), s.pageCSP(false, false, true))
+	pageHeaders(w.Header(), s.pageCSP(false, false, true, false))
 	servePage(w, r, pg, "text/html; charset=utf-8", asnCache)
 }
 

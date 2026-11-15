@@ -124,7 +124,7 @@ func TestFillScriptAndCSP(t *testing.T) {
 		if strings.Contains(c, "connect-src") || strings.Contains(c, scriptHash(fillJS)) {
 			t.Errorf("%s: csp %s", name, c)
 		}
-		if strings.Contains(b, "fetch(") || strings.Contains(b, `id="other"`) {
+		if strings.Contains(b, fillJS) || strings.Contains(b, `id="other"`) {
 			t.Errorf("%s: has the fill script or row", name)
 		}
 	}
@@ -144,7 +144,7 @@ func TestFillOnlyOneURL(t *testing.T) {
 	}
 	// IPv4 visitor: the IPv6 URL is empty, so the page is as before.
 	w = fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
-	if b := w.Body.String(); strings.Contains(b, "<dt>IPv6</dt>") || strings.Contains(b, "fetch(") || strings.Contains(w.Header().Get("Content-Security-Policy"), "connect-src") {
+	if b := w.Body.String(); strings.Contains(b, "<dt>IPv6</dt>") || strings.Contains(b, fillJS) || strings.Contains(w.Header().Get("Content-Security-Policy"), "connect-src") {
 		t.Error("v4 visitor with no V6_URL must see the old page")
 	}
 }
@@ -153,7 +153,7 @@ func TestEmptyURLsPageAsToday(t *testing.T) {
 	for _, s := range []*server{fixtureServer(t), fillServer(t, "", "")} {
 		w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
 		b, c := w.Body.String(), w.Header().Get("Content-Security-Policy")
-		if strings.Contains(b, "fetch(") || strings.Contains(b, `id="other"`) || strings.Contains(b, "<dt>IPv6</dt>") {
+		if strings.Contains(b, fillJS) || strings.Contains(b, `id="other"`) || strings.Contains(b, "<dt>IPv6</dt>") {
 			t.Error("page differs from today")
 		}
 		if c != s.cspPnl[0] || strings.Contains(c, "connect-src") {
@@ -254,8 +254,9 @@ func TestScriptTextRejectsEmpty(t *testing.T) {
 
 // The visitor page with the fill script, with a map (Lisbon fixture) and
 // without one (an address the geo fixture does not know), stays under the size
-// limits of TestMapSizes (see the numbers there). Logged: 19849 and 17967 bytes
-// (7212 and 6314 gzipped) on 2026-11-15, after the copy and share work.
+// limits of TestMapSizes (see the numbers there). Logged: 18667 and 16730 bytes
+// (6730 and 5808 gzipped) on 2026-11-15, after the scripts lost their comments and indentation
+// (19849 and 17967, 7212 and 6314 gzipped, before).
 func TestVisitorPageSize(t *testing.T) {
 	s := fillServer(t, u4, u6)
 	for _, c := range []struct {

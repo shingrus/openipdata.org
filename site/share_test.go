@@ -176,22 +176,37 @@ func shareServer(t *testing.T) (*server, *memRedis) {
 	return s, m
 }
 
-var (
-	shareRE = regexp.MustCompile(`data-url="https://openipdata\.org/report/([0-9a-f]{32})"`)
-	tokRE   = regexp.MustCompile(`data-token="([0-9a-f]{32})"`)
-)
+// postShare sends POST /share as the visitor ip (through the loopback proxy
+// peer) with the X-Share header and an optional form body.
+func postShare(s http.Handler, ip, body string, hdr ...string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "/share", strings.NewReader(body))
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("X-Share", "1")
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if ip != "" {
+		r.Header.Set("X-Real-IP", ip)
+	}
+	for i := 0; i+1 < len(hdr); i += 2 {
+		if hdr[i+1] == "" {
+			r.Header.Del(hdr[i])
+		} else {
+			r.Header.Set(hdr[i], hdr[i+1])
+		}
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	return w
+}
 
-func visit(s *server, ip string) (*httptest.ResponseRecorder, string, string) {
-	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", ip)
-	b := w.Body.String()
-	var id, token string
-	if m := shareRE.FindStringSubmatch(b); m != nil {
-		id = m[1]
+// share makes a report as the visitor ip and returns its id.
+func share(t *testing.T, s http.Handler, ip, body string) string {
+	t.Helper()
+	w := postShare(s, ip, body)
+	var j struct{ URL, ID string }
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &j) != nil || len(j.ID) != 32 {
+		t.Fatalf("share: %d %s", w.Code, w.Body.String())
 	}
-	if m := tokRE.FindStringSubmatch(b); m != nil {
-		token = m[1]
-	}
-	return w, id, token
+	return j.ID
 }
 
 // captureLog collects what the standard logger writes during a test.
@@ -247,142 +262,246 @@ func TestRedisSetAndGet(t *testing.T) {
 	}
 }
 
-func TestShareSnapshotOnVisit(t *testing.T) {
-	logs := captureLog(t)
+// A page view does no Redis work at all: no read, no write.
+func TestHomeViewMakesNoRedisCall(t *testing.T) {
 	s, m := shareServer(t)
-	w, id, token := visit(s, "203.0.113.9")
-	if w.Code != 200 || id == "" || token == "" || id == token {
-		t.Fatalf("status %d, id %q, token %q", w.Code, id, token)
-	}
-	b := w.Body.String()
-	if !strings.Contains(b, `<button class="sh" type="button" hidden data-url="https://openipdata.org/report/`+id+`">Share</button>`) {
-		t.Error("no hidden Share button")
-	}
-	if !strings.Contains(b, `data-from="`+u6+`?r=`+id+`"`) {
-		t.Error("the request of the other family does not carry the report id")
-	}
-	if !strings.Contains(b, `<dd id="dns" class="od" data-zone="r.openipdata.org" data-token="`+token+`">`) {
-		t.Error("the DNS row has no server token")
-	}
-	if strings.Count(b, id) != 2 || strings.Count(b, token) != 1 { // the button and the other-family URL; the DNS row
-		t.Errorf("id appears %d times, token %d times", strings.Count(b, id), strings.Count(b, token))
-	}
-	// Only the report and its beacon key were written.
-	if got := m.keys(""); len(got) != 2 {
-		t.Errorf("keys: %v", got)
-	}
-	v, ttl := m.get("report:" + id)
-	if ttl != 2592000 {
-		t.Errorf("report expires in %d s", ttl)
-	}
-	if rt, rttl := m.get("rt:" + token); rt != id || rttl != 600 {
-		t.Errorf("beacon key %q ttl %d", rt, rttl)
-	}
-	var raw map[string]any
-	json.Unmarshal([]byte(v), &raw)
-	t.Logf("snapshot: %s", v)
-	for _, k := range []string{"created", "ip", "family", "place", "network"} {
-		if _, ok := raw[k]; !ok {
-			t.Errorf("snapshot lacks %s", k)
+	for _, target := range []string{"/", "/?203.0.113.9", "/as64500", "/top-asn-by-ip-address"} {
+		w := fromPeer(s, target, "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
+		b := w.Body.String()
+		if w.Code != 200 || strings.Contains(b, "data-token") || strings.Contains(b, "?r=") || strings.Contains(b, "data-url") {
+			t.Errorf("%s: status %d or old attributes", target, w.Code)
 		}
 	}
-	sn := m.snapshot(t, id)
-	if sn.Created != "2026-11-15T16:50:12Z" || sn.IP != "203.0.113.9" || sn.Family != 4 || sn.Other != "" || sn.Resolver != nil ||
-		sn.Place.City != "Lisbon" || sn.Place.Country != "Portugal" || sn.Place.CC != "PT" || sn.Place.Lat == nil || sn.Place.Lon == nil ||
-		sn.Network.ASN != 64500 || sn.Network.Handle != "EXAMPLE-NET" || sn.Network.Slug != "example-net" || sn.Network.Prefix != "203.0.113.0/24" || sn.Network.Category != "" || sn.Network.Domain != "" || sn.Network.Org != "Example Net" {
-		t.Errorf("snapshot: %+v", sn)
-	}
-	for _, bad := range []string{"User-Agent", "Mozilla", "Referer", "X-Real-IP", "headers"} {
-		if strings.Contains(v, bad) {
-			t.Errorf("snapshot has %q", bad)
-		}
-	}
-	// Every visit saves its own report.
-	_, id2, _ := visit(s, "203.0.113.9")
-	if id2 == "" || id2 == id || len(m.keys("report:")) != 2 {
-		t.Error("a second visit did not make its own report")
-	}
-	if strings.Contains(logs.String(), id) || strings.Contains(logs.String(), token) || strings.Contains(logs.String(), "203.0.113.9") {
-		t.Errorf("an id, token or address in the log:\n%s", logs)
-	}
-}
-
-func TestShareNotSavedElsewhere(t *testing.T) {
-	s, m := shareServer(t)
-	for name, target := range map[string]string{"lookup": "/?203.0.113.9", "bad": "/?1.2.3", "asn": "/as64500", "top": "/top-asn-by-ip-address", "status": "/status"} {
-		w := get(s, "GET", target)
-		if strings.Contains(w.Body.String(), `class="sh"`) {
-			t.Errorf("%s: Share button", name)
-		}
-	}
-	if w := fromPeer(s, "/", "127.0.0.1:1"); strings.Contains(w.Body.String(), `class="sh"`) { // address unknown
-		t.Error("button on the unknown-address page")
-	}
-	if w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "10.0.0.1"); strings.Contains(w.Body.String(), `class="sh"`) { // not a public address
-		t.Error("button for a private address")
-	}
-	// HEAD saves nothing.
 	r := httptest.NewRequest("HEAD", "/", nil)
 	r.RemoteAddr = "127.0.0.1:1"
 	r.Header.Set("X-Real-IP", "203.0.113.9")
 	s.ServeHTTP(httptest.NewRecorder(), r)
-	if got := m.commands("SET"); len(got) != 0 {
-		t.Errorf("writes without a visit: %v", got)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.cmds) != 0 || len(m.kv) != 0 {
+		t.Errorf("page views used Redis: %v", m.cmds)
+	}
+}
+
+func TestShareButtonPresence(t *testing.T) {
+	s, _ := shareServer(t)
+	btn := `<button class="sh" type="button" hidden>Share</button>`
+	b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()
+	if !strings.Contains(b, btn) {
+		t.Error("no hidden Share button on the visitor page")
+	}
+	for name, target := range map[string]string{"lookup": "/?203.0.113.9", "bad": "/?1.2.3", "asn": "/as64500", "top": "/top-asn-by-ip-address", "status": "/status"} {
+		if strings.Contains(get(s, "GET", target).Body.String(), `class="sh"`) {
+			t.Errorf("%s: Share button", name)
+		}
+	}
+	if strings.Contains(fromPeer(s, "/", "127.0.0.1:1").Body.String(), `class="sh"`) { // address unknown
+		t.Error("button on the unknown-address page")
+	}
+	if strings.Contains(fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "10.0.0.1").Body.String(), `class="sh"`) { // not public
+		t.Error("button for a private address")
+	}
+	s.useShare(false, "")
+	if strings.Contains(fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(), `class="sh"`) {
+		t.Error("button with SHARE=off")
+	}
+}
+
+func TestShareCSP(t *testing.T) {
+	s, _ := shareServer(t)
+	cspOf := func(target, ip string) string {
+		return fromPeer(s, target, "127.0.0.1:1", "X-Real-IP", ip).Header().Get("Content-Security-Policy")
+	}
+	if c := cspOf("/", "203.0.113.9"); !strings.Contains(c, "connect-src 'self' "+"https://v4.openipdata.org") || !strings.Contains(c, "https://*.r.openipdata.org") {
+		t.Errorf("visitor page CSP: %s", c)
+	}
+	for _, c := range []string{cspOf("/?203.0.113.9", "203.0.113.9"), cspOf("/status", "203.0.113.9"), cspOf("/", "10.0.0.1"),
+		get(s, "GET", "/download").Header().Get("Content-Security-Policy")} {
+		if strings.Contains(c, "'self'") && strings.Contains(c, "connect-src") {
+			t.Errorf("'self' in connect-src of a page without the button: %s", c)
+		}
+	}
+	// Without both addresses and the DNS row, the button page still gets 'self'.
+	s2, _ := shareServer(t)
+	s2.useURLs("", "")
+	s2.useBeacon("", s2.redis.addr)
+	if c := fromPeer(s2, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Header().Get("Content-Security-Policy"); !strings.Contains(c, "connect-src 'self';") {
+		t.Errorf("button page CSP: %s", c)
+	}
+}
+
+func TestShareEndpoint(t *testing.T) {
+	logs := captureLog(t)
+	s, m := shareServer(t)
+	m.hash["beacon:"+tok] = map[string]string{"resolver_ip": "203.0.113.50"}
+	m.hash["beacon:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] = map[string]string{"resolver_ip": "10.1.1.1"}
+
+	// A normal share with the page's token.
+	w := postShare(s, "203.0.113.9", "t="+tok)
+	h := w.Header()
+	var j struct{ URL, ID string }
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &j) != nil || j.URL != "https://openipdata.org/report/"+j.ID || len(j.ID) != 32 ||
+		h.Get("Cache-Control") != "no-store" || !strings.HasPrefix(h.Get("Content-Type"), "application/json") ||
+		h.Get("Access-Control-Allow-Origin") != "" || h.Get("Access-Control-Allow-Headers") != "" {
+		t.Fatalf("share: %d %v %s", w.Code, h, w.Body.String())
+	}
+	v, ttl := m.get("report:" + j.ID)
+	if ttl != 2592000 {
+		t.Errorf("report expires in %d s", ttl)
+	}
+	sn := m.snapshot(t, j.ID)
+	if sn.Created != "2026-11-15T16:50:12Z" || sn.IP != "203.0.113.9" || sn.Family != 4 || sn.Other != "" ||
+		sn.Place.City != "Lisbon" || sn.Place.Country != "Portugal" || sn.Place.CC != "PT" || sn.Place.Lat == nil || sn.Place.Lon == nil ||
+		sn.Network.ASN != 64500 || sn.Network.Handle != "EXAMPLE-NET" || sn.Network.Slug != "example-net" || sn.Network.Prefix != "203.0.113.0/24" || sn.Network.Org != "Example Net" ||
+		sn.Resolver == nil || sn.Resolver.IP != "203.0.113.50" || sn.Resolver.Name != "EXAMPLE-NET" || sn.Resolver.Org != "/asn-example-net" {
+		t.Errorf("snapshot: %+v", sn)
+	}
+	if cmds := m.commands("SET"); len(cmds) != 1 || len(m.kv) != 1 {
+		t.Errorf("writes: %d, keys %d", len(cmds), len(m.kv))
+	}
+	for _, bad := range []string{"User-Agent", "Mozilla", "X-Share", "X-Real-IP", "headers", "t="} {
+		if strings.Contains(v, bad) {
+			t.Errorf("snapshot has %q", bad)
+		}
+	}
+	// Each press makes its own report; no token = no resolver.
+	w2 := postShare(s, "2001:db8::5", "")
+	var j2 struct{ URL, ID string }
+	json.Unmarshal(w2.Body.Bytes(), &j2)
+	if sn2 := m.snapshot(t, j2.ID); w2.Code != 200 || j2.ID == j.ID || sn2.Resolver != nil || sn2.Family != 6 || sn2.IP != "2001:db8::5" {
+		t.Errorf("second share: %d %+v", w2.Code, sn2)
+	}
+	// A missing, malformed, doubled or private-resolver token adds no resolver; the query works too.
+	for name, c := range map[string]struct {
+		target, body string
+		want         bool
+	}{
+		"missing":  {"/share", "t=fedcba9876543210fedcba9876543210", false},
+		"bad":      {"/share", "t=xyz", false},
+		"upper":    {"/share", "t=" + strings.ToUpper(tok), false},
+		"doubled":  {"/share", "t=" + tok + "&t=" + tok, false},
+		"private":  {"/share", "t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false},
+		"in query": {"/share?t=" + tok, "", true},
+		"junk":     {"/share", "x=1&t=" + tok + "&ip=8.8.8.8", true},
+	} {
+		r := httptest.NewRequest("POST", c.target, strings.NewReader(c.body))
+		r.RemoteAddr = "127.0.0.1:1"
+		r.Header.Set("X-Share", "1")
+		r.Header.Set("X-Real-IP", "203.0.113.9")
+		rw := httptest.NewRecorder()
+		s.ServeHTTP(rw, r)
+		var jj struct{ ID string }
+		json.Unmarshal(rw.Body.Bytes(), &jj)
+		if rw.Code != 200 || (m.snapshot(t, jj.ID).Resolver != nil) != c.want {
+			t.Errorf("%s: %d, resolver %v, want %v", name, rw.Code, m.snapshot(t, jj.ID).Resolver != nil, c.want)
+		}
+	}
+	// The body is never stored: nothing the request carries but the token reaches Redis.
+	m.mu.Lock()
+	for k, val := range m.kv {
+		if strings.Contains(val, "8.8.8.8") || strings.Contains(val, "x=1") || strings.Contains(k, "8.8.8.8") {
+			t.Errorf("request body stored in %s", k[:7])
+		}
+	}
+	m.mu.Unlock()
+	// The visitor's address comes from the usual rules only: a body or query ip does nothing.
+	if sn := m.snapshot(t, share(t, s, "203.0.113.9", "ip=8.8.8.8&q=8.8.8.8")); sn.IP != "203.0.113.9" {
+		t.Errorf("address %s", sn.IP)
+	}
+	if strings.Contains(logs.String(), j.ID) || strings.Contains(logs.String(), tok) || strings.Contains(logs.String(), "203.0.113.9") || strings.Contains(logs.String(), "203.0.113.50") {
+		t.Errorf("an id, token or address in the log:\n%s", logs)
+	}
+}
+
+func TestShareEndpointRefusals(t *testing.T) {
+	s, m := shareServer(t)
+	for _, method := range []string{"GET", "HEAD", "PUT", "DELETE"} {
+		w := get(s, method, "/share")
+		if w.Code != 405 || w.Header().Get("Allow") != "POST" {
+			t.Errorf("%s /share: %d %v", method, w.Code, w.Header())
+		}
+	}
+	if w := postShare(s, "203.0.113.9", "", "X-Share", ""); w.Code != 403 {
+		t.Errorf("no header: %d", w.Code)
+	}
+	if w := postShare(s, "203.0.113.9", "", "X-Share", "0"); w.Code != 403 {
+		t.Errorf("wrong header value: %d", w.Code)
+	}
+	for name, ip := range map[string]string{"private": "10.0.0.1", "loopback": "127.0.0.1", "unknown": ""} {
+		if w := postShare(s, ip, ""); w.Code != 400 {
+			t.Errorf("%s address: %d", name, w.Code)
+		}
+	}
+	if w := postShare(s, "203.0.113.9", strings.Repeat("a", 1025)); w.Code != 413 {
+		t.Errorf("big body: %d", w.Code)
+	}
+	if len(m.cmds) != 0 {
+		t.Errorf("a refused request used Redis: %v", m.cmds)
+	}
+	// A cross-site page cannot get a CORS answer: no preflight is granted.
+	r := httptest.NewRequest("OPTIONS", "/share", nil)
+	r.Header.Set("Origin", "https://evil.example")
+	r.Header.Set("Access-Control-Request-Method", "POST")
+	r.Header.Set("Access-Control-Request-Headers", "x-share")
+	r.RemoteAddr = "127.0.0.1:1"
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != 405 || w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("preflight: %d %v", w.Code, w.Header())
 	}
 }
 
 func TestShareOff(t *testing.T) {
 	s, m := shareServer(t)
 	s.useShare(false, "")
-	w, id, token := visit(s, "203.0.113.9")
-	b := w.Body.String()
-	if w.Code != 200 || id != "" || token != "" || strings.Contains(b, `class="sh"`) || strings.Contains(b, "?r=") {
-		t.Error("share is off but visible")
-	}
-	if len(m.commands("SET")) != 0 {
-		t.Error("something was written")
-	}
-	// The DNS row still works, with its own token made by the script.
-	if !strings.Contains(b, `id="dns"`) {
-		t.Error("DNS row missing")
+	if w := postShare(s, "203.0.113.9", ""); w.Code != 404 {
+		t.Errorf("POST /share with SHARE=off: %d", w.Code)
 	}
 	if w := get(s, "GET", "/report/"+tok); w.Code != 404 {
 		t.Errorf("/report with SHARE=off: %d", w.Code)
 	}
+	b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()
+	if !strings.Contains(b, `id="dns"`) || strings.Contains(b, `class="sh"`) {
+		t.Error("DNS row missing or button present")
+	}
 	// And /ip with r adds nothing.
 	fromPeer(s, "/ip?r="+tok, "127.0.0.1:1", "X-Real-IP", "2001:db8::9")
-	if len(m.commands("GET")) != 0 || len(m.commands("SET")) != 0 {
-		t.Error("/ip touched Redis with SHARE=off")
+	if len(m.cmds) != 0 {
+		t.Error("Redis used with SHARE=off")
 	}
 }
 
 func TestShareRedisDown(t *testing.T) {
+	logs := captureLog(t)
 	s, _ := shareServer(t)
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	dead := ln.Addr().String()
 	ln.Close()
 	s.useBeacon("r.openipdata.org", dead)
-	w, id, token := visit(s, "203.0.113.9")
-	b := w.Body.String()
-	if w.Code != 200 || id != "" || token != "" || strings.Contains(b, `class="sh"`) || !strings.Contains(b, `id="dns"`) || !strings.Contains(b, `id="other"`) {
-		t.Errorf("Redis down: %d, the page is not as before", w.Code)
+	w := postShare(s, "203.0.113.9", "t="+tok)
+	if w.Code != 503 || strings.TrimSpace(w.Body.String()) != "{}" || w.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("share with Redis down: %d %q", w.Code, w.Body.String())
 	}
-	if strings.Contains(b, "?r=") {
-		t.Error("report id in the page")
+	// The page itself is as before (the button is always there).
+	b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()
+	if !strings.Contains(b, `id="dns"`) || !strings.Contains(b, `id="other"`) {
+		t.Error("the page changed with Redis down")
 	}
 	if w := get(s, "GET", "/report/"+tok); w.Code != 503 || w.Header().Get("Cache-Control") != "no-store" || !strings.Contains(w.Body.String(), "not available") {
 		t.Errorf("/report with Redis down: %d", w.Code)
 	}
-	// /ip still answers.
 	if w := fromPeer(s, "/ip?r="+tok, "127.0.0.1:1", "X-Real-IP", "2001:db8::9"); w.Code != 200 || w.Body.String() != "2001:db8::9\n" {
 		t.Errorf("/ip with Redis down: %d %q", w.Code, w.Body.String())
+	}
+	if strings.Contains(logs.String(), "203.0.113.9") || strings.Contains(logs.String(), tok) {
+		t.Error("an address or token in the log")
 	}
 }
 
 func TestShareOtherFamilyThroughIP(t *testing.T) {
 	logs := captureLog(t)
 	s, m := shareServer(t)
-	_, id, _ := visit(s, "203.0.113.9")
+	id := share(t, s, "203.0.113.9", "")
 	ip := func(target, addr string) int {
 		w := fromPeer(s, target, "127.0.0.1:1", "X-Real-IP", addr)
 		if w.Body.String() != addr+"\n" {
@@ -398,7 +517,7 @@ func TestShareOtherFamilyThroughIP(t *testing.T) {
 	if len(m.keys("report:")) != 1 || m.snapshot(t, id).Other != "" {
 		t.Fatalf("report changed: %+v", m.snapshot(t, id))
 	}
-	if len(m.keys("")) != 2 {
+	if len(m.keys("")) != 1 {
 		t.Error("an unknown id created a key")
 	}
 	// A private address of the other family is not added either.
@@ -428,48 +547,29 @@ func TestShareOtherFamilyThroughIP(t *testing.T) {
 	}
 }
 
-func TestShareResolverThroughBeacon(t *testing.T) {
-	logs := captureLog(t)
+// /resolver answers about a token and writes nothing: it no longer touches reports.
+func TestResolverDoesNotTouchReports(t *testing.T) {
 	s, m := shareServer(t)
-	_, id, token := visit(s, "203.0.113.9")
-	m.hash["beacon:"+token] = map[string]string{"resolver_ip": "203.0.113.50"}
-	if w := resolverGet(s, "GET", "/resolver?t="+token); w.Code != 200 || !strings.Contains(w.Body.String(), `"ip":"203.0.113.50"`) {
+	id := share(t, s, "203.0.113.9", "")
+	m.hash["beacon:"+tok] = map[string]string{"resolver_ip": "203.0.113.50"}
+	before := len(m.commands("SET"))
+	if w := resolverGet(s, "GET", "/resolver?t="+tok); w.Code != 200 || !strings.Contains(w.Body.String(), `"ip":"203.0.113.50"`) {
 		t.Fatalf("resolver: %d %s", w.Code, w.Body.String())
 	}
-	sn := m.snapshot(t, id)
-	if sn.Resolver == nil || sn.Resolver.IP != "203.0.113.50" {
-		t.Fatalf("resolver not in the report: %+v", sn.Resolver)
+	if len(m.commands("SET")) != before || m.snapshot(t, id).Resolver != nil {
+		t.Error("/resolver changed a report")
 	}
-	if _, ttl := m.get("report:" + id); ttl != 2592000 {
-		t.Errorf("lifetime %d", ttl)
-	}
-	// A token the server did not make for a page, or a private resolver, adds nothing.
-	other := "fedcba9876543210fedcba9876543210"
-	m.hash["beacon:"+other] = map[string]string{"resolver_ip": "203.0.113.51"}
-	before := len(m.commands("SET"))
-	resolverGet(s, "GET", "/resolver?t="+other)
-	if len(m.commands("SET")) != before {
-		t.Error("a token without a report wrote")
-	}
-	// HEAD adds nothing.
-	_, id2, token2 := visit(s, "203.0.113.9")
-	m.hash["beacon:"+token2] = map[string]string{"resolver_ip": "203.0.113.50"}
-	resolverGet(s, "HEAD", "/resolver?t="+token2)
-	if m.snapshot(t, id2).Resolver != nil {
-		t.Error("HEAD added the resolver")
-	}
-	if strings.Contains(logs.String(), id) || strings.Contains(logs.String(), token) || strings.Contains(logs.String(), "203.0.113.50") {
-		t.Error("id, token or address in the log")
+	if len(m.commands("GET")) != 0 {
+		t.Error("/resolver read a report or a token key")
 	}
 }
 
 func TestReportPage(t *testing.T) {
 	logs := captureLog(t)
 	s, m := shareServer(t)
-	_, id, token := visit(s, "203.0.113.9")
+	m.hash["beacon:"+tok] = map[string]string{"resolver_ip": "203.0.113.50"}
+	id := share(t, s, "203.0.113.9", "t="+tok)
 	fromPeer(s, "/ip?r="+id, "127.0.0.1:1", "X-Real-IP", "2001:db8::9")
-	m.hash["beacon:"+token] = map[string]string{"resolver_ip": "203.0.113.50"}
-	resolverGet(s, "GET", "/resolver?t="+token)
 
 	w := get(s, "GET", "/report/"+id)
 	b := w.Body.String()
@@ -477,7 +577,7 @@ func TestReportPage(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 	for _, x := range []string{
-		"<title>Shared report · openipdata.org</title>", `<meta name="robots" content="noindex">`, "<h2>Shared report</h2>", `<span class="r">Shared 15 Nov 2026 16:50 UTC</span>`,
+		"<title>Shared report · openipdata.org</title>", `<meta name="robots" content="noindex">`, "<h2>Shared report</h2>", `<span class="r">Shared 15 Nov 2026 16:50 UTC · expires 15 Dec 2026</span>`,
 		`<dt>IPv4</dt><dd class="c"><span class="w"><span class="v">203.0.113.9</span><button class="cp"`, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::9</span><button class="cp"`,
 		`<dt>DNS resolver</dt><dd class="od"><a href="/?203.0.113.50">203.0.113.50</a><a class="dn" href="/asn-example-net">EXAMPLE-NET</a></dd>`,
 		`<dt>Network</dt><dd><a href="/asn-example-net">EXAMPLE-NET</a> · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
@@ -487,7 +587,7 @@ func TestReportPage(t *testing.T) {
 			t.Errorf("report lacks %q", x)
 		}
 	}
-	for _, bad := range []string{"fetch(", `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>", "<dt>Prefix"} {
+	for _, bad := range []string{resolverJS, fillJS, `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>", "<dt>Prefix"} {
 		if strings.Contains(b, bad) {
 			t.Errorf("report has %q", bad)
 		}
@@ -505,7 +605,7 @@ func TestReportPage(t *testing.T) {
 		t.Errorf("HEAD: %d %d", hw.Code, hw.Body.Len())
 	}
 	// A report with only what the first view knew: dashes, and no copy button on a dash.
-	_, id2, _ := visit(s, "2001:db8::5")
+	id2 := share(t, s, "2001:db8::5", "")
 	b2 := get(s, "GET", "/report/"+id2).Body.String()
 	if !strings.Contains(b2, `<dt>IPv4</dt><dd>—</dd>`) || !strings.Contains(b2, `<dt>DNS resolver</dt><dd>—</dd>`) || !strings.Contains(b2, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::5</span>`) {
 		t.Errorf("sparse report:\n%s", b2[strings.Index(b2, "<dl>"):])
@@ -543,7 +643,7 @@ func TestReportPage(t *testing.T) {
 // and there is no prefix part.
 func TestReportShownAsStored(t *testing.T) {
 	s, m := shareServer(t)
-	_, id, _ := visit(s, "203.0.113.9")
+	id := share(t, s, "203.0.113.9", "")
 	for _, c := range []struct {
 		name         string
 		slug, prefix string
@@ -598,9 +698,9 @@ func TestCheckOrigin(t *testing.T) {
 func TestShareOriginSetting(t *testing.T) {
 	s, _ := shareServer(t)
 	s.useShare(true, "https://example.test")
-	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9", "Host", "evil.example")
-	if !regexp.MustCompile(`data-url="https://example\.test/report/[0-9a-f]{32}"`).MatchString(w.Body.String()) || strings.Contains(w.Body.String(), "evil.example") {
-		t.Error("the share link is not built from SITE_ORIGIN")
+	w := postShare(s, "203.0.113.9", "", "Host", "evil.example")
+	if !regexp.MustCompile(`"url":"https://example\.test/report/[0-9a-f]{32}"`).MatchString(w.Body.String()) || strings.Contains(w.Body.String(), "evil.example") {
+		t.Errorf("the share link is not built from SITE_ORIGIN: %s", w.Body.String())
 	}
 }
 
@@ -642,26 +742,75 @@ func TestCopyButtonsHiddenWithoutScript(t *testing.T) {
 func CSSForTest() string { return styleCSS + liveCSS }
 
 func TestPanelScriptShape(t *testing.T) {
-	for _, x := range []string{"navigator.clipboard.writeText", "execCommand", "Link copied", "Copying...", "Copy failed", "1500", "hidden"} {
+	// panel.js is only the copy buttons: no Share code, no textarea fallback.
+	for _, x := range []string{"navigator.clipboard.writeText", "Copy failed", "1500", "hidden"} {
 		if !strings.Contains(panelJS, x) {
 			t.Errorf("panelJS lacks %s", x)
 		}
 	}
-	for _, x := range []string{"innerHTML", "document.write", "eval(", "XMLHttpRequest", "fetch(", "localStorage", "insertAdjacent", "WebSocket"} {
+	for _, x := range []string{"innerHTML", "document.write", "eval(", "XMLHttpRequest", "localStorage", "insertAdjacent", "WebSocket", "data-url", "dataset.url",
+		"execCommand", "textarea", "/share", "POST", "fetch(", "ClipboardItem", "prompt", ".sh"} {
 		if strings.Contains(panelJS, x) {
 			t.Errorf("panelJS has %s", x)
 		}
 	}
-	if regexp.MustCompile(`[^\x20-\x7e\n]`).MatchString(panelJS) {
-		t.Error("non-ASCII in panelJS")
+	// share.js is the Share button.
+	for _, x := range []string{"navigator.clipboard.writeText", "navigator.clipboard.write(", "ClipboardItem", "new Blob", "Link copied", "Copying...", "Copy failed", "1500", "hidden",
+		`"/share"`, `"POST"`, `"X-Share": "1"`, "5000", "AbortController", "busy", `"t=" + t`, "window.prompt", "dataset.t"} {
+		if !strings.Contains(shareJS, x) {
+			t.Errorf("shareJS lacks %s", x)
+		}
+	}
+	for _, x := range []string{"innerHTML", "document.write", "eval(", "XMLHttpRequest", "localStorage", "insertAdjacent", "WebSocket", "data-url", "dataset.url", "execCommand", "textarea"} {
+		if strings.Contains(shareJS, x) {
+			t.Errorf("shareJS has %s", x)
+		}
+	}
+	// The clipboard write is made inside the click, before the POST is answered.
+	if i, j := strings.Index(shareJS, "var p = share(), w;"), strings.Index(shareJS, "navigator.clipboard.write("); i < 0 || j < i {
+		t.Error("the clipboard write must come right after the synchronous share() call in the click handler")
+	}
+	for name, js := range map[string]string{"panelJS": panelJS, "shareJS": shareJS} {
+		if regexp.MustCompile(`[^\x20-\x7e\n]`).MatchString(js) {
+			t.Errorf("non-ASCII in %s", name)
+		}
+		t.Logf("%s: %d bytes", name, len(js))
 	}
 	// fill.js keeps the copy button of the row it fills and unhides it only with an address.
 	if !strings.Contains(fillJS, ".cp") || !strings.Contains(fillJS, "hidden = false") {
 		t.Error("fillJS does not unhide the copy button")
 	}
-	// resolver.js uses the token of the server, and still makes its own.
-	if !strings.Contains(resolverJS, "dataset.token") || !strings.Contains(resolverJS, "crypto.getRandomValues") {
+	// resolver.js makes its own token and leaves it for share.js; the server makes none.
+	if !strings.Contains(resolverJS, "dataset.t = t") || !strings.Contains(resolverJS, "crypto.getRandomValues") || strings.Contains(resolverJS, "dataset.token") {
 		t.Error("resolverJS token handling")
+	}
+}
+
+// share.js and its hash are only on the page that has the Share button; every
+// other page with panel.js (lookup, report, download) has neither.
+func TestShareScriptOnlyOnVisitorPage(t *testing.T) {
+	s, _ := shareServer(t)
+	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
+	b, c := w.Body.String(), w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(b, "<script>"+panelJS+"</script>\n<script>"+shareJS+"</script>\n</body>") || !strings.Contains(c, scriptHash(shareJS)) || !strings.Contains(c, scriptHash(panelJS)) {
+		t.Errorf("visitor page lacks share.js or its hash: %s", c)
+	}
+	for _, target := range []string{"/?203.0.113.9", "/download", "/status"} {
+		w := get(s, "GET", target)
+		if strings.Contains(w.Body.String(), shareJS[:60]) || strings.Contains(w.Header().Get("Content-Security-Policy"), scriptHash(shareJS)) {
+			t.Errorf("%s has share.js", target)
+		}
+	}
+	id := share(t, s, "203.0.113.9", "")
+	w = get(s, "GET", "/report/"+id)
+	if strings.Contains(w.Body.String(), shareJS[:60]) || strings.Contains(w.Header().Get("Content-Security-Policy"), scriptHash(shareJS)) {
+		t.Error("the report page has share.js")
+	}
+	// A visitor page without the Share button (SHARE off) has no share.js either.
+	s.share = false
+	w = fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
+	if strings.Contains(w.Body.String(), shareJS[:60]) || strings.Contains(w.Header().Get("Content-Security-Policy"), scriptHash(shareJS)) {
+		t.Error("the page without the Share button has share.js")
 	}
 }
 

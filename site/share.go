@@ -1,17 +1,18 @@
 package main
 
-// Shared reports (decided 2026-11-15). Every view of the home page with a
-// public visitor address saves a snapshot in Redis for 30 days, so the Share
-// button can copy a link to it. This is the one place the site keeps a
-// visitor address. Nothing here is ever logged: not an address, not a report
-// id, not a beacon token (the Redis client logs fixed error kinds only).
+// Shared reports (decided 2026-11-15, on demand). A report is made only when
+// the visitor presses Share (POST /share): the server builds the snapshot of the
+// visitor's own page itself and keeps it in Redis for 30 days. A page view
+// stores nothing. This is the one place the site keeps a visitor address. Nothing
+// here is ever logged: not an address, not a report id, not a beacon token (the
+// Redis client logs fixed error kinds only).
 //
 //	report:<id>  JSON snapshot, expires after 30 days   (id: 32 hex characters)
-//	rt:<token>   the report id of a page, 10 minutes     (token: the one-time DNS name of the page)
 //
-// The other family's address and the DNS resolver reach the snapshot through
-// this server only: /ip?r=<id> (the request the page makes to the v4 or v6
-// name) and /resolver?t=<token> (the answer about the page's DNS name).
+// The other family's address reaches the snapshot through this server only:
+// /ip?r=<id> (the request the page makes to the v4 or v6 name after a share).
+// The DNS resolver is read from beacon:<token> (written by openipdata-beacon)
+// when the share request names the page's token.
 
 import (
 	"bytes"
@@ -19,17 +20,19 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"html/template"
+	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
 	reportTTL      = 30 * 24 * time.Hour
-	beaconTTL      = 10 * time.Minute
+	maxShareBody   = 1024 // the biggest body of POST /share
 	maxReportBytes = 4096 // the biggest snapshot written or read
 	defaultOrigin  = "https://openipdata.org"
 )
@@ -108,40 +111,86 @@ func (s *server) useShare(on bool, origin string) {
 	}
 }
 
-// startShare saves the snapshot of a visit of the home page and, when that
-// worked, gives the panel the link of the Share button, the report id for the
-// request of the other family's row and the one-time token of the DNS row. A
-// failure (Redis down, snapshot too big) changes nothing: the page works as
-// before, without a button.
-func (s *server) startShare(p *panel) {
-	if !s.shareOn() || p.snap == nil || p.Msg != "" {
+// serveShare answers POST /share: it saves the snapshot of the visitor's own
+// page (the address by the usual client rules, the place and the network as the
+// page shows them, and the DNS resolver when the page's beacon token names one)
+// and answers its link. Nothing from the request is stored. The custom header
+// X-Share keeps another site from calling it (no CORS header is ever sent).
+func (s *server) serveShare(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	if !s.share {
+		plain(w, http.StatusNotFound, "not found\n")
 		return
+	}
+	if r.Method != http.MethodPost {
+		h.Set("Allow", "POST")
+		plain(w, http.StatusMethodNotAllowed, "method not allowed\n")
+		return
+	}
+	reply := func(code int, v any) {
+		b, _ := json.Marshal(v)
+		h.Set("Content-Type", "application/json")
+		h.Set("Content-Length", strconv.Itoa(len(b)))
+		w.WriteHeader(code)
+		w.Write(b)
+	}
+	if r.Header.Get("X-Share") != "1" {
+		reply(http.StatusForbidden, struct{}{})
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxShareBody))
+	if err != nil {
+		reply(http.StatusRequestEntityTooLarge, struct{}{})
+		return
+	}
+	a, ok := clientAddr(r, s.realIP)
+	if !ok || !s.public(a) {
+		reply(http.StatusBadRequest, struct{}{})
+		return
+	}
+	if s.redis == nil {
+		reply(http.StatusServiceUnavailable, struct{}{})
+		return
+	}
+	// The page's beacon token, from the form body or the query; anything else is ignored.
+	token := ""
+	form, _ := url.ParseQuery(string(body))
+	for _, v := range []url.Values{form, r.URL.Query()} {
+		if t := v["t"]; len(t) == 1 && tokenRE.MatchString(t[0]) {
+			token = t[0]
+			break
+		}
+	}
+	p := s.panelFor("", a)
+	if p.snap == nil {
+		reply(http.StatusBadRequest, struct{}{})
+		return
+	}
+	sn := *p.snap
+	if token != "" && s.zone != "" {
+		if val, found, err := s.redis.hget("beacon:"+token, "resolver_ip"); err == nil && found {
+			if ra, ok := parseAddr(val); ok && s.public(ra) {
+				info := s.resolverNetwork(ra)
+				sn.Resolver = &info
+			}
+		}
 	}
 	id, ok := randHex()
 	if !ok {
+		reply(http.StatusServiceUnavailable, struct{}{})
 		return
 	}
-	b, err := marshalSnap(*p.snap)
+	b, err := marshalSnap(sn)
 	if err != nil || len(b) > maxReportBytes || s.redis.setEX("report:"+id, string(b), reportTTL) != nil {
+		reply(http.StatusServiceUnavailable, struct{}{})
 		return
 	}
-	p.Share = s.origin + "/report/" + id
-	for i := range p.Rows {
-		r := &p.Rows[i]
-		if r.Fam != "" {
-			if u, err := url.Parse(r.From); err == nil {
-				q := u.Query()
-				q.Set("r", id)
-				u.RawQuery = q.Encode()
-				r.From = u.String()
-			}
-		}
-		if r.Zone != "" {
-			if tk, ok := randHex(); ok && s.redis.setEX("rt:"+tk, id, beaconTTL) == nil {
-				r.Token = tk
-			}
-		}
-	}
+	reply(http.StatusOK, struct {
+		URL string `json:"url"`
+		ID  string `json:"id"`
+	}{s.origin + "/report/" + id, id})
 }
 
 // updateReport reads a report, lets change edit it, and writes it back with
@@ -188,29 +237,10 @@ func (s *server) noteOther(r *http.Request, a netip.Addr) {
 	})
 }
 
-// noteResolver adds the resolver the answer of /resolver?t=<token> is about to
-// the report of the page that made the token.
-func (s *server) noteResolver(token string, info resolverSnap) {
-	if !s.shareOn() {
-		return
-	}
-	id, found, err := s.redis.get("rt:"+token, 40)
-	if err != nil || !found || !tokenRE.MatchString(id) {
-		return
-	}
-	s.updateReport(id, func(sn *snapshot) bool {
-		if sn.Resolver != nil {
-			return false
-		}
-		sn.Resolver = &info
-		return true
-	})
-}
-
 // reportPanel is the panel of a saved report: the stored values as they were
 // at the time of the visit, nothing looked up again except the map.
 func (s *server) reportPanel(sn *snapshot, created time.Time) panel {
-	p := panel{Title: "Shared report", Right: "Shared " + created.UTC().Format("2 Jan 2006 15:04 UTC")}
+	p := panel{Title: "Shared report", Right: "Shared " + created.UTC().Format("2 Jan 2006 15:04 UTC") + " · expires " + created.Add(reportTTL).UTC().Format("2 Jan 2006")}
 	g := geoRecord{CityName: sn.Place.City, CountryName: sn.Place.Country, CountryCode: sn.Place.CC, Latitude: sn.Place.Lat, Longitude: sn.Place.Lon}
 	p.Big, p.Sub, p.None, p.Map = s.placeBlock(&g)
 	addr := func(k string, v string) row {
@@ -289,7 +319,7 @@ func (s *server) serveReport(w http.ResponseWriter, r *http.Request) {
 		plain(w, http.StatusInternalServerError, "error\n")
 		return
 	}
-	pageHeaders(w.Header(), s.pageCSP(false, false, p.Copy))
+	pageHeaders(w.Header(), s.pageCSP(false, false, p.Copy, false))
 	w.Header().Set("Cache-Control", "private, no-store")
 	writeBody(w, r, http.StatusOK, "text/html; charset=utf-8", body)
 }

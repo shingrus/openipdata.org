@@ -550,22 +550,23 @@ func drawCase(w *world, c struct {
 // Limits (raw bytes and gzip, measured 2026-11-15 with static/world.bin made at
 // tolerance 0.08): a map is at most 9 KB raw (the biggest, London, is about 7.8
 // KB; a typical city 4 to 5 KB) and 4 KB gzipped (the biggest is about 2.9 KB).
-// A page with a map is at most 28 KB raw and 10.5 KB gzipped (2026-11-15: the
-// biggest, 28455 and 10365 bytes, is Canada on the fullest visitor page: fill
-// script, DNS script, panel.js, copy and Share buttons; before the copy, share
-// and link work it was 21974 and 8407 with the fill script only). The
-// address-unknown page is at most 14 KB and 5 KB (13900 and 4932 now, 12706 and
-// 4639 before). The visitor page with the fill script: with a map (Lisbon) at
-// most 22 KB and 9 KB (19849 and 7212 now, 15770 and 6021 before), without a
-// map at most 18432 and 6656 (17967 and 6314 now, 13846 and 5110 before).
+// A page with a map is at most 28672 raw and 10240 gzipped: the biggest is
+// Canada on the fullest visitor page (all six scripts, the DNS row, copy and
+// Share buttons), 28286 and 10086 on 2026-11-15 after the scripts lost their
+// comments and indentation (29250 and 10454 before; 21974 and 8407 with the
+// fill script only, before the copy, share and link work). The address-unknown
+// page is at most 14 KB and 5 KB (13700 and 4814 now). The visitor page with
+// the fill script: with a map (Lisbon) at most 19456 and 7168 (18667 and 6730
+// now, 19849 and 7212 before), without a map at most 17408 and 6144 (16730 and
+// 5808 now, 17967 and 6314 before).
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 28672, 10752 // the fullest visitor page with a map: both scripts, panel.js, the DNS row, copy and Share buttons
+	pageMapMaxRaw, pageMapMaxGz = 28672, 10240 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons
 	pageMaxRaw, pageMaxGz       = 14 << 10, 5 << 10
 	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
-	visitorMapMaxRaw, visitorMapMaxGz = 22 << 10, 9 << 10
-	visitorMaxRaw, visitorMaxGz       = 18432, 6656
+	visitorMapMaxRaw, visitorMapMaxGz = 19456, 7168 // 18667 and 6730 now
+	visitorMaxRaw, visitorMaxGz       = 17408, 6144 // 16730 and 5808 now (comments and indentation left out of the scripts, Share code in share.js), 19052 before
 )
 
 func TestMapSizes(t *testing.T) {
@@ -577,11 +578,11 @@ func TestMapSizes(t *testing.T) {
 			continue
 		}
 		v := makeView(*s.scores.Load())
-		v.Fill, v.Res, v.Pnl = true, true, true // the fullest visitor page: both scripts, the DNS row, copy and share buttons
+		v.Fill, v.Res, v.Pnl, v.Share = true, true, true, true // the fullest visitor page: all scripts, the DNS row, copy and Share buttons
 		v.Panel = &panel{Title: "Your connection", Big: "Lisbon", Sub: "Portugal", Map: template.HTML(m), Copy: true,
-			Share: "https://openipdata.org/report/" + tok, Rows: []row{
-				{K: "IPv4", V: "203.0.113.9", Copy: true}, {K: "IPv6", V: "—", Fam: "6", From: u6 + "?r=" + tok, Copy: true},
-				{K: "DNS resolver", V: "—", Zone: "r.openipdata.org", Token: tok},
+			Share: true, Rows: []row{
+				{K: "IPv4", V: "203.0.113.9", Copy: true}, {K: "IPv6", V: "—", Fam: "6", From: u6, Copy: true},
+				{K: "DNS resolver", V: "—", Zone: "r.openipdata.org"},
 				{K: "Network", Parts: []part{{Text: "EXAMPLE-NET", Href: "/as64500"}, {Text: "ISP"}, {Text: "example.net"}}}}}
 		page, err := render(s.tmpl, "home.html", v)
 		if err != nil {

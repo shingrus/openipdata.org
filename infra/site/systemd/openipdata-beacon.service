@@ -18,7 +18,7 @@ RuntimeDirectoryMode=0750
 Environment=DNSTAP_SOCKET=/run/openipdata-beacon/dnstap.sock
 Environment=BEACON_ZONE=r.openipdata.org
 Environment=REDIS_ADDR=127.0.0.1:6379
-Environment=BEACON_TTL=120
+Environment=BEACON_TTL=3600
 ExecStart=/opt/openipdata-site/bin/openipdata-beacon
 Restart=on-failure
 RestartSec=2
