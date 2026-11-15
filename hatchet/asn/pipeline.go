@@ -21,6 +21,7 @@ const (
 	mmdbFileFormat  = "ip2asn-openipdata-%s.mmdb"
 	sqliteFileName  = "asn.sqlite3"
 	releaseAsset    = "ip2asn-openipdata.mmdb"
+	releaseSQLite   = "asn-openipdata.sqlite3"
 	keepOutputDirs  = 3
 	dateTagLayout   = "20060102"
 	dateFolderShape = "2006-01-02"
@@ -272,7 +273,15 @@ type PublishOutput struct {
 	// A file that is byte-identical to the one already in place is not sent again:
 	// R2 compares the object's sha256 metadata, the release the asset's digest.
 	R2Unchanged      []string `json:"r2_unchanged,omitempty"`      // the locations of R2 that were left as they were
-	ReleaseUnchanged bool     `json:"release_unchanged,omitempty"` // the release asset was left as it was
+	ReleaseUnchanged bool     `json:"release_unchanged,omitempty"` // the release MMDB asset was left as it was
+	// The SQLite file on the same release, reported like the MMDB.
+	ReleaseSQLiteURL       string `json:"release_sqlite_url,omitempty"`
+	ReleaseSQLiteUnchanged bool   `json:"release_sqlite_unchanged,omitempty"`
+}
+
+// releaseReplacer is what Publish needs from the GitHub release (tests fake it).
+type releaseReplacer interface {
+	Replace(ctx context.Context, path, assetName, body string) (link string, replaced bool, err error)
 }
 
 // publishers builds the R2 and GitHub clients from the publishing settings.
@@ -296,7 +305,8 @@ func (p *Pipeline) CheckPublish() error {
 }
 
 // Publish uploads the MMDB and asn.sqlite3 to R2 under <YYYY-MM-DD>/, replaces
-// the MMDB on the rolling GitHub release, then pings HCPing if set. A file that is
+// the MMDB (ip2asn-openipdata.mmdb) and the SQLite file (asn-openipdata.sqlite3)
+// on the rolling GitHub release, then pings HCPing if set. A file that is
 // byte-identical to the one already in place is not sent again (an identical file is
 // the published file). Missing settings fail the task, so a misconfiguration
 // cannot go unnoticed.
@@ -326,25 +336,49 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath
 		out.Bytes += outputs.FileSize(path)
 	}
 
-	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB.\n\nBuilt: %s\nSource: %s@%s",
+	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB and the asn SQLite database.\n\nBuilt: %s\nSource: %s@%s",
 		date.Format(dateFolderShape), strings.TrimPrefix(sourceRepoURL, "https://github.com/"), src.Commit)
-	var replaced bool
-	out.ReleaseURL, replaced, err = release.Replace(ctx, mmdbPath, releaseAsset, body)
-	if err != nil {
+	if err := p.publishRelease(ctx, release, mmdbPath, sqlitePath, body, &out); err != nil {
 		return out, err
 	}
-	out.ReleaseUnchanged = !replaced
-	releaseStatus := "uploaded"
-	if !replaced {
-		releaseStatus = "unchanged"
-	}
-	p.log("publish: %s (%s)", out.ReleaseURL, releaseStatus)
 
 	if err := publish.Ping(ctx, p.HCPing); err != nil {
 		p.log("publish: %v", err) // the uploads succeeded; a missed ping only delays the alert
 	}
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
 	return out, nil
+}
+
+// publishRelease replaces the MMDB, then the SQLite file, on the rolling release. If
+// the MMDB is replaced and the SQLite upload then fails, the task fails (the error
+// is returned, out keeps what was done, and Publish sends no health-check ping), so
+// the half-updated release is seen; nothing is rolled back, and the next run
+// repeats both (a file already in place is skipped by its digest). The release text
+// is set with the MMDB; the SQLite call passes no body, which keeps it.
+func (p *Pipeline) publishRelease(ctx context.Context, release releaseReplacer, mmdbPath, sqlitePath, body string, out *PublishOutput) error {
+	var replaced bool
+	var err error
+	out.ReleaseURL, replaced, err = release.Replace(ctx, mmdbPath, releaseAsset, body)
+	if err != nil {
+		return err
+	}
+	out.ReleaseUnchanged = !replaced
+	p.log("publish: %s (%s)", out.ReleaseURL, uploadedOrUnchanged(replaced))
+
+	out.ReleaseSQLiteURL, replaced, err = release.Replace(ctx, sqlitePath, releaseSQLite, "")
+	if err != nil {
+		return fmt.Errorf("release SQLite asset (the MMDB asset is already updated): %w", err)
+	}
+	out.ReleaseSQLiteUnchanged = !replaced
+	p.log("publish: %s (%s)", out.ReleaseSQLiteURL, uploadedOrUnchanged(replaced))
+	return nil
+}
+
+func uploadedOrUnchanged(replaced bool) string {
+	if replaced {
+		return "uploaded"
+	}
+	return "unchanged"
 }
 
 func runGit(ctx context.Context, args ...string) error {

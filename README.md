@@ -61,12 +61,12 @@ asn-ip data plus the latest PeeringDB data and domains. `update-asn-domains` and
 | `ingest` | `sync-source` | parses `as/*/aggregated.json` and upserts changed rows into `public.asn` |
 | `build-mmdb` | `ingest` | runs `mmdbbuilder asn` on the synced files → `ip2asn-openipdata-<date>.mmdb` |
 | `export-sqlite` | `ingest` | writes a fresh `asn.sqlite3` (`asn`, `asn_domain`, `asn_geo_pdb`) from Postgres-backed data |
-| `publish` | `build-mmdb`, `export-sqlite` | uploads both files to R2 under `<YYYY-MM-DD>/`, replaces the MMDB on the rolling GitHub release, pings `HC_PING_ASN` if set |
+| `publish` | `build-mmdb`, `export-sqlite` | uploads both files to R2 under `<YYYY-MM-DD>/`, replaces the MMDB and the SQLite file on the rolling GitHub release, pings `HC_PING_ASN` if set |
 
 - Every task checks that the asn-ip checkout is still at the synced commit.
 - Outputs land in `/var/lib/openipdata/out/asn/<date>/`; the newest 3 builds are kept.
 - Published copies: `r2://<bucket>/<YYYY-MM-DD>/ip2asn-openipdata-<YYYYMMDD>.mmdb` and `.../asn.sqlite3`;
-  the MMDB is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2asn-openipdata.mmdb`.
+  the MMDB is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2asn-openipdata.mmdb` and the SQLite file at `.../releases/latest/download/asn-openipdata.sqlite3`.
 - Publishing needs `R2` and `GITHUB_TOKEN`; a missing setting fails `sync-source`, before the build, without retries. Manual runs can pass
   `{"skip_publish": true}` (or `run-asn -skip-publish`) to build without uploading.
 - Old R2 date folders are removed by a lifecycle rule on the bucket, not by the worker.
