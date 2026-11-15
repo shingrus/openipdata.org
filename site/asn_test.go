@@ -70,7 +70,7 @@ func nz(l []string) []string {
 }
 
 // writeASNFile builds a SQLite file with the worker's tables.
-func writeASNFile(t *testing.T, path string, rows []fixtureRow) {
+func writeASNFile(t testing.TB, path string, rows []fixtureRow) {
 	t.Helper()
 	tmp := path + ".build"
 	os.Remove(tmp)
@@ -168,7 +168,7 @@ func TestASNRoutes(t *testing.T) {
 		want, not    []string
 	}{
 		{"network", "/as64500", 200, "", []string{
-			"<title>AS64500 · Example Net · openipdata.org</title>", "<h2>Example Net</h2>", "<p>EXAMPLE-NET</p>",
+			"<title>AS64500 Example Net: IP ranges and prefixes</title>", "<h2>Example Net</h2>", "<p>EXAMPLE-NET</p>",
 			"<dt>Handle</dt><dd>EXAMPLE-NET</dd>", `<dd><a href="/asn-example-net">Example Net</a></dd>`,
 			"<dt>Domain</dt><dd>example.net</dd>", "<dt>Country</dt><dd>Portugal</dd>", "<dt>Category</dt><dd>isp</dd>",
 			"<dt>IPv4 prefixes</dt><dd>2</dd>", "<dt>IPv6 prefixes</dt><dd>1</dd>", "<dt>IPv4 addresses</dt><dd>512</dd>",
@@ -188,14 +188,14 @@ func TestASNRoutes(t *testing.T) {
 		{"not digits", "/as64x", 404, "", []string{"not found"}, []string{"<form"}},
 		{"just as", "/as", 404, "", []string{"not found"}, nil},
 		{"null fields", "/as64502", 200, "", []string{
-			"<title>AS64502 · openipdata.org</title>", "Name unknown", `class="place none s"`,
+			"<title>AS64502: IP ranges and prefixes</title>", "Name unknown", `class="place none s"`,
 			"<dt>Handle</dt><dd>—</dd>", "<dt>Organization</dt><dd>—</dd>", "<dt>Domain</dt><dd>—</dd>", "<dt>Country</dt><dd>—</dd>",
 			"<dt>Category</dt><dd>—</dd>", "<dt>IPv4 prefixes</dt><dd>—</dd>", "<dt>IPv6 prefixes</dt><dd>—</dd>", "<dt>IPv4 addresses</dt><dd>0</dd>",
 		}, []string{"Same organization", "<h2>Prefixes</h2>"}},
 		{"json not json", "/as64504", 200, "", []string{">Broken Net</a>", "<dt>IPv4 prefixes</dt><dd>—</dd>", "<dt>Handle</dt><dd>BROKEN-NET</dd>"}, nil},
 		{"odd slug is not linked", "/as64505", 200, "", []string{"<dt>Organization</dt><dd>Odd Net</dd>"}, []string{"/asn-Odd_Net"}},
 		{"org", "/asn-example-net", 200, "", []string{
-			"<title>Example Net · openipdata.org</title>", "<h1>Organization</h1>", "<h2>Example Net</h2>",
+			"<title>Example Net IP ranges and networks</title>", "<h1>Organization</h1>", "<h2>Example Net</h2>",
 			"<dt>IPv4 addresses</dt><dd>768</dd>", "<dt>Networks</dt><dd>2</dd>", `<a href="/as64500">AS64500</a>`, `<a href="/as64501">AS64501</a>`, `<td class="s">Portugal</td>`,
 		}, []string{"more networks"}},
 		{"org unknown", "/asn-nope", 404, "", []string{"Organization not found", "<h1>Not found</h1>"}, nil},

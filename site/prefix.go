@@ -223,13 +223,14 @@ func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
 	if len(exact) == 0 && len(cover) == 0 && nInside == 0 {
 		return nil
 	}
-	title := p.String() + " · "
+	var asn0 uint32
+	var name0 string
 	pl := &place{Title: "Prefix", Big: p.String(), Mono: true, Small: true}
 	v := &asnView{Place: pl}
 	if len(exact) > 0 {
-		title += asnText(exact[0]) + " · "
-		if n, ok := d.find(exact[0]); ok && nameOf(n) != "" {
-			title += nameOf(n) + " · "
+		asn0 = exact[0]
+		if n, ok := d.find(asn0); ok {
+			name0 = nameOf(n)
 		}
 		row := asnItem(d, exact[0])
 		row.K = "Network"
@@ -284,7 +285,15 @@ func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
 		v.Tables = append(v.Tables, t)
 	}
 	s.locate(p, pl, v)
-	v.pageBase = s.asnBase(title+"openipdata.org", len(exact) == 0)
+	place := ""
+	if !pl.SubNone {
+		place = pl.Sub
+	}
+	title, desc := prefixMeta(p.String(), asn0, name0, place)
+	v.pageBase = s.asnBase(title, len(exact) == 0)
+	if len(exact) > 0 {
+		v.Desc, v.Canon = desc, s.canon(prefixHref(p))
+	}
 	return v
 }
 

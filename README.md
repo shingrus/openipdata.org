@@ -11,6 +11,8 @@ not implemented yet. It builds on its own, like the other Go modules.
 A Go [Hatchet](https://hatchet.run) worker runs the workflows on a VM.
 Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the tasks.
 
+The published data files are CC0 (see [`LICENSE-DATA`](LICENSE-DATA)); the code is MIT ([`LICENSE`](LICENSE)).
+
 ## Layout
 
 | Path | Purpose |

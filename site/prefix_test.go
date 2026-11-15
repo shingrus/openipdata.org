@@ -355,14 +355,14 @@ func TestPrefixPages(t *testing.T) {
 		want, not    []string
 	}{
 		{"exact, two networks", "/prefix/203.0.113.0/24", true, []string{
-			"<title>203.0.113.0/24 · AS64500 · Example Net · openipdata.org</title>", "<h1>Prefix</h1>", `<div class="place s m mapped">`, "<h2>203.0.113.0/24</h2>", "<p>Lisbon, Portugal</p>",
+			"<title>203.0.113.0/24 Example Net AS64500</title>", "<h1>Prefix</h1>", `<div class="place s m mapped">`, "<h2>203.0.113.0/24</h2>", "<p>Lisbon, Portugal</p>",
 			`<dd>Example Net <a href="/as64500">AS64500</a><br>Example Two <a href="/as64501">AS64501</a></dd>`,
 			"<dt>Addresses</dt><dd>256</dd>", `class="aim"`,
 			"More specific prefixes", `<td class="a"><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></td><td class="a"><a href="/as64501">AS64501</a></td><td>Example Two</td>`,
 			`value=""`, `href="/top-asn-by-ip-address"`,
 		}, []string{"Part of", "Places", "Location unknown", "more prefixes"}},
 		{"covered only, inside one record", "/prefix/203.0.113.0/25", false, []string{
-			"<title>203.0.113.0/25 · openipdata.org</title>", "<p>Lisbon, Portugal</p>", `class="aim"`,
+			"<title>203.0.113.0/25</title>", "<p>Lisbon, Portugal</p>", `class="aim"`,
 			`<dt>Part of</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a> <a href="/as64500">AS64500</a></dd>`,
 			"<dt>Addresses</dt><dd>128</dd>",
 		}, []string{"<dt>Network</dt>", "More specific", "Places"}},

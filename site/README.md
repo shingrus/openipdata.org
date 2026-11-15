@@ -109,6 +109,10 @@ The data is the SQLite file the worker builds (`asn-openipdata.sqlite3`: tables 
 | `/top-organizations-by-ip-address` | the 100 organizations with the most IPv4 addresses (summed over their networks) |
 | `/list-of-countries-by-ipv4-allocation` | all countries with their IPv4 addresses and number of networks |
 | `/prefix/8.8.8.0/24`, `/prefix/2001:4860::/32` | one prefix (IPv4 /8 to /32, IPv6 /16 to /128): the announcing networks, the size, the announced prefixes that contain it and those inside it (100 at most), and the place from the geo MMDB (one place in the head, several in a "Places" table with shares, none when more than 20,000 records lie inside). A prefix announced exactly is indexable, every other prefix page has noindex; not announced = 404; another spelling redirects (301) to the canonical one |
+| `/download` | the data files (link, contents, size, date), copy-ready prompt for a coding agent, Python and Go examples, fields, sources and licence; JSON-LD `Dataset` in the head; `public, max-age=300` |
+| `/llms.txt` | the same for AI agents in the llms.txt convention; `text/plain`, `public, max-age=3600` |
+| `/robots.txt` | `Disallow: /api/`, `/resolver`, `/ip` and the `Sitemap:` line (`SITE_ORIGIN`); `public, max-age=3600` |
+| `/sitemap.xml`, `/sitemap-pages.xml`, `/sitemap-networks-<k>.xml`, `/sitemap-organizations-<k>.xml` | sitemap index, home and rankings, and every network or organization page, 50,000 URLs per file; built from memory; 503 without ASN data, 404 for a bad `k`; `public, max-age=3600` |
 | `/api/as15169` | JSON: `{"asn":15169,"domain":"about.google","data":{...}}`, `data` is the `json` column as it is (all prefixes), `domain` is left out when unknown |
 | `/status` (`/ss` redirects 301) | the owner's status page: server (start, version), each data file (built, loaded, size; the SQLite file also networks, organizations, prefixes, load time; `not loaded` when absent), the Accuracy numbers and the DNS beacon (on or off, zone, Redis ok or unreachable). `no-store`, noindex, no query used |
 

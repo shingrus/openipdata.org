@@ -1,0 +1,19 @@
+{{template "top" .}}<section class="panel">
+<div class="head"><h1>Free IP geolocation database</h1></div>
+<p class="lede">City level. CC0. No signup.</p>
+<table class="dl">
+<thead><tr><th>File</th><th class="c">Contains</th><th class="n">Size</th><th class="n">Updated</th></tr></thead>
+<tbody>
+{{range .Files}}<tr><td class="f"><a href="{{.Href}}">{{.Name}}</a></td><td class="c">{{.Contains}}</td><td class="n">{{.Size}}</td><td class="n">{{.Updated}}</td></tr>
+{{end}}</tbody>
+</table>
+</section>
+<svg width="0" height="0" class="sy" aria-hidden="true"><symbol id="i-cp" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></symbol><symbol id="i-ck" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8.5 3.2 3.2L13 4.8"/></symbol></svg>
+{{range .Blocks}}<section class="panel">
+<div class="head"><h2>{{.Title}}</h2></div>
+<div class="code"><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button><pre>{{.Text}}</pre></div>
+</section>
+{{end}}<p class="small">Fields: {{.GeoFields}} (ip2geo); {{.ASNFields}} (ip2asn). Rebuilt twice a day. <a href="/">Accuracy</a><br>
+Sources: {{.Sources}}. Coordinates: <a href="{{.GeoNames}}">GeoNames (CC BY 4.0)</a>.<br>
+<a href="{{.CC0}}">Licence: CC0 1.0</a></p>
+{{template "bottom" .}}

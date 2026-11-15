@@ -107,9 +107,12 @@ type pageBase struct {
 	Pnl             bool // the page has copy or share buttons for panelJS
 	PnlJS           template.JS
 	CSS             template.CSS
-	Title           string // the page title
-	Input           string // lookup bar value
-	NoIndex         bool   // lookup, search and error pages: robots noindex
+	Title           string      // the page title
+	Desc            string      // meta description; empty = no tag
+	LD              template.JS // JSON-LD data block of the head (download page), or empty
+	Canon           string      // absolute canonical URL of an indexable page; empty = no tag
+	Input           string      // lookup bar value
+	NoIndex         bool        // lookup, search and error pages: robots noindex
 }
 
 type view struct {

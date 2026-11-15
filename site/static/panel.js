@@ -33,9 +33,12 @@
     if (!b) return;
     var c = b.classList.contains("cp"), t = "";
     if (c) {
-      var v = b.parentNode.querySelector(".v");
-      t = v ? v.textContent.trim() : "";
-      if (!/^[0-9a-fA-F:.]{2,45}$/.test(t)) return;
+      var v = b.parentNode.querySelector(".v,pre");
+      t = v ? v.textContent : "";
+      if (!v || v.tagName != "PRE") {
+        t = t.trim();
+        if (!/^[0-9a-fA-F:.]{2,45}$/.test(t)) return;
+      }
     } else {
       t = b.dataset.url || "";
       if (!/^https?:\/\/[^\s]{1,300}$/.test(t)) return;

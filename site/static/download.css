@@ -1,0 +1,34 @@
+/* The download page: with style.css it is the whole style of the page. */
+.head h1{font:inherit;color:var(--text);min-width:0}
+.lede{padding:14px 20px;color:var(--muted)}
+.dl{width:100%;border-collapse:collapse}
+.dl th{padding:10px 20px;text-align:left;font-size:11px;font-weight:500;line-height:1.3;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+.dl td{padding:9px 20px;border-bottom:1px solid var(--line);vertical-align:baseline;overflow-wrap:break-word}
+.dl tbody tr:last-child td{border-bottom:0}
+.dl a,.small a{color:var(--accent)}
+.dl a:hover,.small a:hover{text-decoration:underline}
+.dl .n{padding-left:8px;text-align:right}
+.dl td.n{white-space:nowrap;font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+.dl td.f{font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.sy{position:absolute;width:0;height:0;overflow:hidden}
+.cp{display:inline-grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer}
+.cp[hidden]{display:none}
+.cp:hover{color:var(--text);border-color:var(--line-2)}
+.cp svg{width:13px;height:13px}
+.cp .u2{display:none}
+.cp.ok{color:var(--accent);border-color:var(--accent)}
+.cp.ok .u1{display:none}
+.cp.ok .u2{display:inline}
+.code{position:relative}
+.code pre{margin:0;padding:14px 56px 14px 20px;overflow-x:auto;font:400 13px/1.6 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.code .cp{position:absolute;top:10px;right:14px}
+.small{margin-top:16px;padding-inline:2px;font-size:13px;line-height:1.7;color:var(--muted)}
+@media (max-width:700px){
+  .lede{padding-inline:16px}
+  .code pre{padding-inline:16px 52px}
+  .dl th,.dl td{padding-inline:6px}
+  .dl td.n,.dl td.f{font-size:13px}
+  .dl th:first-child,.dl td:first-child{padding-left:16px}
+  .dl th:last-child,.dl td:last-child{padding-right:16px}
+  .dl .c{display:none}
+}

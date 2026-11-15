@@ -99,10 +99,12 @@ type server struct {
 	origins    []string  // origins of V4_URL and V6_URL
 	zone       string    // names of the DNS row are <token>.<zone>; empty = no DNS row
 	redis      *redisClient
-	share      bool           // SHARE: save a snapshot of every visit and serve /report/<id> (needs Redis)
-	origin     string         // SITE_ORIGIN: the origin of the share links
-	shareMu    [64]sync.Mutex // updates of one report run one after another (see updateReport)
-	cspPnl     [4]string      // csp of a page that has panel.js, by fill (1) and res (2)
+	share      bool                      // SHARE: save a snapshot of every visit and serve /report/<id> (needs Redis)
+	origin     string                    // SITE_ORIGIN: the origin of the share links
+	seo        atomic.Pointer[seoStatic] // robots.txt, llms.txt and the fixed sitemaps for s.origin
+	dl         dlCache                   // the rendered /download page
+	shareMu    [64]sync.Mutex            // updates of one report run one after another (see updateReport)
+	cspPnl     [4]string                 // csp of a page that has panel.js, by fill (1) and res (2)
 	public     func(netip.Addr) bool
 	world      *world           // country outlines for the map, decoded once at start
 	placeLimit int              // most MMDB records read for the places of a prefix page
@@ -275,6 +277,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveResolver(w, r)
 	case strings.HasPrefix(p, "/report/"):
 		s.serveReport(w, r)
+	case p == downloadPath:
+		s.serveDownload(w, r)
+	case p == "/llms.txt":
+		s.serveLLMs(w, r)
+	case p == "/robots.txt":
+		s.serveRobots(w, r)
+	case strings.HasPrefix(p, "/sitemap") && s.serveSitemap(w, r):
 	case s.serveASN(w, r):
 	case p == "/healthz":
 		w.Header().Set("Cache-Control", "no-store")
@@ -311,7 +320,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 
 	q := parseQuery(r.URL.RawQuery)
 	code, input, cache := http.StatusOK, "", "public, max-age=300"
-	title := "openipdata.org"
+	title, desc, canon := "openipdata.org", "", ""
 	var p panel
 	fill, res := false, false
 	switch q.kind {
@@ -350,6 +359,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		p = s.panelFor("Lookup", q.addr)
 	default: // the visitor: private data
 		cache = "private, no-store"
+		title, desc, canon = homeTitle, homeDesc, s.canon("/")
 		if a, ok := clientAddr(r, s.realIP); ok {
 			input = a.String()
 			p = s.panelFor("Your connection", a)
@@ -365,6 +375,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	v := makeView(*s.scores.Load())
 	v.Panel, v.Input, v.Title, v.Fill, v.Res = &p, input, title, fill, res
 	v.Pnl = p.Copy
+	v.Desc, v.Canon = desc, canon
 	v.NoIndex = q.kind == "bad" || q.kind == "lookup"
 	if fill || res || v.Pnl {
 		h.Set("Content-Security-Policy", s.pageCSP(fill, res, v.Pnl))

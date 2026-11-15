@@ -75,7 +75,8 @@ type asnData struct {
 	byHandle  map[string]int32 // normalised handle (see slugify) -> index in orgs of the organization of the first network (by number) with that handle
 	countries []countryRow
 	pages     map[string]*cachedPage
-	idx       pfxIndex // every announced prefix (see pfxindex.go)
+	sm        sitemapSet // sitemap files, built on demand (see seo.go)
+	idx       pfxIndex   // every announced prefix (see pfxindex.go)
 	loadedIn  time.Duration
 }
 

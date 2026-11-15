@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{{.Title}}</title>
-<meta name="description" content="Open IP geolocation and ASN data.">
-{{if .NoIndex}}<meta name="robots" content="noindex">
+{{if .Desc}}<meta name="description" content="{{.Desc}}">
+{{end}}{{if .Canon}}<link rel="canonical" href="{{.Canon}}">
+{{end}}{{if .LD}}<script type="application/ld+json">{{.LD}}</script>
+{{end}}{{if .NoIndex}}<meta name="robots" content="noindex">
 {{end}}<meta name="color-scheme" content="dark light">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23ff7d1f'/%3E%3C/svg%3E">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/geist-latin.woff2">
@@ -39,7 +41,7 @@
 {{if .Copy}}<svg width="0" height="0" class="sy" aria-hidden="true"><symbol id="i-cp" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></symbol><symbol id="i-ck" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8.5 3.2 3.2L13 4.8"/></symbol></svg>
 {{end}}{{end}}</section>
 {{end}}{{define "parts"}}{{range $i, $p := .}}{{if $i}} · {{end}}{{if $p.Href}}<a href="{{$p.Href}}"{{if $p.Ext}} rel="nofollow noopener"{{end}}>{{$p.Text}}</a>{{else}}{{$p.Text}}{{end}}{{end}}{{end}}{{define "bottom"}}</main>
-<footer class="foot"><a href="/top-asn-by-ip-address">Networks</a><a href="/top-asn-by-ipv6">IPv6</a><a href="/top-organizations-by-ip-address">Organizations</a><a href="/list-of-countries-by-ipv4-allocation">Countries</a><a href="/status">Status</a></footer>
+<footer class="foot"><a href="/download">Download</a><a href="/top-asn-by-ip-address">Networks</a><a href="/top-asn-by-ipv6">IPv6</a><a href="/top-organizations-by-ip-address">Organizations</a><a href="/list-of-countries-by-ipv4-allocation">Countries</a><a href="/status">Status</a></footer>
 </div>
 <script>{{.ThemeJS}}</script>
 {{if .Fill}}<script>{{.FillJS}}</script>

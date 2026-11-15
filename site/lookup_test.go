@@ -414,7 +414,7 @@ func TestEmptyBoxAndTitles(t *testing.T) {
 		t.Errorf("empty box: status %d, Location %q", w.Code, w.Header().Get("Location"))
 	}
 	for target, title := range map[string]string{
-		"/":             "<title>openipdata.org</title>",
+		"/":             "<title>Free IP geolocation database (CC0) | openipdata.org</title>",
 		"/?203.0.113.9": "<title>203.0.113.9 · openipdata.org</title>",
 		"/?1.2.3":       "<title>openipdata.org</title>",
 	} {
