@@ -183,7 +183,9 @@ beacon_prepare() {
     fi
     beacon=1
     log "DNS beacon: installing knot, redis, the zone $BEACON_ZONE"
-    apt-get install -y -qq knot redis-server python3-certbot-dns-rfc2136 openssl >/dev/null
+    # knot-module-dnstap: Ubuntu ships Knot's dnstap module as its own package (without it Knot
+    # rejects the configuration: unknown module 'mod-dnstap').
+    apt-get install -y -qq knot knot-module-dnstap redis-server python3-certbot-dns-rfc2136 openssl >/dev/null
 
     # Redis: loopback only, nothing kept on disk, a hard memory limit that drops the oldest keys, so a
     # flood of random names cannot fill the memory. A marked block at the end of the file (the last
@@ -294,11 +296,24 @@ REDIS
     fi
 }
 
+# knot_stale: true when Knot was started before one of its files was last written, so it still runs
+# with older settings (a run of this script that stopped after writing them, for example).
+knot_stale() {
+    local since f
+    since="$(systemctl show -p ActiveEnterTimestamp --value knot 2>/dev/null)"
+    [[ -n "$since" ]] || return 1
+    since="$(date -d "$since" +%s 2>/dev/null)" || return 1
+    for f in "$KNOT_CONF" "$KNOT_KEY" "$KNOT_ZONE"; do
+        [[ -e "$f" && "$(stat -c %Y "$f")" -gt "$since" ]] && return 0
+    done
+    return 1
+}
+
 # After the binaries are installed: start Knot, switch the site's DNS row on or off, print the checks.
 beacon_start() {
     ((beacon)) || return 0
     systemctl enable knot >/dev/null 2>&1 || log "warning: could not enable knot"
-    if ((beacon_changed)) || ! systemctl is-active --quiet knot; then
+    if ((beacon_changed)) || knot_stale || ! systemctl is-active --quiet knot; then
         systemctl restart knot || log "warning: knot did not start: journalctl -u knot"
     fi
     if [[ -x "$BIN_DIR/openipdata-beacon" ]]; then
