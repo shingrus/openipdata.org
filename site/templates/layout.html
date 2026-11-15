@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{{.Title}}</title>
 <meta name="description" content="Open IP geolocation and ASN data.">
-<meta name="color-scheme" content="dark light">
+{{if .NoIndex}}<meta name="robots" content="noindex">
+{{end}}<meta name="color-scheme" content="dark light">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23ff7d1f'/%3E%3C/svg%3E">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/geist-latin.woff2">
 <link rel="preload" as="font" type="font/woff2" crossorigin href="/fonts/geist-mono-latin.woff2">
@@ -27,6 +28,7 @@
 </form>
 {{end}}
 {{define "bottom"}}</main>
+<footer class="foot"><a href="/top-asn-by-ip-address">Networks</a><a href="/top-asn-by-ipv6">IPv6</a><a href="/top-organizations-by-ip-address">Organizations</a><a href="/list-of-countries-by-ipv4-allocation">Countries</a></footer>
 </div>
 <script>{{.ThemeJS}}</script>
 {{if .Fill}}<script>{{.FillJS}}</script>

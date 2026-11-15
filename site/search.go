@@ -112,7 +112,7 @@ func (s *server) serveSearch(w http.ResponseWriter, r *http.Request, q query) {
 		s.redirect(w, "/?q="+q.term)
 		return
 	}
-	v := &asnView{pageBase: s.asnBase(q.term + " · openipdata.org")}
+	v := &asnView{pageBase: s.asnBase(q.term+" · openipdata.org", true)}
 	v.Input = q.term
 	code := http.StatusOK
 	if total == 0 {

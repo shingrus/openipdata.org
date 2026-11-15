@@ -275,6 +275,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	}
 	v := makeView(*s.scores.Load())
 	v.Panel, v.Input, v.Title, v.Fill = &p, input, title, fill
+	v.NoIndex = q.kind == "bad" || q.kind == "lookup"
 	if fill {
 		h.Set("Content-Security-Policy", s.cspFill)
 	}

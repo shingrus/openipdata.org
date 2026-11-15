@@ -25,8 +25,6 @@ dd a.lnk:hover,.tbl a:hover,.note a:hover{text-decoration:underline}
 .pf ul{list-style:none;padding:0;columns:190px auto;column-gap:16px;font:400 14px/1.7 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
 .pf ul li{break-inside:avoid}
 .pf:last-of-type{border-bottom:0}
-.links{display:flex;flex-wrap:wrap;gap:6px 20px;margin-top:16px;padding-inline:2px;font-size:14px;color:var(--muted)}
-.links span{color:var(--text)}
 @media (max-width:700px){
   .conn.w dl div{grid-template-columns:112px minmax(0,1fr)}
   .place.s{min-height:100px}

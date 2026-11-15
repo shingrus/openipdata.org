@@ -27,5 +27,4 @@
 {{range .Groups}}<div class="pf"><h3>{{.Family}}</h3><ul>{{range .List}}<li>{{.}}</li>{{end}}</ul></div>
 {{end}}{{if .Note}}<p class="note">{{.Note}} <a href="{{.NoteHref}}">{{.NoteLink}}</a></p>
 {{end}}</section>
-{{end}}{{if .Tabs}}<nav class="links" aria-label="Rankings">{{range .Tabs}}{{if .Cur}}<span>{{.Text}}</span>{{else}}<a href="{{.Href}}">{{.Text}}</a>{{end}}{{end}}</nav>
 {{end}}{{template "bottom" .}}

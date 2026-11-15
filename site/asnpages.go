@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -27,11 +28,11 @@ const (
 )
 
 // The four ranking pages.
-var rankings = []struct{ path, name, title string }{
-	{"/top-asn-by-ip-address", "Networks by IPv4", "Top networks by IPv4 addresses"},
-	{"/top-asn-by-ipv6", "Networks by IPv6", "Top networks by IPv6 addresses"},
-	{"/top-organizations-by-ip-address", "Organizations", "Top organizations by IPv4 addresses"},
-	{"/list-of-countries-by-ipv4-allocation", "Countries", "Countries by IPv4 addresses"},
+var rankings = []struct{ path, title string }{
+	{"/top-asn-by-ip-address", "Top networks by IPv4 addresses"},
+	{"/top-asn-by-ipv6", "Top networks by IPv6 space"},
+	{"/top-organizations-by-ip-address", "Top organizations by IPv4 addresses"},
+	{"/list-of-countries-by-ipv4-allocation", "Countries by IPv4 addresses"},
 }
 
 type kv struct{ K, V, Href string }
@@ -73,11 +74,6 @@ type pfxPanel struct {
 	NoteLink string
 }
 
-type tab struct {
-	Text, Href string
-	Cur        bool
-}
-
 // asnView is the data of every ASN page; the template asn.html lays it out.
 type asnView struct {
 	pageBase
@@ -87,33 +83,32 @@ type asnView struct {
 	Place       *place
 	Tables      []table
 	Pfx         *pfxPanel
-	Tabs        []tab
 }
 
-func (s *server) asnBase(title string) pageBase {
-	return pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), CSS: template.CSS(styleCSS + "\n" + asnCSS), Title: title}
-}
-
-// tabs is the row of links to the four ranking pages; cur is the path shown.
-func tabs(cur string) []tab {
-	var t []tab
-	for _, r := range rankings {
-		t = append(t, tab{Text: r.name, Href: r.path, Cur: r.path == cur})
-	}
-	return t
+// asnBase is the base of an ASN page; noindex keeps the page out of search
+// engines (notices and search results).
+func (s *server) asnBase(title string, noindex bool) pageBase {
+	return pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), CSS: template.CSS(styleCSS + "\n" + asnCSS), Title: title, NoIndex: noindex}
 }
 
 func (s *server) renderASN(v *asnView) ([]byte, error) {
 	return render(s.tmpl, "asn.html", v)
 }
 
-// fmtV6 prints a number of IPv6 addresses: whole numbers up to 10^15, then
-// like 9.51e23.
+// fmtV6 prints an amount of IPv6 addresses as a number of /64 networks (each
+// 2^64 addresses): a whole number with thousands separators, "<1" for a
+// positive amount below one /64, "0" for none.
 func fmtV6(v float64) string {
-	if v < 1e15 {
-		return fmtInt(int64(v))
+	n := v / (1 << 64)
+	switch {
+	case !(v > 0):
+		return "0"
+	case n < 1:
+		return "<1"
+	case n >= math.MaxInt64:
+		return fmtInt(math.MaxInt64)
 	}
-	return strings.Replace(strconv.FormatFloat(v, 'e', 2, 64), "e+", "e", 1)
+	return fmtInt(int64(n))
 }
 
 func asnText(n uint32) string { return "AS" + strconv.FormatUint(uint64(n), 10) }
@@ -176,13 +171,13 @@ func (s *server) renderASNPages(d *asnData) {
 		case 0:
 			t = netTable(r.title, d.topV4, func(n *network) string { return fmtInt(n.v4) }, "IPv4 addresses")
 		case 1:
-			t = netTable(r.title, d.topV6, func(n *network) string { return fmtV6(n.v6) }, "IPv6 addresses")
+			t = netTable(r.title, d.topV6, func(n *network) string { return fmtV6(n.v6) }, "IPv6 /64s")
 		case 2:
 			t = orgTable(r.title)
 		default:
 			t = countryTable(r.title)
 		}
-		v := &asnView{pageBase: s.asnBase(r.title + " · openipdata.org"), Tables: []table{t}, Tabs: tabs(r.path)}
+		v := &asnView{pageBase: s.asnBase(r.title+" · openipdata.org", false), Tables: []table{t}}
 		body, err := s.renderASN(v)
 		if err != nil {
 			continue // the page then answers 500
@@ -227,7 +222,7 @@ func (s *server) asnNotice(w http.ResponseWriter, r *http.Request, code int, hea
 	if code == http.StatusServiceUnavailable {
 		w.Header().Set("Retry-After", "60")
 	}
-	body, err := s.renderASN(&asnView{pageBase: s.asnBase(head + " · openipdata.org"), NoticeHead: head, Notice: text})
+	body, err := s.renderASN(&asnView{pageBase: s.asnBase(head+" · openipdata.org", true), NoticeHead: head, Notice: text})
 	if err != nil {
 		plain(w, http.StatusInternalServerError, "error\n")
 		return
@@ -505,7 +500,7 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 	if name := firstNonEmpty(row.org, handle); name != "" {
 		title += name + " · "
 	}
-	v := &asnView{pageBase: s.asnBase(title + "openipdata.org"), Place: pl, Tabs: tabs("")}
+	v := &asnView{pageBase: s.asnBase(title+"openipdata.org", false), Place: pl}
 
 	if validSlug(row.slug) {
 		var others []int32
@@ -625,7 +620,7 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 	if name != "" {
 		title = name + " · " + title
 	}
-	v := &asnView{pageBase: s.asnBase(title), Place: pl, Tables: []table{t}, Tabs: tabs("")}
+	v := &asnView{pageBase: s.asnBase(title, false), Place: pl, Tables: []table{t}}
 	body, err := s.renderASN(v)
 	if err != nil {
 		plain(w, http.StatusInternalServerError, "error\n")

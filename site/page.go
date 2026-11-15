@@ -63,6 +63,7 @@ type pageBase struct {
 	CSS             template.CSS
 	Title           string // the page title
 	Input           string // lookup bar value
+	NoIndex         bool   // lookup, search and error pages: robots noindex
 }
 
 type view struct {

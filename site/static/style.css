@@ -140,3 +140,6 @@ dd .as{margin-left:10px;color:var(--accent)}
   .lab{margin:0}
   .bar{grid-column:1/-1;margin-top:12px}
 }
+.foot{display:flex;flex-wrap:wrap;gap:4px 20px;margin-top:28px;padding-inline:2px;font-size:13px;color:var(--muted)}
+.foot a{color:var(--muted);text-decoration:none}
+.foot a:hover{color:var(--accent)}

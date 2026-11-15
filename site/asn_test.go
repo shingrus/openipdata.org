@@ -205,7 +205,7 @@ func TestASNRoutes(t *testing.T) {
 		{"org too long", "/asn-" + strings.Repeat("a", 300), 404, "", []string{"Organization not found"}, nil},
 		{"org percent", "/asn-example%2dnet", 200, "", []string{"<h2>Example Net</h2>"}, nil},
 		{"top v4", "/top-asn-by-ip-address", 200, "", []string{"<title>Top networks by IPv4 addresses · openipdata.org</title>", "<h1>Top networks by IPv4 addresses</h1>", "Top 100", `<a href="/as64719">AS64719</a>`}, nil},
-		{"top v6", "/top-asn-by-ipv6", 200, "", []string{"<h1>Top networks by IPv6 addresses</h1>", "1.21e24", `<a href="/as64500">AS64500</a>`}, nil},
+		{"top v6", "/top-asn-by-ipv6", 200, "", []string{"<h1>Top networks by IPv6 space</h1>", "<th class=\"n\">IPv6 /64s</th>", "65,536", `<a href="/as64500">AS64500</a>`}, nil},
 		{"top orgs", "/top-organizations-by-ip-address", 200, "", []string{"<h1>Top organizations by IPv4 addresses</h1>", `<a href="/asn-huge-net">Huge Net</a>`, `<a href="/asn-many-net">Many Net</a>`}, nil},
 		{"countries", "/list-of-countries-by-ipv4-allocation", 200, "", []string{"<h1>Countries by IPv4 addresses</h1>", "<td>Germany</td>", "<td>France</td>", "<td>Portugal</td>", "<td>Spain</td>"}, nil},
 		{"top trailing slash", "/top-asn-by-ip-address/", 404, "", nil, nil},
@@ -716,7 +716,7 @@ func TestASNSyntax(t *testing.T) {
 			t.Errorf("validSlug(%q) = %v", s, !want)
 		}
 	}
-	for v, want := range map[float64]string{0: "0", 1234: "1,234", 999999999999999: "999,999,999,999,999", 1e15: "1.00e15", 1.2089258196146292e24: "1.21e24"} {
+	for v, want := range map[float64]string{0: "0", 1.2089258196146292e24: "65,536", -1: "0", 1: "<1", 1 << 64: "1", 1.5 * (1 << 64): "1", 1000 * (1 << 64): "1,000", 1e30: "54,210,108,624", 1e60: "9,223,372,036,854,775,807"} {
 		if got := fmtV6(v); got != want {
 			t.Errorf("fmtV6(%g) = %q, want %q", v, got, want)
 		}
@@ -741,5 +741,59 @@ func TestASNNoCountryDash(t *testing.T) {
 	}
 	if body := get(s, "GET", "/as64701").Body.String(); !strings.Contains(body, "<dt>Country</dt><dd>—</dd>") {
 		t.Errorf("network page of a network with no country: %s", body)
+	}
+}
+
+// Every page has the footer links to the four rankings, the ranking pages and
+// network pages no longer have a second copy.
+func TestFooterLinks(t *testing.T) {
+	s, _ := asnServer(t)
+	for _, target := range []string{"/", "/?2001:db8::1", "/as64500", "/as64999", "/asn-example-net", "/top-asn-by-ipv6", "/?q=zzzzqqq"} {
+		body := get(s, "GET", target).Body.String()
+		for _, l := range []string{"/top-asn-by-ip-address", "/top-asn-by-ipv6", "/top-organizations-by-ip-address", "/list-of-countries-by-ipv4-allocation"} {
+			if n := strings.Count(body, `href="`+l+`"`); n != 1 {
+				t.Errorf("%s: %d links to %s, want 1", target, n, l)
+			}
+		}
+		if !strings.Contains(body, `<footer class="foot">`) {
+			t.Errorf("%s: no footer", target)
+		}
+	}
+}
+
+// Lookup, search and error pages say noindex; the others stay indexable.
+func TestNoIndex(t *testing.T) {
+	const tag = `<meta name="robots" content="noindex">`
+	s, _ := asnServer(t)
+	ss := searchServer(t)
+	for _, c := range []struct {
+		srv    *server
+		target string
+		want   bool
+	}{
+		{s, "/", false},
+		{s, "/?2001:db8::1", true},
+		{s, "/?1.2.3", true}, // 400
+		{s, "/as64500", false},
+		{s, "/asn-example-net", false},
+		{s, "/as64999", true}, // 404
+		{s, "/asn-nope", true},
+		{s, "/top-asn-by-ip-address", false},
+		{s, "/top-asn-by-ipv6", false},
+		{s, "/top-organizations-by-ip-address", false},
+		{s, "/list-of-countries-by-ipv4-allocation", false},
+		{ss, "/?q=acme", true},    // results
+		{ss, "/?q=zzzzqqq", true}, // nothing found
+	} {
+		w := get(c.srv, "GET", c.target)
+		if got := strings.Contains(w.Body.String(), tag); got != c.want {
+			t.Errorf("%s (%d): noindex = %v, want %v", c.target, w.Code, got, c.want)
+		}
+		if w.Header().Get("X-Robots-Tag") != "" {
+			t.Errorf("%s: unexpected X-Robots-Tag header", c.target)
+		}
+	}
+	if w := get(fixtureServer(t), "GET", "/as64500"); !strings.Contains(w.Body.String(), tag) {
+		t.Errorf("503 page lacks noindex")
 	}
 }
