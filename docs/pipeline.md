@@ -165,7 +165,7 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | 20 | `20-ipverse.csv.gz` | ipverse/geo-ip-blocks | country | — |
 | 30 | `30-pdb.csv.gz` | `public.asn_geo_pdb`: ASN's dominant city (≥30% of its presence) | city | same-country (only refines) |
 | 35 | `35-rdns-wide.csv.gz` | `public.rdns_geo_layer`, scope `wide`: the city most traced /24s of an announced prefix (at most /16) got from router names; a trial | city | same-country (only refines) |
-| 38 | `38-asn-geofeed.csv.gz` | the ASN's own geofeed rows (`70-geofeeds` attributed by announced prefix, MOAS prefixes ignored): an ASN with ≥80% of the addresses of its feed rows (country-only rows count in the total) in one city, from ≥2 rows, per address family, gives that city to all its announced prefixes | city | same-country (only refines) |
+| 38 | `38-asn-geofeed.csv.gz` | the ASN's own geofeed rows (`70-geofeeds` attributed by announced prefix, MOAS prefixes ignored): an ASN whose feed rows cover ≥50% of its announced addresses (per address family) and put ≥80% of their addresses (country-only rows count in the total) in one city, from ≥2 rows, gives that city to all its announced prefixes | city | same-country (only refines) |
 | 40 | `40-hosting.csv.gz` | single-city PeeringDB `Content` networks, non-Global scope | city | first-country (only back to the RIR country) |
 | 50 | `50-ix.csv.gz` | `public.geo_ix_pdb`: exchange peering LANs | city | — |
 | 60 | `60-whois.csv.gz` | whois `geoloc:`, most populous place within 25 km (measured 85.8% within 100 km) | city | within-first |

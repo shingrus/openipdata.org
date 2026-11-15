@@ -28,10 +28,18 @@ import (
 // announced prefixes are weighed by the addresses they cover; the ASN has a
 // dominant city in that family when one (country, city) has at least
 // domMinShare of the weight and comes from at least domMinRows distinct feed
-// rows. Every announced prefix of the ASN in that family then gets that city.
+// rows, and the feed rows together cover at least domMinCoverage of the ASN's
+// announced addresses in that family. Every announced prefix of the ASN in
+// that family then gets that city.
 const (
 	// domMinShare is the share of the family's city weight the top city needs.
 	domMinShare = 0.8
+	// domMinCoverage is the share of the ASN's announced addresses (in that
+	// family) that its attributed feed rows, with or without a city, must
+	// cover (their weight over the announced weight; overlapping rows can push
+	// it above 1). A feed that describes a small part of an ASN says little
+	// about the rest.
+	domMinCoverage = 0.5
 	// domMinRows is the number of distinct feed rows the top city needs; one
 	// row is an anecdote, not a pattern.
 	domMinRows = 2
@@ -211,6 +219,28 @@ func (idx *announcedIndex) lookup(p netip.Prefix) (announcedEntry, bool) {
 	return announcedEntry{}, false
 }
 
+// insideOwn reports whether a shorter non-ambiguous announced prefix of the
+// same ASN contains p.
+func (idx *announcedIndex) insideOwn(p netip.Prefix, asn int64) bool {
+	lens := idx.lens6
+	if p.Addr().Is4() {
+		lens = idx.lens4
+	}
+	for _, l := range lens {
+		if l >= p.Bits() {
+			continue
+		}
+		q, err := p.Addr().Prefix(l)
+		if err != nil {
+			continue
+		}
+		if e, ok := idx.byPrefix[q]; ok && !e.ambiguous && e.asn == asn {
+			return true
+		}
+	}
+	return false
+}
+
 // prefixWeight is the number of addresses a feed row stands for: IPv4
 // addresses, or /64s for IPv6 (a row narrower than a /64 counts one).
 func prefixWeight(p netip.Prefix) float64 {
@@ -336,6 +366,15 @@ func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, 
 		ct.forms[city]++
 	}
 
+	// The announced weight of each (ASN, family): the union of its non-ambiguous prefixes
+	// (one inside another prefix of the same ASN counts once, through the outer one).
+	announcedWeight := map[asnFamily]float64{}
+	for p, e := range idx.byPrefix {
+		if !e.ambiguous && !idx.insideOwn(p, e.asn) {
+			announcedWeight[asnFamily{e.asn, p.Addr().Is6()}] += prefixWeight(p)
+		}
+	}
+
 	type verdict struct{ country, city string }
 	dominant := map[asnFamily]verdict{}
 	for key, t := range tallies {
@@ -348,6 +387,9 @@ func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, 
 			}
 		}
 		if bestTally == nil || bestTally.rows < domMinRows || t.total <= 0 || bestTally.weight/t.total < domMinShare {
+			continue
+		}
+		if aw := announcedWeight[key]; aw <= 0 || t.total/aw < domMinCoverage {
 			continue
 		}
 		// The spelling written most often (ties: the smallest string).

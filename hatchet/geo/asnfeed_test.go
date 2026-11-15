@@ -41,11 +41,11 @@ func runASNFeed(t *testing.T, feeds string, announced ...[]asnPrefix) (string, i
 }
 
 func TestASNFeedDominance(t *testing.T) {
-	a := ann(64500, "10.0.0.0/16", "10.1.0.0/16")
+	a := ann(64500, "10.0.0.0/21", "10.1.0.0/24")
 	// 4 x /24 Berlin + 1 x /24 Munich = exactly 80%: dominant.
 	rows := "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/24,DE,,berlin,f\n10.0.3.0/24,DE,,Berlin,f\n10.0.4.0/24,DE,,Munich,f\n"
 	got, asns, n := runASNFeed(t, rows, a)
-	if got != "10.0.0.0/16,DE,,Berlin,asn:64500\n10.1.0.0/16,DE,,Berlin,asn:64500\n" || asns != 1 || n != 2 {
+	if got != "10.0.0.0/21,DE,,Berlin,asn:64500\n10.1.0.0/24,DE,,Berlin,asn:64500\n" || asns != 1 || n != 2 {
 		t.Errorf("at 80%%: %q %d %d", got, asns, n)
 	}
 	// Just under 80%.
@@ -63,29 +63,58 @@ func TestASNFeedDominance(t *testing.T) {
 	if n != 0 {
 		t.Errorf("one row: %d", n)
 	}
-	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n", a)
-	if n != 2 {
+	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n", ann(64500, "10.0.0.0/22"))
+	if n != 1 {
 		t.Errorf("two rows: %d", n)
 	}
 	// A row with a bad country does not count at all.
-	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.4.0/22,Germany,,Bonn,f\n", a)
-	if n != 2 {
+	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.4.0/22,Germany,,Bonn,f\n", ann(64500, "10.0.0.0/22"))
+	if n != 1 {
 		t.Errorf("bad country: %d", n)
 	}
 	// Rows without a city count in the total: a country-only /12 and two /24 city rows have no dominant city.
-	_, _, n = runASNFeed(t, "10.0.0.0/12,DE,,,f\n10.16.0.0/24,DE,,Berlin,f\n10.16.1.0/24,DE,,Berlin,f\n", ann(1, "10.0.0.0/8"))
+	_, _, n = runASNFeed(t, "10.0.0.0/12,DE,,,f\n10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n", ann(1, "10.0.0.0/12"))
 	if n != 0 {
 		t.Errorf("country-only /12: %d", n)
 	}
 	// A small country-only row does not stop the city (4 x /24 city + 1 x /26 without = 99%).
-	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/26,DE,,,f\n", a)
-	if n != 2 {
+	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/26,DE,,,f\n", ann(64500, "10.0.0.0/22"))
+	if n != 1 {
 		t.Errorf("small country-only row: %d", n)
 	}
 	// Last row wins: a later row without a city replaces the city row and counts as no-city.
-	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/24,DE,,Berlin,f\n10.0.0.0/24,DE,,,f\n10.0.1.0/24,DE,,,f\n", a)
+	_, _, n = runASNFeed(t, "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/24,DE,,Berlin,f\n10.0.0.0/24,DE,,,f\n10.0.1.0/24,DE,,,f\n", ann(64500, "10.0.0.0/22"))
 	if n != 0 {
 		t.Errorf("later no-city rows: %d", n)
+	}
+}
+
+func TestASNFeedCoverage(t *testing.T) {
+	two := "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n"
+	// A /16 announced and two /24 rows (under 1% of it): no city.
+	if _, _, n := runASNFeed(t, two, ann(1, "10.0.0.0/16")); n != 0 {
+		t.Errorf("small coverage: %d", n)
+	}
+	// Rows covering half of the announced space (a /23 of a /22): a city.
+	if got, _, n := runASNFeed(t, two, ann(1, "10.0.0.0/22")); n != 1 || got != "10.0.0.0/22,DE,,Berlin,asn:1\n" {
+		t.Errorf("half coverage: %q", got)
+	}
+	// Just under half: no city.
+	if _, _, n := runASNFeed(t, two, ann(1, "10.0.0.0/22", "10.1.0.0/24")); n != 0 {
+		t.Errorf("under half: %d", n)
+	}
+	// An inner announced prefix of the same ASN counts once, through the outer one:
+	// 512 of 1024 covers half; counting the /24 twice (1280) would not.
+	if _, _, n := runASNFeed(t, two, ann(1, "10.0.0.0/22", "10.0.2.0/24")); n != 2 {
+		t.Errorf("nested: %d", n)
+	}
+	// A prefix of another ASN inside the outer one does not reduce the outer weight.
+	if _, _, n := runASNFeed(t, two, append(ann(1, "10.0.0.0/22"), ann(2, "10.0.2.0/24")...)); n != 1 {
+		t.Errorf("other ASN inside: %d", n)
+	}
+	// An ASN with no announced prefix in a family has no weight: nothing, no panic.
+	if _, _, n := runASNFeed(t, two, ann(1, "2001:db8::/32")); n != 0 {
+		t.Errorf("other family: %d", n)
 	}
 }
 
@@ -98,7 +127,7 @@ func TestASNFeedAttribution(t *testing.T) {
 		t.Errorf("MOAS: %q", got)
 	}
 	// The same ASN listing a prefix twice is not MOAS.
-	got, _, n = runASNFeed(t, "10.2.0.0/24,DE,,Berlin,f\n10.2.1.0/24,DE,,Berlin,f\n", append(ann(1, "10.2.0.0/16"), ann(1, "10.2.0.0/16")...))
+	got, _, n = runASNFeed(t, "10.2.0.0/24,DE,,Berlin,f\n10.2.1.0/24,DE,,Berlin,f\n", append(ann(1, "10.2.0.0/22"), ann(1, "10.2.0.0/22")...))
 	if n != 1 || !strings.Contains(got, "asn:1") {
 		t.Errorf("same ASN twice: %q", got)
 	}
@@ -108,40 +137,40 @@ func TestASNFeedAttribution(t *testing.T) {
 		t.Errorf("broader or outside: %d", n)
 	}
 	// Longest announced prefix wins: the /24 rows belong to AS2, the rest of the /16 to AS1.
-	a := append(ann(1, "10.0.0.0/16"), ann(2, "10.0.5.0/24")...)
-	rows := "10.0.5.0/25,FR,,Paris,f\n10.0.5.128/25,FR,,Paris,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/24,DE,,Berlin,f\n"
+	a := append(ann(1, "10.0.0.0/21"), ann(2, "10.0.5.0/24")...)
+	rows := "10.0.5.0/25,FR,,Paris,f\n10.0.5.128/25,FR,,Paris,f\n10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/24,DE,,Berlin,f\n10.0.3.0/24,DE,,Berlin,f\n10.0.4.0/24,DE,,Berlin,f\n"
 	got, asns, n := runASNFeed(t, rows, a)
-	if got != "10.0.0.0/16,DE,,Berlin,asn:1\n10.0.5.0/24,FR,,Paris,asn:2\n" || asns != 2 || n != 2 {
+	if got != "10.0.0.0/21,DE,,Berlin,asn:1\n10.0.5.0/24,FR,,Paris,asn:2\n" || asns != 2 || n != 2 {
 		t.Errorf("longest match: %q %d %d", got, asns, n)
 	}
 	// Exact duplicates count once (last wins): without the dedupe Berlin would have 2 rows.
-	_, _, n = runASNFeed(t, "10.0.1.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n", ann(1, "10.0.0.0/16"))
+	_, _, n = runASNFeed(t, "10.0.1.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n", ann(1, "10.0.0.0/22"))
 	if n != 0 {
 		t.Errorf("duplicate rows counted twice: %d", n)
 	}
-	got, _, n = runASNFeed(t, "10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Hamburg,f\n", ann(1, "10.0.0.0/16"))
+	got, _, n = runASNFeed(t, "10.0.1.0/24,DE,,Berlin,f\n10.0.2.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Hamburg,f\n", ann(1, "10.0.0.0/22"))
 	if n != 0 {
 		t.Errorf("last row must win: %q", got)
 	}
 }
 
 func TestASNFeedFamilies(t *testing.T) {
-	a := ann(7, "10.0.0.0/16", "2001:db8::/32", "2001:db9::/32")
+	a := ann(7, "10.0.0.0/23", "2001:db8::/47", "2001:db9::/48")
 	rows := "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n" + // v4: Berlin
-		"2001:db8:1::/48,FR,,Paris,f\n2001:db8:2::/48,FR,,Paris,f\n" // v6: Paris
+		"2001:db8::/48,FR,,Paris,f\n2001:db8:1::/48,FR,,Paris,f\n" // v6: Paris
 	got, asns, n := runASNFeed(t, rows, a)
-	if got != "10.0.0.0/16,DE,,Berlin,asn:7\n2001:db8::/32,FR,,Paris,asn:7\n2001:db9::/32,FR,,Paris,asn:7\n" || asns != 1 || n != 3 {
+	if got != "10.0.0.0/23,DE,,Berlin,asn:7\n2001:db8::/47,FR,,Paris,asn:7\n2001:db9::/48,FR,,Paris,asn:7\n" || asns != 1 || n != 3 {
 		t.Errorf("families: %q %d %d", got, asns, n)
 	}
 	// A family without a dominant city gets nothing, the other family still does.
-	rows = "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n2001:db8:1::/48,FR,,Paris,f\n2001:db8:2::/48,FR,,Lyon,f\n"
+	rows = "10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n2001:db8::/48,FR,,Paris,f\n2001:db8:1::/48,FR,,Lyon,f\n"
 	got, _, n = runASNFeed(t, rows, a)
-	if got != "10.0.0.0/16,DE,,Berlin,asn:7\n" || n != 1 {
+	if got != "10.0.0.0/23,DE,,Berlin,asn:7\n" || n != 1 {
 		t.Errorf("one family: %q", got)
 	}
 	// IPv6 weight counts /64s: one /48 (65536 /64s) outweighs a /56 (256) and a /64 by far.
-	rows = "2001:db8:1::/48,FR,,Paris,f\n2001:db8:2::/56,DE,,Berlin,f\n2001:db8:3::/64,DE,,Berlin,f\n"
-	got, _, n = runASNFeed(t, rows, ann(7, "2001:db8::/32"))
+	rows = "2001:db8::/48,FR,,Paris,f\n2001:db8:1::/56,DE,,Berlin,f\n2001:db8:1:ff::/64,DE,,Berlin,f\n"
+	got, _, n = runASNFeed(t, rows, ann(7, "2001:db8::/47"))
 	if got != "" || n != 0 { // Paris has one row only
 		t.Errorf("v6 weights: %q", got)
 	}
@@ -156,8 +185,8 @@ func TestASNFeedFamilies(t *testing.T) {
 // A row's city is shown as it is written most often.
 func TestASNFeedSpelling(t *testing.T) {
 	rows := "10.0.0.0/24,de,,Köln,f\n10.0.1.0/24,DE,,köln,f\n10.0.2.0/24,DE,,Köln,f\n"
-	got, _, _ := runASNFeed(t, rows, ann(1, "10.0.0.0/16"))
-	if got != "10.0.0.0/16,DE,,Köln,asn:1\n" {
+	got, _, _ := runASNFeed(t, rows, ann(1, "10.0.0.0/22"))
+	if got != "10.0.0.0/22,DE,,Köln,asn:1\n" {
 		t.Errorf("got %q", got)
 	}
 }
@@ -200,7 +229,7 @@ func TestDownloadASNFeed(t *testing.T) {
 	p, _ := asnFeedFixture(t)
 	writeGzip(t, filepath.Join(p.layersDir(), FeedsLayer), feedHeader+"10.0.0.0/24,DE,,Berlin,f\n10.0.1.0/24,DE,,Berlin,f\n")
 	calls := 0
-	p.readAnnounced = func(context.Context) ([]asnPrefix, error) { calls++; return ann(1, "10.0.0.0/16"), nil }
+	p.readAnnounced = func(context.Context) ([]asnPrefix, error) { calls++; return ann(1, "10.0.0.0/22"), nil }
 	src := Source{Rows: map[string]int{}}
 	if err := p.downloadASNFeed(context.Background(), p.layersDir(), &src); err != nil {
 		t.Fatal(err)
@@ -208,7 +237,7 @@ func TestDownloadASNFeed(t *testing.T) {
 	if calls != 1 || src.skipped(ASNFeedLayer) || src.ASNFeedASNs != 1 || src.Rows[ASNFeedLayer] != 1 {
 		t.Fatalf("%d %+v", calls, src)
 	}
-	if got := readGzip(t, filepath.Join(p.layersDir(), ASNFeedLayer)); got != feedHeader+"10.0.0.0/16,DE,,Berlin,asn:1\n" {
+	if got := readGzip(t, filepath.Join(p.layersDir(), ASNFeedLayer)); got != feedHeader+"10.0.0.0/22,DE,,Berlin,asn:1\n" {
 		t.Errorf("layer = %q", got)
 	}
 	// The prefixes are saved outside the layers directory.
@@ -289,18 +318,21 @@ func TestPrepareHoldoutASNFeed(t *testing.T) {
 	layers := p.layersDir()
 	os.MkdirAll(layers, 0o750)
 	writeGzip(t, filepath.Join(layers, RIRLayer), feedHeader)
-	// Kept feed0: two Berlin rows in AS1. Held-out feed1: five Paris rows in AS1 (they would flip the city).
-	feeds := feedHeader + "10.0.0.0/24,DE,,Berlin,https://feed0.example/geo.csv\n10.0.1.0/24,DE,,Berlin,https://feed0.example/geo.csv\n"
-	for i := 10; i < 15; i++ {
+	// Kept feed0: eight Berlin rows in AS1 (half of its /20). Held-out feed1: eight Paris rows in AS1 (without the holdout there is no dominant city).
+	feeds := feedHeader
+	for i := 0; i < 8; i++ {
+		feeds += fmt.Sprintf("10.0.%d.0/24,DE,,Berlin,https://feed0.example/geo.csv\n", i)
+	}
+	for i := 8; i < 16; i++ {
 		feeds += fmt.Sprintf("10.0.%d.0/24,FR,,Paris,https://feed1.example/geo.csv\n", i)
 	}
 	writeGzip(t, filepath.Join(layers, FeedsLayer), feeds)
-	announced := ann(1, "10.0.0.0/16")
+	announced := ann(1, "10.0.0.0/20")
 	if err := writeAnnouncedFile(filepath.Join(p.dir(), asnPrefixesFile), announced); err != nil {
 		t.Fatal(err)
 	}
-	// The main layer, as Download wrote it (from all the feeds: Paris would dominate).
-	writeGzip(t, filepath.Join(layers, ASNFeedLayer), feedHeader+"10.0.0.0/16,FR,,Paris,asn:1\n")
+	// The main layer, as Download wrote it (from all the feeds, here a made-up Paris).
+	writeGzip(t, filepath.Join(layers, ASNFeedLayer), feedHeader+"10.0.0.0/20,FR,,Paris,asn:1\n")
 
 	eval := p.evalDir()
 	os.MkdirAll(eval, 0o750)
@@ -309,7 +341,7 @@ func TestPrepareHoldoutASNFeed(t *testing.T) {
 		t.Fatalf("%q %q %v", mmdb, status, err)
 	}
 	own := filepath.Join(eval, "holdout", ASNFeedLayer)
-	if got := readGzip(t, own); got != feedHeader+"10.0.0.0/16,DE,,Berlin,asn:1\n" {
+	if got := readGzip(t, own); got != feedHeader+"10.0.0.0/20,DE,,Berlin,asn:1\n" {
 		t.Errorf("holdout layer = %q", got)
 	}
 	args, _ := os.ReadFile(argsFile)

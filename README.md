@@ -388,7 +388,7 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   gives each `70-geofeeds` row that has a city to the ASN of the longest announced prefix containing it (a
   prefix announced by more than one ASN is ignored; a row broader than the announcement is ignored), and weighs
   the rows per ASN and address family by addresses (IPv4) or /64s (IPv6). When one city has at least 80% of the
-  weight of all its attributed rows (rows without a city count in the total) and comes from at least 2 rows, every announced prefix of the ASN in that family gets it (source
+  weight of all its attributed rows (rows without a city count in the total), comes from at least 2 rows, and those rows cover at least half of the ASN's announced addresses in that family, every announced prefix of the ASN in that family gets it (source
   `asn:<number>`). The holdout build recomputes the layer from the kept feeds, so held-out feeds do not leak into it.
 - The optional layers are `35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois` and `65-rdns`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
