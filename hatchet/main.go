@@ -6,6 +6,7 @@
 //	openipdata-worker run-pdb                    # sync-peeringdb
 //	openipdata-worker run-domains                # update-asn-domains
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
+//	openipdata-worker run-bgp [-skip-upload | -force-upload] [-mrt file] # sync-bgp (-mrt: read a local dump, no download, no upload)
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
 //	openipdata-worker run-rdns-rules [-reject domain,...] # learn-rdns-rules (task learn)
@@ -23,7 +24,7 @@
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
-// HC_PING_GEO (optional), MAXMIND_LICENSE_KEY (optional secret: the
+// HC_PING_GEO and HC_PING_BGP (optional), MAXMIND_LICENSE_KEY (optional secret: the
 // MaxMind GeoLite2 City reference of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // mmdbbuilder and scamper (resolve-ips; built without privilege separation) are expected next to this binary.
 package main
@@ -44,6 +45,7 @@ import (
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 
 	"openipdata.org/hatchet/asn"
+	"openipdata.org/hatchet/bgp"
 	"openipdata.org/hatchet/domains"
 	"openipdata.org/hatchet/geo"
 	"openipdata.org/hatchet/geofeeds"
@@ -79,6 +81,14 @@ type SyncGeofeedsInput struct {
 	DomainBudget int `json:"domain_budget"`
 }
 
+// SyncBGPInput is the sync-bgp input; cron runs use the zero value.
+type SyncBGPInput struct {
+	// SkipUpload writes the communities file but does not upload it (for manual test runs).
+	SkipUpload bool `json:"skip_upload"`
+	// ForceUpload sends the bytes even when R2 already holds the same file.
+	ForceUpload bool `json:"force_upload"`
+}
+
 // BuildGeoInput is the build-geo-data input; cron runs use the zero value.
 type BuildGeoInput struct {
 	// SkipPublish builds and evaluates the MMDB but uploads nothing (for manual test runs).
@@ -87,7 +97,7 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["40-hosting.csv.gz"]; the optional layers are 35-rdns-wide, 40-hosting, 50-ix, 60-whois,
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 38-asn-geofeed, 40-hosting, 50-ix, 60-whois,
 	// 65-rdns and 67-rdns-names (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
@@ -130,6 +140,8 @@ func main() {
 		err = runDomains(ctx)
 	case "run-geofeeds":
 		err = runGeofeeds(ctx, os.Args[2:])
+	case "run-bgp":
+		err = runBGP(ctx, os.Args[2:])
 	case "run-geo":
 		err = runGeo(ctx, os.Args[2:])
 	case "run-rdns":
@@ -137,7 +149,7 @@ func main() {
 	case "run-rdns-rules":
 		err = runRDNSRules(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-geo, run-rdns, or run-rdns-rules)", command)
+		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-geo, run-rdns, or run-rdns-rules)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -161,6 +173,11 @@ func newPipeline(progress func(string)) (*asn.Pipeline, error) {
 		GitHubRepo:  githubRepo(),
 		HCPing:      env("HC_PING_ASN"),
 	}, nil
+}
+
+// newBGPPipeline reads the environment; progress receives log lines.
+func newBGPPipeline(progress func(string)) *bgp.Pipeline {
+	return &bgp.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2"), HCPing: env("HC_PING_BGP")}
 }
 
 // newGeoPipeline reads the environment; progress receives log lines.
@@ -275,6 +292,7 @@ func serve(ctx context.Context) error {
 			syncPeeringDBWorkflow(client),
 			updateASNDomainsWorkflow(client),
 			syncGeofeedsWorkflow(client),
+			syncBGPWorkflow(client),
 			buildGeoWorkflow(client),
 			resolveIPsWorkflow(client),
 			learnRDNSRulesWorkflow(client),
@@ -508,6 +526,42 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		return out, err
 	}, taskRetry(hatchet.WithParents(check), hatchet.WithExecutionTimeout(time.Hour))...)
 
+	return wf
+}
+
+// syncBGPWorkflow downloads a RIPE RIS routing table, reads the BGP community values of
+// every IPv4 prefix and puts them in the private R2 bucket for build-geo-data (layer
+// 25-bgp). It runs before build-geo-data and reads no database.
+func syncBGPWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("sync-bgp",
+		hatchet.WithWorkflowDescription("RIPE RIS routing table -> BGP community values per IPv4 prefix in private R2"),
+		hatchet.WithWorkflowCron("40 3 * * *"),
+		hatchet.WithWorkflowConcurrency(oneRunLimit("bgp")),
+	)
+	download := wf.NewTask("download", func(ctx hatchet.Context, input SyncBGPInput) (bgp.DownloadOutput, error) {
+		p := newBGPPipeline(taskLog(ctx))
+		if !input.SkipUpload {
+			// Only an env change fixes it: fail before the 430 MB download, without retries.
+			if err := p.CheckUpload(); err != nil {
+				return bgp.DownloadOutput{}, hatchet.NewNonRetryableError(err)
+			}
+		}
+		return p.Download(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(2*time.Hour))...)
+	extract := wf.NewTask("extract", func(ctx hatchet.Context, _ SyncBGPInput) (bgp.ExtractOutput, error) {
+		out, err := newBGPPipeline(taskLog(ctx)).Extract(ctx, "")
+		if errors.Is(err, bgp.ErrTooFewPrefixes) {
+			err = hatchet.NewNonRetryableError(err)
+		}
+		return out, err
+	}, taskRetry(hatchet.WithParents(download), hatchet.WithExecutionTimeout(time.Hour))...)
+	wf.NewTask("upload", func(ctx hatchet.Context, input SyncBGPInput) (bgp.UploadOutput, error) {
+		if input.SkipUpload {
+			taskLog(ctx)("upload: skipped (skip_upload)")
+			return bgp.UploadOutput{}, nil
+		}
+		return newBGPPipeline(taskLog(ctx)).Upload(ctx, input.ForceUpload)
+	}, taskRetry(hatchet.WithParents(extract), hatchet.WithExecutionTimeout(30*time.Minute))...)
 	return wf
 }
 
@@ -824,6 +878,41 @@ func runGeofeeds(ctx context.Context, args []string) error {
 		cliLog(fmt.Sprintf("geofeeds: %v; waiting for the RDAP lookups and domain probes to finish", err))
 	}
 	return errors.Join(err, <-rdapDone, <-domainsDone)
+}
+
+// runBGP runs the sync-bgp tasks once, in order, without Hatchet. With -mrt it reads a
+// local dump and uploads nothing.
+func runBGP(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-bgp", flag.ExitOnError)
+	skipUpload := flags.Bool("skip-upload", false, "write the communities file but do not upload it")
+	forceUpload := flags.Bool("force-upload", false, "send the file even if R2 already holds the same bytes")
+	mrt := flags.String("mrt", "", "read this local gzipped MRT dump instead of downloading one; nothing is uploaded")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-bgp: unexpected argument %q", flags.Arg(0))
+	}
+
+	p := newBGPPipeline(cliLog)
+	local := *mrt != ""
+	if !local && !*skipUpload {
+		if err := p.CheckUpload(); err != nil {
+			return err
+		}
+	}
+	if !local {
+		if _, err := p.Download(ctx); err != nil {
+			return err
+		}
+	}
+	if _, err := p.Extract(ctx, *mrt); err != nil {
+		return err
+	}
+	if local || *skipUpload {
+		cliLog("upload: skipped")
+		return nil
+	}
+	_, err := p.Upload(ctx, *forceUpload)
+	return err
 }
 
 // runGeo runs the build-geo-data tasks once, in order, without Hatchet.

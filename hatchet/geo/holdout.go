@@ -287,6 +287,14 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 		}
 		summary += note
 	}
+	// The BGP community layer learns from the geofeeds too.
+	if _, err := os.Stat(filepath.Join(p.layersDir(), BGPLayer)); err == nil {
+		note, err := p.holdoutBGP(kept, filepath.Join(keptDir, BGPLayer), replace)
+		if err != nil {
+			return "", "", "", err
+		}
+		summary += note
+	}
 	mmdbPath = filepath.Join(dir, "holdout.mmdb")
 	// The ASN main city fill is recomputed by the builder from this build's own merged
 	// result, so the held-out feeds never reach it.

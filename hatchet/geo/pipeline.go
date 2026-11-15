@@ -11,6 +11,11 @@
 //
 //	10-rir        RIR delegated stats: the country every block was delegated to (IPv4, IPv6)
 //	20-ipverse    ipverse/geo-ip-blocks: the country in registration records (IPv4 only)
+//	25-bgp        BGP community values (sync-bgp, private R2): the city that the community
+//	              values of a routing table prefix mean, learned on prefixes whose city a
+//	              geofeed gives; every later layer replaces it, so it only shows where
+//	              nothing else gives a city; applied only where the earlier layers give the
+//	              same country; skipped while the object is missing or older than 3 days
 //	30-pdb        PeeringDB: country and city of ASNs with one dominant city (Postgres);
 //	              applied only where 10 and 20 gave the same country or none
 //	35-rdns-wide  resolve-ips (Postgres): the city that most /24s of an announced prefix (at
@@ -113,7 +118,7 @@ const (
 //   - -same-country: the PeeringDB rows only refine. An ASN's city must not
 //     replace more specific networks that the registration data puts in another
 //     country.
-//   - -same-country also holds for the three rDNS layers and the ASN geofeed layer: they add cities and
+//   - -same-country also holds for the three rDNS layers, the ASN geofeed layer and the BGP community layer: they add cities and
 //     never change a country (a router name is evidence of a city, not of who holds the block; the
 //     ASN geofeed rows extend an ASN's own geofeed evidence to its other prefixes).
 //   - -first-country: a hosting row applies only where the RIR stats (the first
@@ -135,13 +140,14 @@ var layerRules = map[string]string{
 	RDNSNamesLayer: "-same-country",
 	FeedsLayer:     "-within-first",
 	ASNFeedLayer:   "-same-country",
+	BGPLayer:       "-same-country",
 }
 
 // optionalLayers may be missing: a run without one is reported in
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{RDNSWideLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
+var optionalLayers = []string{BGPLayer, RDNSWideLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -185,6 +191,12 @@ type Source struct {
 	PDBASNs     int               `json:"pdb_asns"`
 	// ASNFeedASNs is the number of ASNs in the 38-asn-geofeed layer.
 	ASNFeedASNs int `json:"asn_feed_asns"`
+	// BGPRules is the number of community values learned as a city rule for the 25-bgp layer,
+	// BGPKnown the prefixes of the communities file with a known geofeed city (the truth the
+	// rules are learned on) and BGPPrefixes the prefixes that got a city.
+	BGPRules    int `json:"bgp_rules"`
+	BGPKnown    int `json:"bgp_known_prefixes"`
+	BGPPrefixes int `json:"bgp_prefixes"`
 	// R2Uploaded tells when sync-geofeeds uploaded each R2 layer in the build.
 	R2Uploaded map[string]string `json:"r2_layers_uploaded"`
 	// R2Reused lists the R2 layers that were not downloaded because the copy saved by
@@ -406,6 +418,12 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 	if err := p.downloadASNFeed(ctx, layers, &src); err != nil {
 		return src, err
 	}
+
+	// 12. The cities that BGP community values stand for (sync-bgp's file in R2), learned on
+	// the geofeed layer.
+	if err := p.downloadBGP(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
+		return src, err
+	}
 	return src, nil
 }
 
@@ -490,14 +508,7 @@ func (p *Pipeline) downloadR2Layers(ctx context.Context, fetch r2Fetch, download
 			return fmt.Errorf("%s (has sync-geofeeds uploaded it?): %w", l.Name, err)
 		}
 		if downloaded {
-			// The ETag is written after the file: a crash in between only costs one more download.
-			if err := os.WriteFile(saved+etagSuffix+".tmp", []byte(info.ETag), 0o640); err == nil {
-				err = os.Rename(saved+etagSuffix+".tmp", saved+etagSuffix)
-			}
-			if err != nil {
-				os.Remove(saved + etagSuffix)
-				p.log("download: could not save the ETag of %s: %v", l.Name, err)
-			}
+			p.saveETag(saved, info.ETag, l.Name)
 		} else {
 			src.R2Reused = append(src.R2Reused, l.Name)
 		}
@@ -516,6 +527,19 @@ func (p *Pipeline) downloadR2Layers(ctx context.Context, fetch r2Fetch, download
 		p.log("download: %s uploaded %s (%s)", l.Name, src.R2Uploaded[l.Name], how)
 	}
 	return nil
+}
+
+// saveETag writes the ETag beside the saved copy of an R2 object. It is written after the
+// file: a crash in between only costs one more download.
+func (p *Pipeline) saveETag(saved, etag, name string) {
+	err := os.WriteFile(saved+etagSuffix+".tmp", []byte(etag), 0o640)
+	if err == nil {
+		err = os.Rename(saved+etagSuffix+".tmp", saved+etagSuffix)
+	}
+	if err != nil {
+		os.Remove(saved + etagSuffix)
+		p.log("download: could not save the ETag of %s: %v", name, err)
+	}
 }
 
 // etagSuffix names the file that holds the ETag of a saved R2 layer.

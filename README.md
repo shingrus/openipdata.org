@@ -26,7 +26,7 @@ Hatchet Cloud keeps the schedules, run history, and dashboard; the VM runs the t
 Shared code in `hatchet/`: `schema/` (Postgres tables), `publish/` (R2 and GitHub
 releases), `rirstats/` (RIR delegated-extended stats parsing, address range to
 prefixes), `download/` (conditional HTTP download) and `outputs/` (pruning old output
-directories, last log lines, file size). `sync-geofeeds` and
+directories, last log lines, file size). `sync-geofeeds`, `sync-bgp` and
 `build-geo-data` share `rirstats` and `download` but keep their own downloaded files.
 
 `hatchet/` and `mmdbbuilder/` are separate Go modules and build separately.
@@ -299,6 +299,33 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   peaked at 240–360 MB, took about 5–10 minutes, kept about 240 MB of checked feeds on disk,
   and exported about 6.4 million rows (36 MB gzipped).
 
+### `sync-bgp` (`hatchet/bgp/`, cron `40 3 * * *` UTC)
+
+Reads the BGP community values of every IPv4 prefix in a public routing table and hands them to the geo
+database build through the private R2 bucket. Some networks tag the routes they learn with a community value
+that means "learned in city X"; `build-geo-data` learns which values mean which city and uses it for
+the optional layer `25-bgp`. This workflow reads no database and publishes nothing; it has its own `bgp` concurrency limit.
+
+| Task | Runs after | Does |
+|---|---|---|
+| `download` | | checks the R2 settings (unless `skip_upload`), then downloads the newest full table of the RIPE RIS collector rrc00 (`https://data.ris.ripe.net/rrc00/latest-bview.gz`, about 430 MB, public data) to `/var/lib/openipdata/bgp/latest-bview.gz`, replacing the old one (only one is kept). It uses the shared conditional download and does not ask again within 6 hours of the last check; a plain HTTP client with timeouts and a 2 GB size cap |
+| `extract` | `download` | streams the file (gzip, MRT TABLE_DUMP_V2, IPv4 unicast RIB records) in two passes and writes `/var/lib/openipdata/bgp/bgp-communities.csv.gz` through a `.tmp` file |
+| `upload` | `extract` | puts the file at the fixed key `internal/bgp/communities.csv.gz` in the private R2 bucket (sha256 in the object's metadata; an identical object is not sent again, its upload time is renewed; `force_upload` always sends), then pings `HC_PING_BGP` if set |
+
+- The file: header `prefix,communities`, one row for every IPv4 prefix of /8 to /24 in the table (also a prefix whose
+  values were all dropped, because `build-geo-data` needs every prefix to know which addresses a broader prefix still
+  owns), values separated by a space: `a:b` for a standard community, `a:b:c` for a large one. The values of
+  all peers of a prefix are joined. A value carried by more than 5% of all prefixes (what every route gets) or by
+  fewer than 3 prefixes (nothing to learn from) is dropped. Measured on a real table: 1,164,610 prefixes, 109 peers,
+  83,690 values of which 332 are common and 26,760 rare, 30.8 million (prefix, value) pairs, 27.7 MB gzipped, 30 seconds,
+  55 MB of memory (nothing but the value counts is kept in memory).
+- The reader checks every length of the MRT data: a damaged or truncated file is an error (`damaged MRT data`), never a panic.
+  A table with fewer than 500,000 prefixes is refused and not retried.
+- `run-bgp` runs the three tasks once locally; `-skip-upload` writes the file only, `-force-upload` always sends the
+  bytes, and `-mrt <file>` reads a local dump instead of downloading one and uploads nothing (no `R2` needed).
+  Task input: `{"skip_upload": true}`, `{"force_upload": true}`.
+- It runs at 03:40, well before `build-geo-data` (07:00 and 19:00), which skips the layer when the object is older than 3 days.
+
 ### `build-geo-data` (`hatchet/geo/`, cron `0 7,19 * * *` UTC)
 
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
@@ -320,13 +347,13 @@ Measured on RIPE Atlas it is right 48% of the time (520 of 1,083 gap probes) and
 
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
-The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `30-pdb.csv.gz`,
+The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,
 `38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
 `/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
 `.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
-layer name (`layerRules`): `30-pdb` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+layer name (`layerRules`): `25-bgp`, `30-pdb` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
 `70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
 
 | Task | Runs after | Does |
@@ -399,7 +426,27 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   the rows per ASN and address family by addresses (IPv4) or /64s (IPv6). When one city has at least 80% of the
   weight of all its attributed rows (rows without a city count in the total), comes from at least 2 rows, and those rows cover at least half of the ASN's announced addresses in that family, every announced prefix of the ASN in that family gets it (source
   `asn:<number>`). The holdout build recomputes the layer from the kept feeds, so held-out feeds do not leak into it.
-- The optional layers are `35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
+- `25-bgp` (optional, `-same-country`, below `30-pdb` on purpose: every other evidence layer replaces it where it has rows, so it
+  only shows where nothing else gives a city; measured, where both answer the community city is not better than PeeringDB or
+  the geofeeds) is the city that BGP community values stand for. `download` fetches `internal/bgp/communities.csv.gz`
+  (written by `sync-bgp`) with the same Stat, ETag and saved-copy rule as the R2 layers (saved as
+  `geo/downloads/bgp-communities.csv.gz`; it is not a layer file) and, once the geofeed layer is there, computes the layer:
+  1. a prefix of the file owns its addresses minus the more specific prefixes of the file;
+  2. a prefix has a known city when `70-geofeeds` rows that have a city cover at least 50% of its owned addresses and at
+     least 80% of those covered addresses are in one city (country and normalised name; a more specific feed row wins,
+     of a repeated prefix the last row);
+  3. a value is a rule when at least 3 known prefixes carry it, at least 80% of them are in its top city and at least 90%
+     in its top country;
+  4. every prefix that has at least one rule among its values and whose rules all name the same city gets that city
+     (the city's country); a disagreement gives nothing;
+  5. rows are written for the owned parts only, split into prefixes, in address order (source `bgp`).
+  The object missing, older than 3 days, any R2 error, an unreadable file or no rows skip the layer (`skipped_layers`, a
+  warning); unlike `60-whois` and `70-geofeeds` this never skips the `HC_PING_GEO` ping. The holdout build recomputes
+  the layer from the kept feeds, so held-out feeds do not leak into it. The task output has `bgp_rules`,
+  `bgp_known_prefixes` and `bgp_prefixes`. Measured on RIPE Atlas (a stand-in geofeed layer, only where the
+  published MMDB had no city): 739 gap probes answered, 389 within 50 km (52.6%), 195 million addresses filled, in about 3 seconds
+  and 460 MB of memory.
+- The optional layers are `25-bgp`, `35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.
@@ -589,6 +636,9 @@ openipdata-worker run-geofeeds         # run sync-geofeeds once locally, without
 openipdata-worker run-geofeeds -skip-upload  # same, without uploading the rows
 openipdata-worker run-geofeeds -force-upload # same, uploading even after a drop of over 10%
 openipdata-worker run-geofeeds -skip-upload -rdap-budget 100 -domain-budget 100  # a quick local test run
+openipdata-worker run-bgp              # run sync-bgp once locally, without Hatchet
+openipdata-worker run-bgp -skip-upload # same, without uploading the file
+openipdata-worker run-bgp -mrt dump.gz # read a local MRT dump, write the file, upload nothing
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet
 openipdata-worker run-geo -skip-publish  # same, without uploading
 openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
@@ -618,7 +668,7 @@ cd mmdbbuilder && CGO_ENABLED=0 go build -trimpath -o ../bin/mmdbbuilder .
 ```
 
 The `run-*` commands need `PGSQL` (`run-geofeeds` for `public.geofeed_urls` and its `probe-domains` task), and `run-geofeeds`
-also needs `R2` unless `-skip-upload` is given; `run-pdb` also needs `PDB_KEY`, and `run-geo` also needs `R2`. Set `OPENIPDATA_DATA_DIR`
+also needs `R2` unless `-skip-upload` is given (so does `run-bgp`, unless `-skip-upload` or `-mrt`); `run-pdb` also needs `PDB_KEY`, and `run-geo` also needs `R2`. Set `OPENIPDATA_DATA_DIR`
 to a local folder when running off the VM.
 
 ## VM setup
