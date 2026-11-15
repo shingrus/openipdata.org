@@ -382,14 +382,30 @@ func isDigits(s string) bool {
 // unknown country code).
 func (w *world) placeMap(g *geoRecord) template.HTML {
 	if g.CityName != "" {
-		if lat, lon, ok := g.coords(); ok {
+		lat, lon, ok := g.coords()
+		if !ok {
+			return ""
+		}
+		return w.cached(mapKey{lat: lat, lon: lon, city: true}, func() template.HTML {
 			m, _ := w.drawMap(lat, lon, "", true)
 			return m
-		}
-		return ""
+		})
 	}
-	m, _ := w.countryMap(g.CountryCode)
-	return m
+	if codeSlot(g.CountryCode) < 0 {
+		return "" // not a country code: nothing to draw, nothing to keep
+	}
+	return w.cached(mapKey{code: g.CountryCode}, func() template.HTML {
+		m, _ := w.countryMap(g.CountryCode)
+		return m
+	})
+}
+
+// cached draws through the map cache (see mapcache.go); a world without one draws directly.
+func (w *world) cached(k mapKey, draw func() template.HTML) template.HTML {
+	if w == nil || w.cache == nil {
+		return draw()
+	}
+	return w.cache.get(k, draw)
 }
 
 // panelFor builds the panel for a public or non-public address.

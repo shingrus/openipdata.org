@@ -64,6 +64,7 @@ type world struct {
 	polys     []wpoly
 	pts       []int16
 	byCode    [26 * 26]int32 // index in countries plus 1; 0 = none
+	cache     *mapCache      // drawn maps, least recently used first out (mapcache.go)
 }
 
 func codeSlot(code string) int {
@@ -158,7 +159,7 @@ func parseWorld(b []byte) (*world, error) {
 	}
 	r := &byteReader{b: body, pos: 4}
 	n := r.u16()
-	w := &world{countries: make([]wcountry, 0, n)}
+	w := &world{countries: make([]wcountry, 0, n), cache: newMapCache(mapCacheSize)}
 	for ; n > 0 && r.err == nil; n-- {
 		c := wcountry{}
 		if code := r.take(2); code != nil && code[0] != 0 {
