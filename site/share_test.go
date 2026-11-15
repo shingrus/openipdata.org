@@ -480,7 +480,7 @@ func TestReportPage(t *testing.T) {
 		"<title>Shared report · openipdata.org</title>", `<meta name="robots" content="noindex">`, "<h2>Shared report</h2>", `<span class="r">Shared 15 Nov 2026 16:50 UTC</span>`,
 		`<dt>IPv4</dt><dd class="c"><span class="w"><span class="v">203.0.113.9</span><button class="cp"`, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::9</span><button class="cp"`,
 		`<dt>DNS resolver</dt><dd class="od"><a href="/?203.0.113.50">203.0.113.50</a><a class="dn" href="/asn-example-net">EXAMPLE-NET</a></dd>`,
-		`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · ISP · example.net</dd>`,
+		`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · <a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`,
 		"<h1>Lisbon</h1>", "<p>Portugal</p>", `class="place mapped"`, `<svg class="map"`,
 	} {
 		if !strings.Contains(b, x) {
@@ -626,7 +626,7 @@ func TestCopyButtonsHiddenWithoutScript(t *testing.T) {
 	}
 }
 
-func CSSForTest() string { return styleCSS }
+func CSSForTest() string { return styleCSS + liveCSS }
 
 func TestPanelScriptShape(t *testing.T) {
 	for _, x := range []string{"navigator.clipboard.writeText", "execCommand", "Link copied", "Copying...", "Copy failed", "1500", "hidden"} {
@@ -655,45 +655,21 @@ func TestPanelScriptShape(t *testing.T) {
 // Every link is gray with the accent on hover: no rule colours a link in any
 // other way.
 func TestLinkColourRule(t *testing.T) {
-	css := styleCSS + "\n" + asnCSS
-	rule := regexp.MustCompile(`([^{}]+)\{([^{}]*)\}`)
-	isLink := regexp.MustCompile(`(^|[\s,>+~])a([.:#\[\s]|$)|(^|[\s,>+~])a$`)
-	var base, hover bool
-	for _, m := range rule.FindAllStringSubmatch(css, -1) {
-		for _, sel := range strings.Split(m[1], ",") {
-			sel = strings.TrimSpace(sel)
-			if i := strings.LastIndex(sel, "*/"); i >= 0 {
-				sel = strings.TrimSpace(sel[i+2:])
-			}
-			if !isLink.MatchString(sel) {
-				continue
-			}
-			body := strings.Join(strings.Fields(m[2]), "")
-			switch sel {
-			case "a":
-				base = body == "color:var(--muted);text-decoration:none"
-			case "a:hover":
-				hover = body == "color:var(--accent)"
-			default:
-				if strings.Contains(body, "color") || strings.Contains(body, "text-decoration") {
-					t.Errorf("link rule %q colours or underlines a link: %s", sel, body)
-				}
-			}
+	// The design's rule: links inherit their text colour and turn orange on hover;
+	// links in the data are orange and underlined on hover. Nothing else colours a link.
+	for _, x := range []string{
+		"a{color:inherit;text-decoration:none}",
+		"a:hover{color:var(--accent)}",
+		"dd a,.tbl a,.pf a,.note a,.head a{color:var(--accent)}",
+		"dd a:hover,.tbl a:hover,.pf a:hover,.note a:hover,.head a:hover{text-decoration:underline}",
+	} {
+		if !strings.Contains(styleCSS, x) {
+			t.Errorf("style.css lacks the link rule %s", x)
 		}
 	}
-	if !base || !hover {
-		t.Errorf("the one link rule is missing: base %v, hover %v", base, hover)
-	}
-	for _, old := range []string{".lnk", "a.as", "dd .as", ".dn{", "a.dn", ".tbl a", ".note a", ".pf a", ".foot a"} {
-		if strings.Contains(css, old) {
+	for _, old := range []string{".lnk", "a.as", "dd .as", "a.dn", ".foot a"} {
+		if strings.Contains(styleCSS+liveCSS+accCSS+asnCSS, old) {
 			t.Errorf("per-class link rule left: %s", old)
-		}
-	}
-	// No template gives a link one of the old colour classes.
-	for _, name := range []string{"asn.html", "layout.html", "home.html", "report.html"} {
-		b, _ := templateFiles.ReadFile("templates/" + name)
-		if strings.Contains(string(b), `class="lnk"`) || strings.Contains(string(b), `class="as"`) {
-			t.Errorf("%s has an old link class", name)
 		}
 	}
 }

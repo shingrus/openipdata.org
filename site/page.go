@@ -7,14 +7,47 @@ import (
 	"encoding/base64"
 	"html/template"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
 
+// The styles, inlined into every page. Each page carries only the parts it
+// uses: style.css (all pages), live.css (the copy and Share buttons, the rows a
+// script fills in: home, lookup and shared report pages), acc.css (the Accuracy
+// panel: home and lookup pages) and asn.css (tables and lists: ASN, prefix,
+// search and status pages). cssText drops comments and line breaks once at start.
+//
 //go:embed static/style.css
-var styleCSS string
+var styleSrc string
+
+//go:embed static/live.css
+var liveSrc string
+
+//go:embed static/acc.css
+var accSrc string
+
+var (
+	styleCSS = cssText(styleSrc)
+	liveCSS  = cssText(liveSrc)
+	accCSS   = cssText(accSrc)
+	asnCSS   = cssText(asnSrc)
+)
+
+var cssComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
+
+// cssText is a stylesheet without its comments, line breaks and the white
+// space around them (the files are written one rule a line, so nothing else
+// needs a space).
+func cssText(src string) string {
+	var b strings.Builder
+	for _, l := range strings.Split(cssComment.ReplaceAllString(src, ""), "\n") {
+		b.WriteString(strings.TrimSpace(l))
+	}
+	return b.String()
+}
 
 // The only scripts of the page: static/head.js (saved theme), static/theme.js
 // (theme button), static/fill.js (fills the row of the other address family,
@@ -26,7 +59,7 @@ var styleCSS string
 // surrounding white space. Never built from request data.
 //
 //go:embed static/asn.css
-var asnCSS string
+var asnSrc string
 
 //go:embed static/head.js
 var headSrc string
@@ -118,7 +151,7 @@ func makeCard(label string, v float64) card {
 
 func makeView(s scores) view {
 	v := view{
-		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), ResJS: template.JS(resolverJS), PnlJS: template.JS(panelJS), CSS: template.CSS(styleCSS)},
+		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), ResJS: template.JS(resolverJS), PnlJS: template.JS(panelJS), CSS: template.CSS(styleCSS + liveCSS + accCSS)},
 		Cards: []card{
 			makeCard("right country", s.Country),
 			makeCard("right city", s.City),

@@ -8,10 +8,10 @@ package main
 import (
 	"context"
 	"database/sql"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -73,25 +73,12 @@ func (s *server) networkInfo(n asnRecord) netSnap {
 	return ns
 }
 
-// categoryText is the category as shown: "isp" is "ISP", every other value
-// has a capital first letter and spaces for underscores.
-func categoryText(c string) string {
-	words := strings.Fields(strings.ReplaceAll(c, "_", " "))
-	for i, w := range words {
-		switch l := strings.ToLower(w); {
-		case l == "isp" || l == "dsl" || l == "cdn" || l == "ix" || l == "ixp" || l == "nsp":
-			words[i] = strings.ToUpper(l) // short forms are written in capitals
-		case i == 0:
-			r, size := utf8.DecodeRuneInString(w)
-			words[i] = string(unicode.ToUpper(r)) + w[size:]
-		}
-	}
-	return strings.Join(words, " ")
-}
-
 // parts are the pieces of the Network row: the handle (a link to the network
 // page), the category and the domain; a part that is unknown is left out. With
 // none of them the MMDB text, else the AS number, else a dash.
+// domainRE is a plain lower-case host name with at least one dot.
+var domainRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+
 func (ns netSnap) parts() []part {
 	var l []part
 	if ns.Handle != "" && ns.ASN != 0 {
@@ -99,11 +86,12 @@ func (ns netSnap) parts() []part {
 	} else if ns.Handle != "" {
 		l = append(l, part{Text: ns.Handle})
 	}
-	if c := categoryText(ns.Category); c != "" {
-		l = append(l, part{Text: c})
-	}
 	if ns.Domain != "" {
-		l = append(l, part{Text: ns.Domain})
+		p := part{Text: ns.Domain}
+		if domainRE.MatchString(ns.Domain) { // only a plain host name becomes a link
+			p.Href, p.Ext = "https://"+ns.Domain+"/?utm_source=openipdata.org", true
+		}
+		l = append(l, p)
 	}
 	if len(l) > 0 {
 		return l

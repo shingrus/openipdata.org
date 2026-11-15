@@ -425,7 +425,7 @@ func TestASNLookupRedirectAndLink(t *testing.T) {
 
 	// The Network row of the panel links the handle to the network page when the network is in the data.
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
-	if !strings.Contains(body, `<dd><a href="/as64500">EXAMPLE-NET</a> · ISP · example.net</dd>`) {
+	if !strings.Contains(body, `<dd><a href="/as64500">EXAMPLE-NET</a> · <a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`) {
 		t.Errorf("no link in the panel: %s", body)
 	}
 }

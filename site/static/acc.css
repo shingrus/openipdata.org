@@ -1,0 +1,18 @@
+/* The Accuracy panel (home and lookup pages only). */
+.acc{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+.acc div{min-width:0;padding:20px 20px 22px;border-right:1px solid var(--line)}
+.acc div:last-child{border-right:0}
+.num{display:block;font-size:40px;font-weight:500;line-height:1;letter-spacing:-.04em}
+.num i{font-style:normal;font-size:20px;color:var(--faint);margin-left:2px}
+.lab{display:block;margin-top:8px;font-size:14px;color:var(--muted)}
+.bar{display:block;height:3px;margin-top:16px;background:var(--line);border-radius:2px;
+  background-image:linear-gradient(var(--accent),var(--accent));background-repeat:no-repeat;background-size:var(--v) 100%}
+@media (max-width:700px){
+  .acc{grid-template-columns:minmax(0,1fr)}
+  .acc div{display:grid;grid-template-columns:118px minmax(0,1fr);align-items:baseline;gap:0 12px;
+    padding:16px;border-right:0;border-bottom:1px solid var(--line)}
+  .acc div:last-child{border-bottom:0}
+  .num{font-size:32px}.num i{font-size:16px}
+  .lab{margin:0}
+  .bar{grid-column:1/-1;margin-top:12px}
+}

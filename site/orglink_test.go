@@ -38,13 +38,13 @@ func TestNetworkRowVariants(t *testing.T) {
 		want string
 	}{
 		{"all parts", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", slug: "example-net", cc: "PT", v4: 512, category: "isp", domain: "example.net"}},
-			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · ISP · example.net</dd>`},
+			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · <a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`},
 		{"no domain", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512, category: "isp"}},
-			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · ISP</dd>`},
+			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a></dd>`},
 		{"no category", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512, domain: "example.net"}},
-			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · example.net</dd>`},
+			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · <a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`},
 		{"category with an underscore", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512, category: "cable_dsl_isp"}},
-			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> · Cable DSL ISP</dd>`},
+			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a></dd>`},
 		{"handle only", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512}},
 			`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a></dd>`},
 		{"nothing known: the MMDB text", []fixtureRow{{asn: 64500, noMetadata: true, noPrefixKeys: true}},
@@ -92,8 +92,8 @@ func TestPanelRowOrder(t *testing.T) {
 	if strings.Contains(b, "AS64500") || strings.Contains(b, "<dt>Prefix") {
 		t.Error("the visitor page has an AS number or a Prefix row")
 	}
-	if i, j := strings.Index(b, "<dl>"), strings.Index(b, `<div class="place`); i < 0 || j < i {
-		t.Error("the rows are not before the place block")
+	if i, j := strings.Index(b, "<dl>"), strings.Index(b, `<div class="place`); j < 0 || i < j {
+		t.Error("the place block is not before the rows")
 	}
 	b = get(s, "GET", "/?203.0.113.9").Body.String()
 	if got := strings.Join(keys(b), ","); got != "IPv4,Network,Prefix" {

@@ -498,7 +498,7 @@ func TestMapLayoutStable(t *testing.T) {
 		}
 	}
 	// min-height of the block does not depend on the map (the rule is on .place, not on a map class).
-	if !strings.Contains(css, ".place{\n  position:relative;min-width:0;min-height:240px") || !strings.Contains(css, ".place{min-height:170px") {
+	if !strings.Contains(css, ".place{position:relative;min-width:0;min-height:240px") || !strings.Contains(css, ".place{min-height:170px") {
 		t.Error("the place block lost its fixed min-height")
 	}
 	// The class set with a map only drops the grid (keeps the glow); it never touches the box.

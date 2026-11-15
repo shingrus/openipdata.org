@@ -247,3 +247,7 @@ To stop the site on purpose: `systemctl disable --now openipdata-site@<live port
 ## Not implemented yet
 
 Builds on push to `master`, `iplistener` on this VM (the access log it would tail is already written).
+
+## Later decisions (2026-11-15)
+
+These override the text above where it differs. The place block with the map comes first again (left on desktop, on top on a phone), the rows second. The Network row is `BT-UK-AS · bt.net`: the handle links to `/as<n>`, the domain links to `https://<domain>/?utm_source=openipdata.org`; no category. Links follow the design: every link has the colour of its text and turns orange on hover, and a link in the data (panel values, tables, prefix lists, notes, panel heads) is orange with an underline on hover. The CSS is split into `style.css`, `live.css`, `acc.css` and `asn.css`; each page inlines only the parts it uses, without comments and line breaks.

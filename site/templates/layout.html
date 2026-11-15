@@ -30,15 +30,15 @@
 {{define "panel"}}<section class="panel">
 <div class="head{{if .Share}} hs{{end}}"><h2>{{.Title}}</h2>{{if .Share}}<button class="sh" type="button" hidden data-url="{{.Share}}">Share</button>{{end}}{{if .Right}}<span class="r">{{.Right}}</span>{{end}}</div>
 {{if .Msg}}<p class="msg">{{if .Addr}}<span class="mono">{{.Addr}}</span>{{end}}{{.Msg}}</p>
-{{else}}<div class="conn sw">
+{{else}}<div class="conn">
+<div class="place{{if .None}} none{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
 <dl>
 {{range .Rows}}<div><dt>{{.K}}</dt><dd{{if .Fam}} id="other" class="c o{{.Fam}}" data-fam="{{.Fam}}" data-from="{{.From}}"{{else if .Zone}} id="dns" class="od" data-zone="{{.Zone}}"{{if .Token}} data-token="{{.Token}}"{{end}}{{else if .Copy}} class="c"{{else if .VHref}}{{if .Parts}} class="od"{{end}}{{end}}>{{if .Copy}}<span class="w"><span class="v">{{.V}}</span><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button></span>{{else if .VHref}}<a href="{{.VHref}}">{{.V}}</a>{{range .Parts}}{{if .Href}}<a class="dn" href="{{.Href}}">{{.Text}}</a>{{else}}<span class="dn">{{.Text}}</span>{{end}}{{end}}{{else if .Parts}}{{template "parts" .Parts}}{{else}}{{.V}}{{end}}</dd></div>
 {{end}}</dl>
-<div class="place{{if .None}} none{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
 </div>
 {{if .Copy}}<svg width="0" height="0" class="sy" aria-hidden="true"><symbol id="i-cp" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></symbol><symbol id="i-ck" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8.5 3.2 3.2L13 4.8"/></symbol></svg>
 {{end}}{{end}}</section>
-{{end}}{{define "parts"}}{{range $i, $p := .}}{{if $i}} · {{end}}{{if $p.Href}}<a href="{{$p.Href}}">{{$p.Text}}</a>{{else}}{{$p.Text}}{{end}}{{end}}{{end}}{{define "bottom"}}</main>
+{{end}}{{define "parts"}}{{range $i, $p := .}}{{if $i}} · {{end}}{{if $p.Href}}<a href="{{$p.Href}}"{{if $p.Ext}} rel="nofollow noopener"{{end}}>{{$p.Text}}</a>{{else}}{{$p.Text}}{{end}}{{end}}{{end}}{{define "bottom"}}</main>
 <footer class="foot"><a href="/top-asn-by-ip-address">Networks</a><a href="/top-asn-by-ipv6">IPv6</a><a href="/top-organizations-by-ip-address">Organizations</a><a href="/list-of-countries-by-ipv4-allocation">Countries</a><a href="/status">Status</a></footer>
 </div>
 <script>{{.ThemeJS}}</script>

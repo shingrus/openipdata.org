@@ -340,7 +340,11 @@ type asnRecord struct {
 }
 
 // part is one piece of a row value: text, or a link when Href is set.
-type part struct{ Text, Href string }
+// part is one piece of the Network row; Ext marks a link to another site.
+type part struct {
+	Text, Href string
+	Ext        bool
+}
 
 type row struct {
 	K, V  string
