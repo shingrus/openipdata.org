@@ -309,6 +309,15 @@ places (country + name, the most populous place on a clash: the same rule `eval`
 `longitude`, doubles rounded to 4 decimals; a city that is not placed and a record without a city have neither.
 `eval` scores our cities per `city_source` and does not read the coordinates.
 
+After all layers, `mmdbbuilder geo -asn-main` adds one guessed fill, `80-asn-main` (it is not a layer file: it needs the
+merged result). For each ASN and country, the addresses that already have a city are counted per city. When one city has at
+least 90% of them and there are at least 256 such addresses (with GeoNames, only cities it places are counted; others are ignored for the counts and never overwritten), the ASN's addresses in that country that have no city get that
+city (`city_source` `80-asn-main`, with coordinates when GeoNames places it). It never replaces a city or changes a country.
+IPv4 only; an address belongs to the ASN of its longest announced prefix, and a prefix announced by two ASNs belongs to nobody.
+Measured on RIPE Atlas it is right 48% of the time (520 of 1,083 gap probes) and fills about 25% of the gap.
+`mmdbbuilder gaps` and `mmdbbuilder lookup -in` ignore these cities, so guesses never feed the rDNS pipeline.
+`city_pct`, `atlas_city_*` and the holdout city score count the guessed cities like any other (`layer_80_asn_main_*` show the fill alone), so the first build with the fill moves those scores; the publish gate checks only country scores, and the fill never changes a country.
+
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `30-pdb.csv.gz`,
@@ -323,7 +332,7 @@ layer name (`layerRules`): `30-pdb` and `38-asn-geofeed` `-same-country`, `40-ho
 | Task | Runs after | Does |
 |---|---|---|
 | `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2 |
-| `build-mmdb` | `download` | makes the GeoNames copy available, runs `mmdbbuilder geo` on all the layer files (with `-geonames` when the copy is there) → `ip2geo-openipdata-<date>.mmdb`; the output says `coordinates: on` or `skipped: <reason>`, with the counts of placed and unplaced cities |
+| `build-mmdb` | `download` | makes the GeoNames copy available, runs `mmdbbuilder geo` on all the layer files (with `-geonames` when the copy is there, and `-asn-main` when `download` saved the ASN prefixes) → `ip2geo-openipdata-<date>.mmdb`; the output says `coordinates: on` or `skipped: <reason>`, with the counts of placed and unplaced cities, and `asn_main`: `on`, `skipped: no ASN prefixes` or `skipped: ASN prefixes unreadable` (a bad file never fails the build) |
 | `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2) against RIPE Atlas (country and city) and our MMDB against a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
 
@@ -589,7 +598,7 @@ openipdata-worker run-rdns-rules       # learn candidate rules once locally
 openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule, without learning
 openipdata-worker run-rdns-rules -codes [-domains a.net,b.net] [-force] # only the LLM task propose-codes (needs OPENROUTER_API_KEY)
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
-mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
+mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] <layer.csv.gz>...
 mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1

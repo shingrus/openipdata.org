@@ -50,7 +50,7 @@ func TestBuildGeo(t *testing.T) {
 	names := writeFile(t, filepath.Join(dir, "names.tsv"), "GB\tUnited Kingdom\nUS\tUnited States\n")
 
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{base, pdb, feeds}, names, out, false, nil, nil, nil, nil)
+	stats, err := buildGeo([]string{base, pdb, feeds}, names, out, false, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestBuildGeoFailures(t *testing.T) {
 		"no-city.csv.gz":   "prefix,country\n45.0.0.0/8,US\n",                       // the layout has a city column
 		"plain.csv":        "prefix,country,region,city,source\n45.0.0.0/8,US,,,\n", // layers are gzipped
 	} {
-		if _, err := buildGeo([]string{writeFile(t, filepath.Join(dir, name), body)}, "", out, false, nil, nil, nil, nil); err == nil {
+		if _, err := buildGeo([]string{writeFile(t, filepath.Join(dir, name), body)}, "", out, false, nil, nil, nil, nil, ""); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
@@ -136,7 +136,7 @@ func TestBuildGeoSameCountry(t *testing.T) {
 	base := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n45.0.0.0/8,US,\n45.10.0.0/16,CA,\n")
 	pdb := writeFile(t, filepath.Join(dir, "pdb.csv.gz"), "prefix,country,city\n45.0.0.0/8,US,Dallas\n46.0.0.0/8,FR,Paris\n")
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv.gz": true}, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv.gz": true}, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	for ip, want := range map[string]map[string]any{
@@ -163,7 +163,7 @@ func TestBuildGeoHostileRows(t *testing.T) {
 		"45.20.0.0/16,US,<script>alert(1)</script>\n"+
 		"45.30.0.0/16,US,"+strings.Repeat("x", maxCityLen+1)+"\n")
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil, nil)
+	stats, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestBuildGeoWithinFirst(t *testing.T) {
 		"2a00:0:1::/48,FR,Paris\n"+ // inside the block
 		"46.0.0.0/24,BE,\n") // outside every block: skipped too
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv.gz": true, "rir.csv.gz": true}, nil, nil)
+	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv.gz": true, "rir.csv.gz": true}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestBuildGeoFirstCountry(t *testing.T) {
 		"2a00:0:1::/48,FR,Paris\n"+
 		"2a01::/48,FR,Paris\n") // first layer DE: skipped
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{rir, blocks, hosting}, "", out, false, nil, nil, map[string]bool{"hosting.csv.gz": true}, nil)
+	stats, err := buildGeo([]string{rir, blocks, hosting}, "", out, false, nil, nil, map[string]bool{"hosting.csv.gz": true}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestBuildGeoCitySource(t *testing.T) {
 		_, err := buildGeo([]string{rir, plain, same, within, first}, "", out, debug,
 			map[string]bool{"40-hosting.csv.gz": true},
 			map[string]bool{"60-whois.csv.gz": true},
-			map[string]bool{"70-geofeeds.csv.gz": true}, nil)
+			map[string]bool{"70-geofeeds.csv.gz": true}, nil, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -358,7 +358,7 @@ func TestBuildGeoCoordinates(t *testing.T) {
 		t.Fatal(err)
 	}
 	with := filepath.Join(dir, "with.mmdb")
-	stats, err := buildGeo([]string{layer}, "", with, false, nil, nil, nil, index)
+	stats, err := buildGeo([]string{layer}, "", with, false, nil, nil, nil, index, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestBuildGeoCoordinates(t *testing.T) {
 	// No index: the same bytes as a build that never heard of coordinates.
 	a, b := filepath.Join(dir, "a.mmdb"), filepath.Join(dir, "b.mmdb")
 	for _, out := range []string{a, b} {
-		if _, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil, nil); err != nil {
+		if _, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil, nil, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

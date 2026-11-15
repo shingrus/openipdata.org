@@ -288,7 +288,10 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 		summary += note
 	}
 	mmdbPath = filepath.Join(dir, "holdout.mmdb")
-	args, err := p.geoArgs(mmdbPath, replace)
+	// The ASN main city fill is recomputed by the builder from this build's own merged
+	// result, so the held-out feeds never reach it.
+	asnMainArgs, _ := p.asnMainArgs()
+	args, err := p.geoArgs(mmdbPath, replace, asnMainArgs...)
 	if err != nil {
 		return "", "", "", err
 	}

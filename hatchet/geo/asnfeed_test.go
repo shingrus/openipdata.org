@@ -349,13 +349,17 @@ func TestPrepareHoldoutASNFeed(t *testing.T) {
 		!strings.Contains(string(args), "-same-country "+ASNFeedLayer) || strings.Contains(status, "left out") {
 		t.Errorf("args = %s status = %q", args, status)
 	}
+	// The ASN main city fill is recomputed by the builder from the holdout's own result.
+	if !strings.Contains(string(args), "-asn-main "+filepath.Join(p.dir(), asnPrefixesFile)+" ") {
+		t.Errorf("holdout build lacks -asn-main: %s", args)
+	}
 
 	// No saved prefixes: the layer is left out, with its flag, and the status says so.
 	os.Remove(filepath.Join(p.dir(), asnPrefixesFile))
 	os.Remove(argsFile)
 	_, _, status, err = p.prepareHoldout(context.Background(), eval)
 	args, _ = os.ReadFile(argsFile)
-	if err != nil || strings.Contains(string(args), "38-") || strings.Contains(string(args), "-same-country") || !strings.Contains(status, ASNFeedLayer+" left out") {
+	if err != nil || strings.Contains(string(args), "38-") || strings.Contains(string(args), "-same-country") || strings.Contains(string(args), "-asn-main") || !strings.Contains(status, ASNFeedLayer+" left out") {
 		t.Errorf("no prefixes: %v args = %s status = %q", err, args, status)
 	}
 

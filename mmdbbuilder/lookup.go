@@ -204,7 +204,9 @@ type cityStats struct {
 // comments are ignored; a line that is not an IP is skipped and counted, never
 // shown) in the ip2geo MMDB and writes ip<TAB>country<TAB>city to outPath for
 // each one that has a non-empty city, through a temporary file and a rename.
-// The country and city are the record's country_code and city_name.
+// The country and city are the record's country_code and city_name. A city that is
+// only a guess (city_source 80-asn-main) is not written: these rows are evidence for
+// routers, and a guess must not vote.
 func writeCities(mmdbPath, inPath, outPath string) (cityStats, error) {
 	var stats cityStats
 	reader, err := maxminddb.Open(mmdbPath)
@@ -245,7 +247,7 @@ func writeCities(mmdbPath, inPath, outPath string) (cityStats, error) {
 		if !result.Found() {
 			continue
 		}
-		country, city, err := ourFields(result)
+		country, city, err := evidenceFields(result)
 		if err != nil {
 			stats.failed++
 			continue

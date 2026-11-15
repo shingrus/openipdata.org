@@ -145,6 +145,9 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
 	}
+	if strings.Contains(string(args), "-asn-main") {
+		t.Errorf("-asn-main without saved ASN prefixes: %s", args)
+	}
 	if mmdb != filepath.Join(eval, "holdout.mmdb") || truth != filepath.Join(eval, "holdout-truth.csv") ||
 		status != "1 of 2 feeds held out, 1 of 2 rows, 1 scored" {
 		t.Errorf("%s %s %q", mmdb, truth, status)

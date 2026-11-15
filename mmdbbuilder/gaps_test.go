@@ -27,7 +27,7 @@ func gapsDB(t *testing.T, dir string) string {
 		"10.0.12.0/24,DE,,,test\n"+ // next to the one before, same country: one run
 		"2001:db8::/32,DE,,,test\n") // IPv6 is not listed
 	db := filepath.Join(dir, "gaps.mmdb")
-	if _, err := buildGeo([]string{layer}, "", db, false, nil, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{layer}, "", db, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	return db

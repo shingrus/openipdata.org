@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path"
 	"path/filepath"
@@ -184,6 +185,73 @@ func TestBuildMMDBArgs(t *testing.T) {
 	os.RemoveAll(layers)
 	if _, err := p.BuildMMDB(context.Background(), Source{DateTag: "20261109"}); err == nil {
 		t.Error("no error without a layers directory")
+	}
+}
+
+// With the saved ASN prefixes the build passes -asn-main (also when it repeats the
+// build without GeoNames) and reports it; without the file it passes nothing.
+func TestBuildMMDBASNMain(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	script := filepath.Join(dir, "mmdbbuilder")
+	// Fails like the real one when told to read a GeoNames file that contains "BAD".
+	os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" >> "+argsFile+"\n"+
+		"for a in \"$@\"; do if [ -f \"$a\" ] && grep -q BAD \"$a\" 2>/dev/null; then echo \"error: $a: bad\" >&2; exit 1; fi; done\n"+
+		"echo 'layer 10-rir.csv.gz: 10 rows, 9 prefixes, 0 skipped'\n"+
+		"echo 'layer 80-asn-main: 3 rows, 4 prefixes, 0 skipped'\n"+
+		"echo 'asn-main: 1 groups qualified of 2, 768 addresses filled'\n"+
+		"echo 'wrote x (2 layers, 13 prefixes)'\n"), 0o755)
+	archive := zipBytes(t, geoNamesSample)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(archive) }))
+	defer server.Close()
+	p := &Pipeline{DataDir: dir, MMDBBuilder: script, refURLs: &evalURLs{geonames: server.URL + "/cities1000.zip"}}
+	touchLayers(t, p, RIRLayer, NamesFile)
+	geonames := filepath.Join(p.evalDir(), "cities1000.txt")
+	prefixes := filepath.Join(p.dir(), asnPrefixesFile)
+
+	out, err := p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := os.ReadFile(argsFile)
+	if strings.Contains(string(args), "-asn-main") || out.ASNMain != "skipped: no ASN prefixes" {
+		t.Errorf("no file: args %s, asn_main %q", args, out.ASNMain)
+	}
+
+	writeAnnouncedFile(prefixes, []asnPrefix{{1, netip.MustParsePrefix("10.0.0.0/20")}})
+	os.Remove(argsFile)
+	out, err = p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ = os.ReadFile(argsFile)
+	want := "-names " + filepath.Join(p.layersDir(), NamesFile) + " -geonames " + geonames + " -asn-main " + prefixes + " " + filepath.Join(p.layersDir(), RIRLayer)
+	if !strings.Contains(string(args), want) || out.ASNMain != "on" || out.Prefixes[ASNMainSource] != 4 {
+		t.Errorf("args %s\nwant them to contain %s\nout = %+v", args, want, out)
+	}
+
+	// A garbage file: no flag, and the build still succeeds.
+	os.WriteFile(prefixes, []byte("not gzip"), 0o640)
+	os.Remove(argsFile)
+	out, err = p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
+	args, _ = os.ReadFile(argsFile)
+	if err != nil || strings.Contains(string(args), "-asn-main") || out.ASNMain != "skipped: ASN prefixes unreadable" {
+		t.Errorf("garbage file: %v, args %s, asn_main %q", err, args, out.ASNMain)
+	}
+	writeAnnouncedFile(prefixes, []asnPrefix{{1, netip.MustParsePrefix("10.0.0.0/20")}})
+
+	// GeoNames is refused: the repeat keeps the fill.
+	os.WriteFile(geonames, []byte("BAD\n"), 0o640)
+	os.Remove(argsFile)
+	out, err = p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ = os.ReadFile(argsFile)
+	if lines := strings.Split(strings.TrimSpace(string(args)), "\n"); len(lines) != 2 ||
+		!strings.Contains(lines[0], "-geonames") || strings.Contains(lines[1], "-geonames") ||
+		!strings.Contains(lines[0], "-asn-main") || !strings.Contains(lines[1], "-asn-main") || out.ASNMain != "on" {
+		t.Errorf("args = %s", args)
 	}
 }
 

@@ -34,12 +34,13 @@ var countriesTab string
 
 type geoLayerStats struct {
 	name     string
-	rows     int // usable rows
-	prefixes int // networks written (repeated prefixes count once)
-	skipped  int // unusable rows (see warnings)
-	noCity   int // rows whose city was left out (too long or not plain text)
-	placed   int // new records that got coordinates (only with GeoNames)
-	unplaced int // new records with a city that GeoNames could not place
+	rows     int    // usable rows
+	prefixes int    // networks written (repeated prefixes count once)
+	skipped  int    // unusable rows (see warnings)
+	noCity   int    // rows whose city was left out (too long or not plain text)
+	placed   int    // new records that got coordinates (only with GeoNames)
+	unplaced int    // new records with a city that GeoNames could not place
+	note     string // one more line to print after the layer line (the ASN main city fill)
 }
 
 type geoEntry struct {
@@ -90,7 +91,12 @@ type place struct{ code, city, source string }
 // record without a city, have neither. A record is made once per (country,
 // city, source), so every prefix of a place shares the values; the counts in
 // the layer stats are per new record, in the layer that first made it.
-func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames) ([]geoLayerStats, error) {
+//
+// With asnMain (the path of an asn-prefixes file, "" for none), after all
+// layers the cities of the ASNs that sit in one city are given to their
+// addresses that have a country and no city; see asnmain.go. It is a guess,
+// not a layer file, and it only fills.
+func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string) ([]geoLayerStats, error) {
 	names, err := loadNames(namesPath)
 	if err != nil {
 		return nil, err
@@ -102,6 +108,31 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 	places := map[place]int{}
 	var records []mmdbtype.Map
 	var stats []geoLayerStats
+	// recordFor returns the index of the record of a place, making it on first use
+	// (counted in the stats of the layer that asks).
+	recordFor := func(key place, s *geoLayerStats) int {
+		if idx, ok := places[key]; ok {
+			return idx
+		}
+		record := mmdbtype.Map{}
+		setString(record, "country_code", key.code)
+		setString(record, "country_name", names[key.code])
+		setString(record, "city_name", key.city)
+		setString(record, "city_source", key.source)
+		if index != nil && key.city != "" {
+			if p, ok := index.place(key.code, key.city); ok {
+				record["latitude"] = mmdbtype.Float64(round4(p.lat))
+				record["longitude"] = mmdbtype.Float64(round4(p.lon))
+				s.placed++
+			} else {
+				s.unplaced++
+			}
+		}
+		idx := len(records)
+		places[key] = idx
+		records = append(records, record)
+		return idx
+	}
 	first := newBlockSet()
 	var firstTree *mmdbwriter.Tree // country of the first layer, only when a layer needs it
 	if len(firstCountry) > 0 {
@@ -149,26 +180,7 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 			if key.city == "" && strings.TrimSpace(city) != "" {
 				s.noCity++
 			}
-			idx, ok := places[key]
-			if !ok {
-				record := mmdbtype.Map{}
-				setString(record, "country_code", key.code)
-				setString(record, "country_name", names[key.code])
-				setString(record, "city_name", key.city)
-				setString(record, "city_source", key.source)
-				if index != nil && key.city != "" {
-					if p, ok := index.place(key.code, key.city); ok {
-						record["latitude"] = mmdbtype.Float64(round4(p.lat))
-						record["longitude"] = mmdbtype.Float64(round4(p.lon))
-						s.placed++
-					} else {
-						s.unplaced++
-					}
-				}
-				idx = len(records)
-				places[key] = idx
-				records = append(records, record)
-			}
+			idx := recordFor(key, &s)
 			entries = append(entries, geoEntry{p, idx, parts})
 			s.rows++
 		})
@@ -217,6 +229,13 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 					return stats, fmt.Errorf("insert %s (%s): %w", e.prefix, s.name, err)
 				}
 			}
+		}
+		stats = append(stats, s)
+	}
+	if asnMain != "" {
+		s, err := fillASNMain(writer, asnMain, index, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
+		if err != nil {
+			return stats, err
 		}
 		stats = append(stats, s)
 	}

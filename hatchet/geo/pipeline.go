@@ -655,6 +655,9 @@ type BuildMMDBOutput struct {
 	// Coordinates is "on" when the build placed cities with the GeoNames copy
 	// (latitude and longitude), or "skipped: <reason>" when it was built without.
 	Coordinates string `json:"coordinates"`
+	// ASNMain is "on" when the build gave the main city of each ASN to its addresses
+	// that have a country and no city (-asn-main, a guess), or "skipped: no ASN prefixes" / "skipped: ASN prefixes unreadable".
+	ASNMain string `json:"asn_main"`
 	// CoordinatesPlaced and CoordinatesUnplaced count the new records with a city
 	// that got coordinates and that GeoNames could not place (counts only).
 	CoordinatesPlaced   int `json:"coordinates_placed,omitempty"`
@@ -766,6 +769,34 @@ func (p *Pipeline) runBuilder(ctx context.Context, args []string) (string, error
 	return stdout.String(), nil
 }
 
+// ASNMainSource is the name mmdbbuilder prints for the ASN main city fill ("layer 80-asn-main: ..."),
+// and its city_source in the MMDB.
+const ASNMainSource = "80-asn-main"
+
+// asnMainFlag is the "mmdbbuilder geo" flag of the ASN main city fill.
+const asnMainFlag = "-asn-main"
+
+// asnMainArgs is the flag that gives mmdbbuilder the ASN prefixes Download saved, and
+// the status for the output: "on", "skipped: no ASN prefixes" (no file) or
+// "skipped: ASN prefixes unreadable" (the file cannot be read or has no rows); in both
+// skipped cases no flag is passed, so a bad file never fails the build. The fill is a
+// guess made inside the builder because it needs the merged result of all
+// layers, so it is not a layer file (not in layerRules or optionalLayers).
+// Download deletes the file at its start and writes it again only when it reads
+// public.asn, so a file that is here belongs to this run's layers, never to an older one.
+func (p *Pipeline) asnMainArgs() (args []string, status string) {
+	path := filepath.Join(p.dir(), asnPrefixesFile)
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+		return nil, "skipped: no ASN prefixes"
+	}
+	rows, err := readAnnouncedFile(path)
+	if err != nil || len(rows) == 0 {
+		p.log("mmdb: WARNING %s is unreadable or empty; building without the %s fill", path, ASNMainSource)
+		return nil, "skipped: ASN prefixes unreadable"
+	}
+	return []string{asnMainFlag, path}, "on"
+}
+
 // BuildMMDB runs "mmdbbuilder geo" on the layer files.
 func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, error) {
 	dir := p.outDir(src.DateTag)
@@ -789,6 +820,8 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 			coordinates = "on (" + status + ")"
 		}
 	}
+	asnMainArgs, asnMain := p.asnMainArgs()
+	extra = append(extra, asnMainArgs...)
 	args, err := p.geoArgs(final, nil, extra...)
 	if err != nil {
 		return BuildMMDBOutput{}, err
@@ -798,7 +831,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 		// The builder named the GeoNames file in its error: build again without it.
 		p.log("mmdb: geonames unusable, building without coordinates: %v", err)
 		coordinates = "skipped: the builder could not read the GeoNames file"
-		if args, err = p.geoArgs(final, nil); err == nil {
+		if args, err = p.geoArgs(final, nil, asnMainArgs...); err == nil {
 			stdout, err = p.runBuilder(ctx, args)
 		}
 	}
@@ -808,7 +841,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
-	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates}
+	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain}
 	if m := coordinatesSummary.FindStringSubmatch(stdout); m != nil {
 		out.CoordinatesPlaced, _ = strconv.Atoi(m[1])
 		out.CoordinatesUnplaced, _ = strconv.Atoi(m[2])

@@ -1,7 +1,7 @@
 // Command mmdbbuilder builds and checks openipdata MMDB files.
 //
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
-//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
+//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>
 //	mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>
@@ -9,6 +9,9 @@
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, -geonames adds latitude and longitude to the records whose city it places.
+// -asn-main (an asn-prefixes file, gzipped CSV asn,prefix) adds a last, guessed fill: where
+// the addresses of an ASN in a country that have a city are at least 90% in one city, its
+// addresses in that country with no city get it (IPv4 only, city_source 80-asn-main). See asnmain.go.
 // A layer named in -same-country applies only where the country so
 // far is the same or unknown. A layer named in -within-first is used only for
 // rows no broader than one prefix of the first layer; others are skipped. A
@@ -61,7 +64,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>")
@@ -78,6 +81,7 @@ func runGeo(args []string) {
 	geonames := flags.String("geonames", "", "GeoNames cities1000.txt: records whose city it places get latitude and longitude (optional)")
 	sameCountry := flags.String("same-country", "", "layer file names (comma-separated) whose rows apply only where the country so far is the same or unknown")
 	withinFirst := flags.String("within-first", "", "layer file names (comma-separated) whose rows are used only if no broader than one prefix of the first layer")
+	asnMain := flags.String("asn-main", "", "asn-prefixes.csv.gz (asn,prefix; IPv4 rows used): after all layers, give the main city of an ASN to its addresses in a country that have no city (a guess, city_source 80-asn-main)")
 	firstCountry := flags.String("first-country", "", "layer file names (comma-separated) whose rows apply only to the addresses where the first layer gives the row's country")
 	flags.Parse(args)
 
@@ -92,10 +96,13 @@ func runGeo(args []string) {
 			os.Exit(1)
 		}
 	}
-	stats, err := buildGeo(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index)
+	stats, err := buildGeo(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, *asnMain)
 	prefixes, placed, unplaced := 0, 0, 0
 	for _, s := range stats {
 		fmt.Printf("layer %s: %d rows, %d prefixes, %d skipped\n", s.name, s.rows, s.prefixes, s.skipped)
+		if s.note != "" {
+			fmt.Println(s.note)
+		}
 		if s.noCity > 0 {
 			fmt.Printf("layer %s: %d cities left out\n", s.name, s.noCity)
 		}

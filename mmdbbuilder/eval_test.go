@@ -52,7 +52,7 @@ func TestEvaluate(t *testing.T) {
 	cities := writeFile(t, filepath.Join(dir, "cities.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/25,US,Dallas\n45.0.1.0/24,DE,Berlin\n45.0.2.0/25,FR,Paris\n47.0.0.0/24,US,Elsewhere\n")
 	ours := filepath.Join(dir, "ours.mmdb")
-	if _, err := buildGeo([]string{rir, cities}, "", ours, false, nil, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{rir, cities}, "", ours, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	dbip := refDB(t, filepath.Join(dir, "dbip.mmdb"), "dbip", [][3]string{
@@ -72,7 +72,7 @@ func TestEvaluate(t *testing.T) {
 	holdoutRIR := writeFile(t, filepath.Join(dir, "holdout-cities.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/24,US,Dallas\n45.0.1.0/24,DE,\n45.0.2.0/24,NL,\n")
 	holdout := filepath.Join(dir, "holdout.mmdb")
-	if _, err := buildGeo([]string{holdoutRIR}, "", holdout, false, nil, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{holdoutRIR}, "", holdout, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	truth := writeFile(t, filepath.Join(dir, "truth.csv"), "prefix,country,city\n"+
@@ -157,7 +157,7 @@ func TestEvaluateOmitsMissingReferences(t *testing.T) {
 	dir := t.TempDir()
 	rir := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n45.0.0.0/24,US,\n")
 	ours := filepath.Join(dir, "ours.mmdb")
-	if _, err := buildGeo([]string{rir}, "", ours, false, nil, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{rir}, "", ours, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	m, err := evaluate(evalInputs{db: ours, rir: rir})
@@ -307,7 +307,7 @@ func TestEvaluateAtlasCity(t *testing.T) {
 	cities := writeFile(t, filepath.Join(dir, "cities.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/24,US,Dallas\n45.0.1.0/24,DE,Berlin\n45.0.2.0/24,FR,Paris\n45.0.4.0/24,US,Nowhereville\n")
 	ours := filepath.Join(dir, "ours.mmdb")
-	if _, err := buildGeo([]string{rir, cities}, "", ours, false, nil, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{rir, cities}, "", ours, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	geonames := writeFile(t, filepath.Join(dir, "cities1000.txt"),
@@ -411,7 +411,7 @@ func TestEvaluateLayerMetrics(t *testing.T) {
 	b := writeFile(t, filepath.Join(dir, "70.geo-feeds.csv.gz"), "prefix,country,city\n"+
 		"45.0.1.0/24,DE,Berlin\n45.0.3.0/24,US,Nowhereville\n")
 	ours := filepath.Join(dir, "ours.mmdb")
-	if _, err := buildGeo([]string{rir, a, b}, "", ours, false, nil, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{rir, a, b}, "", ours, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	// A city without city_source, as in an MMDB built before the field.
@@ -484,5 +484,9 @@ func TestEvaluateLayerMetrics(t *testing.T) {
 	}
 	if k := sourceKey("70-Geo.feeds"); k != "70_geo_feeds" {
 		t.Errorf("sourceKey = %q", k)
+	}
+	// The ASN main city guess is scored like any layer: layer_80_asn_main_* keys.
+	if k := sourceKey(asnMainSource); k != "80_asn_main" {
+		t.Errorf("sourceKey(asn main) = %q", k)
 	}
 }
