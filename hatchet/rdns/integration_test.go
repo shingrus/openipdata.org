@@ -766,3 +766,135 @@ func TestIntegrationShrinkGuardCountsStickyRowsOnly(t *testing.T) {
 		t.Fatalf("replace: %+v %v", rs, err)
 	}
 }
+
+// sample-names walks the gap /24s, looks up three hosts of each and records those with a name in
+// customer_name_networks (nothing in ip_ptr_names); locate then gives the /24 whose names decode to
+// one city (in the row's country) a row of scope named, which neither resolve-names nor the
+// schedule treat as a located /24.
+func TestIntegrationSampleNamesAndNamedRows(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := schema.EnsureRDNS(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	clock := testNow
+	w.p.now = func() time.Time { return clock }
+	store := newFakeStore()
+	store.put(todayKey, "e1", "mmdb")
+	store.put("2027-05-12/ip2geo-openipdata-20270512.mmdb", "e1", "mmdb")
+	w.p.store = store
+	w.p.lookup = func(_ context.Context, _, _, out string) error { return os.WriteFile(out, nil, 0o640) }
+	// The gap: 30.0.1.0/24 and 30.0.2.0/24 (DE), 30.0.3.0/24 (US).
+	gapBuilds := 0
+	w.p.gaps = func(_ context.Context, _, out string) error {
+		gapBuilds++
+		return os.WriteFile(out, []byte("30.0.1.0/24 2 DE\n30.0.3.0/24 1 US\n"), 0o640)
+	}
+	w.p.walkSteps = walkSize
+	next := 0
+	w.p.intn = func(n int) int { v := next % n; next++; return v }
+	w.p.resolver = &ptrResolver{
+		system: func(_ context.Context, ip string) ([]string, error) {
+			switch {
+			case strings.HasPrefix(ip, "30.0.1."): // DE: Frankfurt
+				return []string{"h" + ip[strings.LastIndex(ip, ".")+1:] + ".fra02.isp.net."}, nil
+			case strings.HasPrefix(ip, "30.0.3."): // the third /24 is US: Frankfurt is not its country
+				return []string{"h.fra02.isp.net."}, nil
+			}
+			return nil, &net.DNSError{Err: "no such host", IsNotFound: true} // 30.0.2: no names
+		},
+		doh: func(context.Context, netip.Addr) ptrAnswer { return ptrAnswer{Status: statusError} },
+	}
+
+	out, err := w.p.SampleNames(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.MMDB != statusUsed || !out.GapsBuilt || out.Gaps != 3 || out.Picked != 3 || out.Networks != 3 || out.NamedNetworks != 2 ||
+		out.Queried != 9 || out.OK != 6 || out.NotFound != 3 || out.Errors != 0 || out.Stopped != "" || !out.CycleDone {
+		t.Fatalf("sample-names: %+v", out)
+	}
+	// Only /24s with a name have a row, with the hosts that have one and their names in the same order.
+	if n := w.count(`SELECT count(*) FROM public.customer_name_networks`); n != 2 {
+		t.Fatalf("%d rows", n)
+	}
+	if n := w.count(`SELECT count(*) FROM public.customer_name_networks WHERE cardinality(hosts) = 3 AND cardinality(names) = 3
+		AND names[1] LIKE 'h%.fra02.isp.net' AND host(hosts[1]) IN ('30.0.1.1', '30.0.3.1')`); n != 2 {
+		t.Fatalf("%d rows with three hosts and names", n)
+	}
+	if n := w.count(`SELECT count(*) FROM public.ip_ptr_names`); n != 0 {
+		t.Fatalf("%d rows in ip_ptr_names: customer names must not go there", n)
+	}
+	// The rate limit, then the end of the cycle.
+	if again, err := w.p.SampleNames(ctx); err != nil || again.Skipped != "recent" || again.Queried != 0 {
+		t.Fatalf("second run: %+v %v", again, err)
+	}
+	clock = clock.Add(30 * time.Minute)
+	if again, err := w.p.SampleNames(ctx); err != nil || again.Skipped != "cycle done" || again.Queried != 0 {
+		t.Fatalf("cycle done: %+v %v", again, err)
+	}
+	// The next cycle starts 180 days after the first; a row of 201 days that is not sampled again is deleted.
+	w.exec(`INSERT INTO public.customer_name_networks VALUES ('30.0.50.0/24', 'DE', ARRAY['30.0.50.1']::inet[], ARRAY['x.fra01.isp.net'], now() - interval '201 days')`)
+	clock = testNow.Add(181 * 24 * time.Hour)
+	again, err := w.p.SampleNames(ctx)
+	if err != nil || again.Skipped != "" || again.Picked != 3 || again.NamedNetworks != 2 || again.Pruned != 1 || gapBuilds != 1 {
+		t.Fatalf("new cycle: %+v %v", again, err)
+	}
+	if st := readSampleState(w.p.statePath(), clock); !st.CycleStarted.Equal(clock) || st.Cursor < walkSize {
+		t.Fatalf("state: %+v", st)
+	}
+
+	// locate: only the DE /24 whose names say Frankfurt gets a named row (the US one is skipped: wrong country).
+	loc, err := w.p.Locate(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc.CustomerNetworks != 2 || loc.CustomerNames != 6 || loc.CustomerMatched != 6 || loc.NamedForeign != 1 || loc.Named != 1 || loc.StoredNamed != 1 || loc.PreviousNamed != 0 {
+		t.Fatalf("locate: %+v", loc)
+	}
+	var scope, country, city, method, rule string
+	var same *bool
+	w.scan(`SELECT scope, country, city, method, rule_name, same_asn FROM public.rdns_geo_layer WHERE prefix = '30.0.1.0/24'`, &scope, &country, &city, &method, &rule, &same)
+	if scope != scopeNamed || country != "DE" || city != "Frankfurt" || method != methodRule || rule != "fra" || same != nil {
+		t.Fatalf("row = %s %s %s %s %s %v", scope, country, city, method, rule, same)
+	}
+	if n := w.count(`SELECT count(*) FROM public.rdns_geo_layer`); n != 1 {
+		t.Fatalf("%d rows in the layer", n)
+	}
+	if n := w.count(`SELECT count(*) FROM public.traced_networks`); n != 0 {
+		t.Fatalf("%d scheduled networks: a named row must not mark a /24 located", n)
+	}
+	// The next rebuild reports the row it replaces, and the shrink guard ignores it.
+	if loc, err = w.p.Locate(ctx, true); err != nil || loc.PreviousNamed != 1 || loc.StoredNamed != 1 || loc.PreviousVolatile != 0 {
+		t.Fatalf("second locate: %+v %v", loc, err)
+	}
+	// The fingerprint holds the UTC day of the newest sample: a sample of the same day changes nothing, a later day does.
+	before, err := inputsSummary(ctx, w.conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.exec(`INSERT INTO public.customer_name_networks VALUES ('30.0.9.0/24', 'DE', ARRAY['30.0.9.1']::inet[], ARRAY['a.fra01.isp.net'], now())`)
+	same1, err := inputsSummary(ctx, w.conn)
+	if err != nil || same1 != before {
+		t.Fatalf("same day: before %v after %v (%v)", before, same1, err)
+	}
+	w.exec(`UPDATE public.customer_name_networks SET sampled_at = now() + interval '2 days' WHERE prefix = '30.0.9.0/24'`)
+	after, err := inputsSummary(ctx, w.conn)
+	if err != nil || before[4] == after[4] || fingerprintOf(before, "e") == fingerprintOf(after, "e") {
+		t.Fatalf("summary before %v after %v (%v)", before, after, err)
+	}
+}
+
+// With no usable MMDB sample-names reports it and succeeds, and records nothing.
+func TestIntegrationSampleNamesWithoutMMDB(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := schema.EnsureRDNS(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	w.p.store = newFakeStore()
+	out, err := w.p.SampleNames(ctx)
+	if err != nil || out.MMDB != statusSkipped || out.MMDBReason != reasonNoObject || out.Networks != 0 {
+		t.Fatalf("%+v %v", out, err)
+	}
+}

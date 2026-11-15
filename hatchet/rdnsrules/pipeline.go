@@ -1,6 +1,7 @@
 package rdnsrules
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +42,21 @@ const inputQueryNoHops = `SELECT DISTINCT host(n.ip), n.ptr, ''::text
 	WHERE t.traced_at >= now() - interval '180 days'
 	  AND n.ptr <> ''
 	ORDER BY host(n.ip)`
+
+// customerQuery reads the names of the hosts of the gap /24s that sample-names sampled in the
+// last 200 days (public.customer_name_networks: hosts and names, in the same order), with the country
+// of the /24 row (the country of our ip2geo MMDB there). Only run when the table exists: the learner
+// never runs DDL on it. Nothing here touches public.ip_ptr_names.
+const customerQuery = `SELECT host(h.ip), h.ptr, c.country
+	FROM public.customer_name_networks c
+	CROSS JOIN LATERAL unnest(c.hosts, c.names) AS h(ip, ptr)
+	WHERE c.sampled_at >= now() - interval '200 days' AND h.ptr <> ''`
+
+// customerNamesPerDomain caps the customer names of one registered domain: the ones with the smallest
+// FNV-1a hash of the IP stay, so the set is the same from day to day. Router names are not capped.
+const customerNamesPerDomain = 5000
+
+const customerTableQuery = `SELECT to_regclass('public.customer_name_networks') IS NOT NULL`
 
 const hopIPsColumnQuery = `SELECT EXISTS (SELECT 1 FROM information_schema.columns
 	WHERE table_schema = 'public' AND table_name = 'network_traces' AND column_name = 'hop_ips')`
@@ -180,8 +197,9 @@ func (p *Pipeline) Learn(ctx context.Context) (Output, error) {
 			out.LostSupport += n
 		}
 	}
-	// Country is diagnostic only. Map each router IP through current announced
-	// prefixes; failures are fatal before the write transaction begins.
+	// Country is diagnostic only. Map each traced IP through current announced prefixes (a
+	// customer name keeps the country of its sampled /24); failures are fatal before the write
+	// transaction begins.
 	if err = loadRouterCountries(ctx, conn, byDomain); err != nil {
 		return out, safeDBError("read router countries", err)
 	}
@@ -213,9 +231,99 @@ func (p *Pipeline) Learn(ctx context.Context) (Output, error) {
 	return out, nil
 }
 
-// readDomainNames reads the PTR names of the traced IPs of the last 180 days, grouped by
-// registered domain (public IPv4 only, labels [a-z0-9-] only; the second result counts the
-// names skipped for another label). Countries are not set yet (loadRouterCountries).
+// collectName adds one name to byDomain unless its IP is not a public IPv4, was seen already (each IP
+// counts once, the first row wins), has no registered domain, or has a label outside [a-z0-9-]
+// (counted in skipped). country is kept as given (upper case): "" means not set yet.
+func collectName(byDomain map[string][]Name, seen map[string]bool, skipped *int, ip, ptr, country string) {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || !ipdata.PublicV4(a) || seen[ip] {
+		return
+	}
+	domain := registeredDomain(ptr)
+	if domain == "" {
+		return
+	}
+	if !cleanLabels(ptr, domain) {
+		*skipped++
+		return
+	}
+	seen[ip] = true
+	byDomain[domain] = append(byDomain[domain], Name{IP: ip, PTR: ptr, Country: strings.ToUpper(strings.TrimSpace(country))})
+}
+
+// customerName is a customer name with the hash that ranks it.
+type customerName struct {
+	Name
+	hash uint32
+}
+
+// customerHeap is a max-heap on (hash, IP): the root is the name to drop first.
+type customerHeap []customerName
+
+func (h customerHeap) Len() int { return len(h) }
+func (h customerHeap) Less(i, j int) bool {
+	if h[i].hash != h[j].hash {
+		return h[i].hash > h[j].hash
+	}
+	return h[i].IP > h[j].IP
+}
+func (h customerHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *customerHeap) Push(x any)   { *h = append(*h, x.(customerName)) }
+func (h *customerHeap) Pop() any {
+	old := *h
+	x := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return x
+}
+
+// ipHash is the FNV-1a hash of the text of an IP.
+func ipHash(ip string) uint32 {
+	h := uint32(2166136261)
+	for i := 0; i < len(ip); i++ {
+		h ^= uint32(ip[i])
+		h *= 16777619
+	}
+	return h
+}
+
+// collectCustomer adds one customer name to the per-domain heaps with the same checks as collectName
+// (a router name already seen for the IP wins) and keeps at most limit names per domain, the smallest
+// hashes, so memory stays bounded while the rows stream.
+func collectCustomer(heaps map[string]*customerHeap, seen map[string]bool, skipped *int, limit int, ip, ptr, country string) {
+	a, err := netip.ParseAddr(ip)
+	if err != nil || !ipdata.PublicV4(a) || seen[ip] {
+		return
+	}
+	domain := registeredDomain(ptr)
+	if domain == "" {
+		return
+	}
+	if !cleanLabels(ptr, domain) {
+		*skipped++
+		return
+	}
+	if limit <= 0 {
+		return
+	}
+	c := customerName{Name{IP: ip, PTR: ptr, Country: strings.ToUpper(strings.TrimSpace(country))}, ipHash(ip)}
+	h := heaps[domain]
+	if h == nil {
+		h = &customerHeap{}
+		heaps[domain] = h
+	}
+	if h.Len() < limit {
+		heap.Push(h, c)
+	} else if top := (*h)[0]; c.hash < top.hash || c.hash == top.hash && c.IP < top.IP {
+		(*h)[0] = c
+		heap.Fix(h, 0)
+	}
+}
+
+// readDomainNames reads the PTR names of the traced IPs of the last 180 days and of the sampled
+// customer hosts (customer_name_networks of the last 200 days, when the table exists, at most customerNamesPerDomain per domain; their Country is the row's), grouped
+// by registered domain (public IPv4 only, labels [a-z0-9-] only; the second result counts the names
+// skipped for another label). Each IP counts once (a traced IP that is also a sampled host stays a
+// traced name). The country of the traced names is not set yet (loadRouterCountries).
 func readDomainNames(ctx context.Context, conn *pgx.Conn) (map[string][]Name, int, error) {
 	skipped := 0
 	var hasHops bool
@@ -226,36 +334,65 @@ func readDomainNames(ctx context.Context, conn *pgx.Conn) (map[string][]Name, in
 	if hasHops {
 		query = inputQuery
 	}
+	byDomain := map[string][]Name{}
+	seen := map[string]bool{}
+	add := func(rows pgx.Rows, op string) error {
+		defer rows.Close()
+		for rows.Next() {
+			var ip, ptr, country string
+			if err := rows.Scan(&ip, &ptr, &country); err != nil {
+				return safeDBError(op, err)
+			}
+			collectName(byDomain, seen, &skipped, ip, ptr, country)
+		}
+		if err := rows.Err(); err != nil {
+			return safeDBError(op, err)
+		}
+		return nil
+	}
 	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, 0, safeDBError("read recent router names", err)
 	}
-	byDomain := map[string][]Name{}
-	for rows.Next() {
-		var ip, ptr, country string
-		if err = rows.Scan(&ip, &ptr, &country); err != nil {
-			rows.Close()
-			return nil, 0, safeDBError("read recent router names", err)
-		}
-		a, addrErr := netip.ParseAddr(ip)
-		if addrErr != nil || !ipdata.PublicV4(a) {
-			continue
-		}
-		domain := registeredDomain(ptr)
-		if domain == "" {
-			continue
-		}
-		if !cleanLabels(ptr, domain) {
-			skipped++
-			continue
-		}
-		byDomain[domain] = append(byDomain[domain], Name{IP: ip, PTR: ptr, Country: country})
+	if err := add(rows, "read recent router names"); err != nil {
+		return nil, 0, err
 	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return nil, 0, safeDBError("read recent router names", err)
+	// Missing table: sample-names has not run, so there are no customer names.
+	var hasCustomers bool
+	if err := conn.QueryRow(ctx, customerTableQuery).Scan(&hasCustomers); err != nil {
+		return nil, 0, safeDBError("read customer name table", err)
 	}
-	rows.Close()
+	if hasCustomers {
+		rows, err := conn.Query(ctx, customerQuery)
+		if err != nil {
+			return nil, 0, safeDBError("read customer names", err)
+		}
+		heaps := map[string]*customerHeap{}
+		err = func() error {
+			defer rows.Close()
+			for rows.Next() {
+				var ip, ptr, country string
+				if err := rows.Scan(&ip, &ptr, &country); err != nil {
+					return safeDBError("read customer names", err)
+				}
+				collectCustomer(heaps, seen, &skipped, customerNamesPerDomain, ip, ptr, country)
+			}
+			if err := rows.Err(); err != nil {
+				return safeDBError("read customer names", err)
+			}
+			return nil
+		}()
+		if err != nil {
+			return nil, 0, err
+		}
+		for domain, h := range heaps {
+			list := []customerName(*h)
+			sort.Slice(list, func(i, j int) bool { return list[i].IP < list[j].IP })
+			for _, c := range list {
+				byDomain[domain] = append(byDomain[domain], c.Name)
+			}
+		}
+	}
 	return byDomain, skipped, nil
 }
 
@@ -372,8 +509,19 @@ func loadRouterCountries(ctx context.Context, conn *pgx.Conn, groups map[string]
 	if err := ipdata.ReadAnnounced(ctx, conn, reset, add); err != nil {
 		return err
 	}
+	applyCountries(groups, byBits)
+	return nil
+}
+
+// applyCountries sets the country of every name that has none from the announced prefixes (the
+// longest one that contains its IP); a name with a country (a sampled customer name: the country
+// of its /24 in our MMDB) keeps it.
+func applyCountries(groups map[string][]Name, byBits [33]map[uint32]string) {
 	for domain, ns := range groups {
 		for i := range ns {
+			if ns[i].Country != "" {
+				continue
+			}
 			a, e := netip.ParseAddr(ns[i].IP)
 			if e != nil {
 				continue
@@ -397,7 +545,6 @@ func loadRouterCountries(ctx context.Context, conn *pgx.Conn, groups map[string]
 		}
 		groups[domain] = ns
 	}
-	return nil
 }
 
 func safeSourceError(err error) string {

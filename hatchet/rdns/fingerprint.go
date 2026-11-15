@@ -39,6 +39,10 @@ const (
 		FROM public.ip_ptr_names WHERE status = 'ok' AND ptr IS NOT NULL`
 	fingerprintASNQuery = `SELECT count(*)::text || ':' || coalesce(max(a.seen_at)::text, '')
 		FROM public.asn a WHERE ` + ipdata.SeenAtFilter
+	// fingerprintCustomerQuery: the UTC day of the newest sampled /24 locate reads (sample-names). Only the
+	// day, so new samples cause at most one extra rebuild a day; a rule change still rebuilds at once.
+	fingerprintCustomerQuery = `SELECT coalesce((date_trunc('day', max(sampled_at) AT TIME ZONE 'UTC'))::text, '')
+		FROM public.customer_name_networks WHERE sampled_at > now() - $1::text::interval`
 	// fingerprintRulesQuery hashes the columns of rulesQuery in its order:
 	// generated_rules has no update column to look at.
 	fingerprintRulesQuery = `SELECT count(*)::text || ':' || coalesce(md5(string_agg(concat_ws(E'\x1f', name, pattern, domains_json::text, country, city), E'\x1e'
@@ -48,9 +52,9 @@ const (
 			ORDER BY lower(domain), domain, rank)), '') FROM public.rdns_city_rules`
 )
 
-// inputsSummary summarizes the database inputs of locate: four short texts, no rows.
-func inputsSummary(ctx context.Context, conn *pgx.Conn) ([4]string, error) {
-	var parts [4]string
+// inputsSummary summarizes the database inputs of locate: five short texts, no rows.
+func inputsSummary(ctx context.Context, conn *pgx.Conn) ([5]string, error) {
+	var parts [5]string
 	if err := conn.QueryRow(ctx, fingerprintTracesQuery, locateWindow).Scan(&parts[0]); err != nil {
 		return parts, dbError("fingerprint traces", err)
 	}
@@ -81,17 +85,27 @@ func inputsSummary(ctx context.Context, conn *pgx.Conn) ([4]string, error) {
 	if err := conn.QueryRow(ctx, fingerprintASNQuery).Scan(&parts[3]); err != nil {
 		return parts, dbError("fingerprint asn", err)
 	}
+	var customerTable *string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.customer_name_networks')::text`).Scan(&customerTable); err != nil {
+		return parts, dbError("fingerprint customer names", err)
+	}
+	parts[4] = "no table"
+	if customerTable != nil {
+		if err := conn.QueryRow(ctx, fingerprintCustomerQuery, customerWindow).Scan(&parts[4]); err != nil {
+			return parts, dbError("fingerprint customer names", err)
+		}
+	}
 	return parts, nil
 }
 
 // fingerprintOf is the fingerprint of the inputs of locate: the summary of the
 // database inputs and the ETag of the MMDB the hop fallback reads (noMMDB when
 // the fallback has none). Equal text means nothing locate reads has changed.
-func fingerprintOf(summary [4]string, mmdbETag string) string {
+func fingerprintOf(summary [5]string, mmdbETag string) string {
 	if mmdbETag == "" {
 		mmdbETag = noMMDB
 	}
-	data, _ := json.Marshal([5]string{summary[0], summary[1], summary[2], summary[3], mmdbETag})
+	data, _ := json.Marshal([6]string{summary[0], summary[1], summary[2], summary[3], summary[4], mmdbETag})
 	return string(data)
 }
 

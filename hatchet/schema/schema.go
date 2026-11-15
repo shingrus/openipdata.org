@@ -122,9 +122,10 @@ var rdnsStatements = []string{
 	// to 0); resolve-names waits 1, 2, then 7 days after them. NULL or 0 in older rows.
 	`ALTER TABLE public.ip_ptr_names ADD COLUMN IF NOT EXISTS error_count integer`,
 	`CREATE INDEX IF NOT EXISTS ip_ptr_names_due_error_idx ON public.ip_ptr_names (COALESCE(tried_at, resolved_at), error_count) WHERE error_count > 0 OR (status = 'error' AND error_count IS NULL)`,
-	// One located prefix. scope: traced (a /24 a trace located) or wide (an announced
-	// prefix, never wider than /16, that the traced /24s voted for). A /24 can be
-	// both, hence the key. router_*, rule_name and same_asn describe a traced
+	// One located prefix. scope: traced (a /24 a trace located), wide (an announced
+	// prefix, never wider than /16, that the traced /24s voted for) or named (a /24 of
+	// customer_name_networks whose customer PTR names decode to one city; volatile, never
+	// sticky, same_asn NULL). A /24 can be in several scopes, hence the key. router_*, rule_name and same_asn describe a traced
 	// row's winning router (same_asn is NULL when the target's ASN was unknown) and are NULL
 	// for a wide row.
 	`CREATE TABLE IF NOT EXISTS public.rdns_geo_layer (
@@ -150,6 +151,21 @@ var rdnsStatements = []string{
 	// table; build-geo-data reads it, so the ALTER waits for a running read at most and
 	// resolve-ips runs it once per run (first task only), not in every task.
 	`ALTER TABLE public.rdns_geo_layer ADD COLUMN IF NOT EXISTS method text, ADD COLUMN IF NOT EXISTS rule_votes integer, ADD COLUMN IF NOT EXISTS mmdb_votes integer, ADD COLUMN IF NOT EXISTS candidate_votes integer NOT NULL DEFAULT 0`,
+	// The /24s of the gap (a country but no city in our ip2geo MMDB) whose customer addresses
+	// were sampled and had a PTR name: hosts are the sampled IPs that have an ok name and names
+	// their PTR names, in the same order (a /24 with no name has no row; the names are not in
+	// ip_ptr_names). learn-rdns-rules learns from those names (country is theirs), and locate gives
+	// a /24 whose names decode to one city a row of scope named in rdns_geo_layer. resolve-ips
+	// (sample-names) is the only writer; a /24 is sampled again every 180 days and rows older than
+	// 200 days are deleted.
+	`CREATE TABLE IF NOT EXISTS public.customer_name_networks (
+		prefix cidr PRIMARY KEY,
+		country text NOT NULL,
+		hosts inet[] NOT NULL,
+		names text[] NOT NULL,
+		sampled_at timestamptz NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS customer_name_networks_sampled_at_idx ON public.customer_name_networks (sampled_at)`,
 }
 
 // statements are the tables the ASN workflows write (Ensure). geo_eval,

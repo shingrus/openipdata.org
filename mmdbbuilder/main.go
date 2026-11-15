@@ -4,6 +4,7 @@
 //	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>
+//	mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>
 //	mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
@@ -17,6 +18,9 @@
 //
 // lookup with -in and -out reads an ip2geo MMDB for the IPs of a file (one per
 // line) and writes ip<TAB>country<TAB>city for each one that has a city. See lookup.go.
+//
+// gaps lists the IPv4 /24s of an ip2geo MMDB that have a country and no city, as lines
+// "<first /24> <count of consecutive /24s> <country>". See gaps.go.
 //
 // stamp rewrites only the metadata section of an MMDB: description.en becomes a
 // readable build line and description.openipdata the compact JSON of the meta
@@ -48,6 +52,8 @@ func main() {
 		runEval(os.Args[2:])
 	case "stamp":
 		runStamp(os.Args[2:])
+	case "gaps":
+		runGaps(os.Args[2:])
 	default:
 		usage()
 	}
@@ -58,6 +64,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
@@ -205,4 +212,22 @@ func runASN(args []string) {
 	if stats.duplicates > 0 {
 		fmt.Printf("%d prefixes announced by several ASNs; the lowest ASN kept each\n", stats.duplicates)
 	}
+}
+
+func runGaps(args []string) {
+	flags := flag.NewFlagSet("gaps", flag.ExitOnError)
+	db := flags.String("db", "", "ip2geo MMDB to read")
+	out := flags.String("out", "", "output file: lines <first /24> <count> <country>")
+	flags.Parse(args)
+
+	if *db == "" || *out == "" || flags.NArg() > 0 {
+		usage()
+	}
+	stats, err := writeGaps(*db, *out)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %s (%d /24s in %d runs; skipped %d split between countries, %d with a city in a part)\n",
+		*out, stats.networks, stats.runs, stats.split, stats.hasCity)
 }

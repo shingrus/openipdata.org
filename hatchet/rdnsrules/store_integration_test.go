@@ -620,3 +620,60 @@ func TestStoreRetiresSupersededLearnedRowsPostgres(t *testing.T) {
 	}
 	check("nonames.example", "candidate", 0)
 }
+
+// The learner also reads the names of the hosts of customer_name_networks sampled in the last
+// 200 days, with the country of the row (loadRouterCountries leaves it), each IP once; a missing
+// table means none.
+func TestReadDomainNamesCustomerNamesPostgres(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, _ := testDB(t, "rdnsrules_customer_it")
+	if err := schema.EnsureRDNS(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	// No table (sample-names has not run): no customer names, no error.
+	if _, err := conn.Exec(ctx, `DROP TABLE public.customer_name_networks`); err != nil {
+		t.Fatal(err)
+	}
+	if byDomain, _, err := readDomainNames(ctx, conn); err != nil || len(byDomain) != 0 {
+		t.Fatalf("no table: %v %v", byDomain, err)
+	}
+	if err := schema.EnsureRDNS(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE public.asn (asn integer PRIMARY KEY, country text, json text, seen_at timestamptz)`,
+		`INSERT INTO public.asn VALUES (1,'US','{"prefixes":{"ipv4":["5.6.0.0/16"]}}',now())`,
+		// Customer names are in customer_name_networks only; ip_ptr_names holds just the traced IP.
+		`INSERT INTO public.ip_ptr_names(ip,ptr,status) VALUES ('5.6.9.1','e.sea.cust.example.net','ok')`,
+		`INSERT INTO public.customer_name_networks (prefix, country, hosts, names, sampled_at) VALUES
+			('5.6.7.0/24','DE',ARRAY['5.6.7.1','5.6.7.50']::inet[], ARRAY['a.nyc.cust.example.net','b.nyc.cust.example.net'], now() - interval '190 days'),
+			('5.6.8.0/24','DE',ARRAY['5.6.8.1']::inet[], ARRAY['d.nyc.cust.example.net'], now() - interval '201 days'),
+			('5.6.9.0/24','FR',ARRAY['5.6.9.1']::inet[], ARRAY['e.sea.cust.example.net'], now())`,
+		// The traced IP 5.6.9.1 is also a sampled host: it counts once, as a traced name.
+		`INSERT INTO public.network_traces(prefix, target_kind, target, candidates, hop_ips, hops, traced_at) VALUES ('5.6.9.0/24','visitor','5.6.9.1', ARRAY['5.6.9.1'::inet], ARRAY[]::inet[], '[]', now())`,
+	} {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%v\n%s", err, stmt)
+		}
+	}
+	byDomain, _, err := readDomainNames(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loadRouterCountries(ctx, conn, byDomain); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{} // ip -> country
+	for _, n := range byDomain["example.net"] {
+		if _, dup := got[n.IP]; dup {
+			t.Errorf("%s twice", n.IP)
+		}
+		got[n.IP] = n.Country
+	}
+	// 5.6.7.1 and .50: the row's DE (not the announced US), 190 days old and still read; 5.6.8.1 is 201 days old;
+	// 5.6.9.1 is a traced name, so the announced prefix's US, not the row's FR.
+	if len(got) != 3 || got["5.6.7.1"] != "DE" || got["5.6.7.50"] != "DE" || got["5.6.9.1"] != "US" {
+		t.Errorf("names = %v", got)
+	}
+}

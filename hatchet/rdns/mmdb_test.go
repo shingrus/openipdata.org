@@ -238,7 +238,7 @@ func TestParseHopCities(t *testing.T) {
 }
 
 func TestFingerprintOf(t *testing.T) {
-	summary := [4]string{"1:a", "2:b", "3:c", "4:d"}
+	summary := [5]string{"1:a", "2:b", "3:c", "4:d", "5:e"}
 	if fingerprintOf(summary, "etag1") == fingerprintOf(summary, "etag2") {
 		t.Error("a new MMDB does not change the fingerprint")
 	}

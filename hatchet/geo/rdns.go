@@ -10,7 +10,15 @@ import (
 const (
 	rdnsTraced = "traced" // 65-rdns: /24s whose traceroute passed a router with a city in its name
 	rdnsWide   = "wide"   // 35-rdns-wide: announced prefixes (at most /16) that such /24s voted for
+	rdnsNamed  = "named"  // 67-rdns-names: gap /24s whose sampled customer PTR names decode to one city
 )
+
+// rdnsLayers are the layers written from public.rdns_geo_layer, by scope, in layer order.
+var rdnsLayers = []struct{ name, scope string }{
+	{RDNSWideLayer, rdnsWide},
+	{RDNSLayer, rdnsTraced},
+	{RDNSNamesLayer, rdnsNamed},
+}
 
 // rdnsQuery lists the rows of one scope. Read only.
 const rdnsQuery = `SELECT prefix::text, upper(btrim(country)), btrim(city)
@@ -25,7 +33,7 @@ const rdnsQuery = `SELECT prefix::text, upper(btrim(country)), btrim(city)
 // It returns ErrNoRows when the table does not exist yet or has no row of the
 // scope, which skips the layer for this run.
 func writeRDNSRows(ctx context.Context, dsn, scope string, w *csv.Writer) (int, error) {
-	if scope != rdnsTraced && scope != rdnsWide {
+	if scope != rdnsTraced && scope != rdnsWide && scope != rdnsNamed {
 		return 0, fmt.Errorf("unknown rDNS scope %q", scope)
 	}
 	conn, err := connect(ctx, dsn)

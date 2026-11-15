@@ -20,6 +20,7 @@ import (
 const (
 	scopeTraced = "traced" // a /24 that a trace located: layer 65-rdns
 	scopeWide   = "wide"   // an announced prefix (at most /16) that traced /24s voted for: layer 35-rdns-wide
+	// scopeNamed (named.go): a gap /24 whose sampled customer names decode to one city: layer 67-rdns-names
 )
 
 // How a row of rdns_geo_layer was found (its method column).
@@ -137,12 +138,25 @@ type LocateOutput struct {
 
 	Kinds map[string]*KindStats `json:"kinds"`
 
+	// The sampled customer names (sample-names, named.go): /24s read with a name, names read,
+	// names that gave a city, /24s given a row of scope named, and /24s skipped for a tie or
+	// because the city's country is not the row's.
+	CustomerNetworks int `json:"customer_networks"`
+	CustomerNames    int `json:"customer_names"`
+	CustomerMatched  int `json:"customer_matched"`
+	Named            int `json:"named"`
+	NamedTies        int `json:"named_ties"`
+	NamedForeign     int `json:"named_foreign"`
+
 	Previous int `json:"previous"` // rows before the replace
 	// PreviousVolatile and StoredVolatile count the rows that are recomputed every rebuild
 	// (candidate_rule traced rows and all wide rows) before and after the replace. They are
-	// not guarded by the shrink check, so a big swing shows only here.
+	// not guarded by the shrink check, so a big swing shows only here. The named rows are
+	// counted apart (PreviousNamed, StoredNamed): they are volatile too, and not in the other two.
 	PreviousVolatile int `json:"previous_volatile"`
 	StoredVolatile   int `json:"stored_volatile"`
+	PreviousNamed    int `json:"previous_named"`
+	StoredNamed      int `json:"stored_named"`
 	Stored           int `json:"stored"`
 
 	// VisitorsCut counts the visitor IPs deleted after the commit: those of the /24s that are located.
@@ -824,9 +838,18 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 	if err != nil {
 		return out, err
 	}
+	customers, err := readCustomerNets(ctx, conn, customerWindow)
+	if err != nil {
+		return out, err
+	}
 	backfilled := out.Backfilled
 	rows, out := locate(traces, ptrs, rules, origin, res.Hops, previous, cityRules)
 	out.Backfilled = backfilled
+	// The sampled customer names: rows of their own scope, beside the traced and wide rows.
+	namedRows, ns := locateNamed(customers, rules, indexCityRules(cityRules))
+	rows = append(rows, namedRows...)
+	out.CustomerNetworks, out.CustomerNames, out.CustomerMatched = ns.Networks, ns.Names, ns.Matched
+	out.Named, out.NamedTies, out.NamedForeign = ns.Rows, ns.Ties, ns.Foreign
 	out.MMDB, out.MMDBReason, out.MMDBDownloaded = res.Status, res.Reason, res.Downloaded
 	if res.Status == statusUsed {
 		out.MMDBKey = ref.Key
@@ -847,6 +870,7 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 	var rs replaceStats
 	rs, err = replaceLayer(ctx, conn, rows, force)
 	out.Previous, out.PreviousVolatile, out.StoredVolatile = rs.Previous, rs.PreviousVolatile, rs.StoredVolatile
+	out.PreviousNamed, out.StoredNamed = rs.PreviousNamed, rs.StoredNamed
 	if err != nil {
 		return out, err
 	}
@@ -876,6 +900,8 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		p.log("locate: MMDB %s (%s): %d router IPs looked up, %d /24s voted by an MMDB hop city; of %d rule-matched /24s whose router has an MMDB city, %d agree",
 			key, how, out.MMDBLookups, out.MMDBVotes, out.MMDBCompared, out.MMDBAgreed)
 	}
+	p.log("locate: sampled customer names: %d /24s with a name, %d names, %d decoded; %d named rows (%d before; %d ties, %d in another country)",
+		out.CustomerNetworks, out.CustomerNames, out.CustomerMatched, out.StoredNamed, out.PreviousNamed, out.NamedTies, out.NamedForeign)
 	p.log("locate: %d traces in %d /24s, %d names, %d rules (%d skipped, %d invalid), %d candidate rules (%d skipped, %d invalid); %d traced rows (%d carried over, %d from candidate rules), %d wide rows (%d votes, %d candidate votes, %d candidate-backed rows, %d ties); candidate/legacy %d agreed of %d compared; %d rows before; volatile rows (candidate traced, wide) %d before, %d now; %d visitor IPs deleted",
 		out.Traces, out.Networks, out.Names, out.Rules, out.RulesSkipped, out.RulesInvalid, out.CandidateRules, out.CandidateRulesSkipped, out.CandidateRulesInvalid,
 		out.Traced+out.Carried+out.CandidateTraced, out.Carried, out.CandidateTraced, out.Wide, out.Votes, out.CandidateVotes, out.CandidateWide, out.WideTies,
@@ -1008,9 +1034,9 @@ func readNames(ctx context.Context, conn *pgx.Conn, ips []netip.Addr) (map[netip
 	return names, nil
 }
 
-// replaceStats are the row counts around a replace: all rows before, and the volatile ones
-// before and after.
-type replaceStats struct{ Previous, PreviousVolatile, StoredVolatile int }
+// replaceStats are the row counts around a replace: all rows before, the volatile ones
+// (candidate traced and wide rows) before and after, and the named rows before and after.
+type replaceStats struct{ Previous, PreviousVolatile, StoredVolatile, PreviousNamed, StoredNamed int }
 
 // replaceLayer swaps the contents of public.rdns_geo_layer for rows in one
 // transaction, so readers see either the old or the new rows. It returns the number of rows
@@ -1028,18 +1054,21 @@ func replaceLayer(ctx context.Context, conn *pgx.Conn, rows []geoRow, force bool
 	}
 	var rs replaceStats
 	var previousSticky int
-	if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE scope = 'traced' AND method IS DISTINCT FROM '`+methodCandidate+`')
-		FROM public.rdns_geo_layer`).Scan(&rs.Previous, &previousSticky); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE scope = 'traced' AND method IS DISTINCT FROM '`+methodCandidate+`'),
+			count(*) FILTER (WHERE scope = '`+scopeNamed+`')
+		FROM public.rdns_geo_layer`).Scan(&rs.Previous, &previousSticky, &rs.PreviousNamed); err != nil {
 		return replaceStats{}, dbError("replace rdns_geo_layer", err)
 	}
-	rs.PreviousVolatile = rs.Previous - previousSticky
+	rs.PreviousVolatile = rs.Previous - previousSticky - rs.PreviousNamed
 	newSticky := 0
 	for _, r := range rows {
 		if r.isSticky() {
 			newSticky++
+		} else if r.Scope == scopeNamed {
+			rs.StoredNamed++
 		}
 	}
-	rs.StoredVolatile = len(rows) - newSticky
+	rs.StoredVolatile = len(rows) - newSticky - rs.StoredNamed
 	if !force {
 		if err := checkShrink(previousSticky, newSticky); err != nil {
 			return rs, err

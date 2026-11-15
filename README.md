@@ -44,7 +44,7 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 | `public.geo_ix_pdb` | `sync-peeringdb` |
 | `public.asn_domain` | `update-asn-domains` |
 | `public.geo_eval` | `build-geo-data` |
-| `public.network_traces`, `public.traced_networks`, `public.ip_ptr_names`, `public.rdns_geo_layer` | `resolve-ips` |
+| `public.network_traces`, `public.traced_networks`, `public.ip_ptr_names`, `public.customer_name_networks`, `public.rdns_geo_layer` | `resolve-ips` |
 | `public.rdns_city_rules`, `public.rdns_llm_answers` | `learn-rdns-rules` |
 
 The three ASN workflows share one concurrency limit, so only one runs at a time. Every morning (UTC):
@@ -390,7 +390,7 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   the rows per ASN and address family by addresses (IPv4) or /64s (IPv6). When one city has at least 80% of the
   weight of all its attributed rows (rows without a city count in the total), comes from at least 2 rows, and those rows cover at least half of the ASN's announced addresses in that family, every announced prefix of the ASN in that family gets it (source
   `asn:<number>`). The holdout build recomputes the layer from the kept feeds, so held-out feeds do not leak into it.
-- The optional layers are `35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois` and `65-rdns`. One that is not in the build this run (no rows,
+- The optional layers are `35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.
@@ -535,6 +535,26 @@ patterns only (never a name or an IP) and stores each checked answer as the doma
 contradicts are overridden only when a second model agrees. Questions and verdicts are in `public.rdns_llm_answers`;
 API trouble or an used-up credit limit never fails the run.
 
+### Customer names in the gap (`sample-names`)
+
+About 69% of IPv4 has a country but no city (the gap). The PTR names of customer addresses often carry
+the customer's own city (`...nycmny.fios.verizon.net`). The task `sample-names` (after `resolve-names`,
+before `locate`) takes the current published ip2geo MMDB the way `locate` does (R2, ETag, saved copy) and runs
+`mmdbbuilder gaps` on it when its ETag changed (`gaps.txt` and its ETag in the rdns dir). It walks a fixed shuffled
+order of all 2^24 /24 indexes from a saved cursor (`sample-state.json`), takes the next 2000 /24s that are in the gap,
+resolves the `.1` and two random hosts of each with the `resolve-names` resolver (nothing goes to `public.ip_ptr_names`)
+and records the /24s that have at least one name in `public.customer_name_networks` (`prefix`, `country`, `hosts` and
+`names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
+pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
+problem never fails the task; with no usable MMDB it reports `skipped`.
+`learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
+smallest hash of the IP; router names win) with the country of the row. `locate` tries the legacy rules, then the
+candidate rules, on those names: a /24 gets the city most of its names decode to (a tie gives none; the city's
+country must be the row's) as a row of scope `named` in `public.rdns_geo_layer`, which `build-geo-data` writes as
+layer `67-rdns-names` (same-country). Named rows are recomputed every rebuild: never sticky, carried, counted by the
+shrink guard (they show in `previous_named`/`stored_named`), voting for a wide row, or marking a /24 located. The
+`locate` fingerprint holds only the UTC day of the newest sample.
+
 ### PTR failures in `resolve-ips`
 
 `resolve-names` looks up every public answering hop of the newest traces, not only the candidates;
@@ -575,6 +595,7 @@ mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
+mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city, as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 

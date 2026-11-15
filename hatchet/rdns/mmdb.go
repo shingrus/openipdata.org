@@ -60,10 +60,10 @@ const (
 // skipLogFormat logs the reason and the detail of a skipped fallback; the others
 // are for a run that falls back on the saved copy.
 const (
-	skipLogFormat      = "locate: WARNING MMDB hop fallback skipped (%s): %v"
-	statLogFormat      = "locate: WARNING MMDB stat in R2 failed: %v"
-	savedNoR2LogFormat = "locate: WARNING no usable MMDB in R2 (%s); using the saved copy"
-	savedDownLogFormat = "locate: WARNING MMDB download failed: %v; using the saved copy"
+	skipLogFormat      = "%s: WARNING MMDB skipped (%s): %v"
+	statLogFormat      = "%s: WARNING MMDB stat in R2 failed: %v"
+	savedNoR2LogFormat = "%s: WARNING no usable MMDB in R2 (%s); using the saved copy"
+	savedDownLogFormat = "%s: WARNING MMDB download failed: %v; using the saved copy"
 )
 
 // objectStore is the part of publish.R2 that locate uses. Tests replace it.
@@ -124,11 +124,22 @@ func (p *Pipeline) objects() (objectStore, string) {
 	return r2, ""
 }
 
+// The tasks that read the MMDB (the names in their log lines).
+const (
+	whoLocate = "locate"
+	whoSample = "sample-names"
+)
+
 // statMMDB looks for the MMDB of today (UTC), else of yesterday, in R2, reading only
 // its headers. It never fails: a reference with a Reason means R2 gave no MMDB this
 // run; it then is the saved copy when there is one with its ETag (Saved), else none.
 func (p *Pipeline) statMMDB(ctx context.Context) mmdbRef {
-	ref := p.statR2(ctx)
+	return p.statMMDBFor(ctx, whoLocate)
+}
+
+// statMMDBFor is statMMDB for the task named who (only for its log lines).
+func (p *Pipeline) statMMDBFor(ctx context.Context, who string) mmdbRef {
+	ref := p.statR2(ctx, who)
 	if ref.Reason != "" {
 		if etag := savedMMDBETag(p.savedPath()); etag != "" {
 			ref.ETag, ref.Saved = etag, true
@@ -138,7 +149,7 @@ func (p *Pipeline) statMMDB(ctx context.Context) mmdbRef {
 }
 
 // statR2 is statMMDB's look at R2.
-func (p *Pipeline) statR2(ctx context.Context) mmdbRef {
+func (p *Pipeline) statR2(ctx context.Context, who string) mmdbRef {
 	store, reason := p.objects()
 	if store == nil {
 		return mmdbRef{Reason: reason}
@@ -151,7 +162,7 @@ func (p *Pipeline) statR2(ctx context.Context) mmdbRef {
 			continue
 		}
 		if err != nil {
-			p.log(statLogFormat, scrubIPs(err.Error()))
+			p.log(statLogFormat, who, scrubIPs(err.Error()))
 			return mmdbRef{Reason: reasonStat}
 		}
 		return mmdbRef{store: store, Key: key, ETag: info.ETag}
@@ -299,38 +310,48 @@ func skipped(reason string) mmdbResult {
 	return mmdbResult{Status: statusSkipped, Reason: reason, ETag: noMMDB}
 }
 
-// mmdbHops is the fallback step of Locate: the cities of ips are read from the MMDB
-// of ref. Normally the saved copy is first brought up to date from R2. When R2 gave
-// no object (ref.Saved) or the download fails, the saved copy that is there is read
-// instead, so an outage changes nothing. Any other problem, or no saved copy, makes the
-// fallback skipped. Problems are logged and returned as fixed reasons, never as errors:
-// locate goes on without the fallback.
-func (p *Pipeline) mmdbHops(ctx context.Context, ref mmdbRef, ips []netip.Addr) mmdbResult {
-	if p.lookup == nil && p.MMDBBuilder == "" {
-		p.log(skipLogFormat, reasonNoBuilder, "no path")
-		return skipped(reasonNoBuilder)
-	}
+// useMMDB makes the MMDB of ref ready to read and returns its path. Normally the saved copy
+// is first brought up to date from R2. When R2 gave no object (ref.Saved) or the download
+// fails, the saved copy that is there is read instead, so an outage changes nothing. With
+// no usable copy the result is skipped (statusSkipped, a fixed reason). Problems are logged
+// (as the task who) and returned as fixed reasons, never as errors.
+func (p *Pipeline) useMMDB(ctx context.Context, ref mmdbRef, who string) (string, mmdbResult) {
 	res := mmdbResult{Status: statusUsed, ETag: ref.ETag}
 	path := p.savedPath()
 	if ref.Saved {
-		p.log(savedNoR2LogFormat, ref.Reason)
+		p.log(savedNoR2LogFormat, who, ref.Reason)
 		res.Status, res.Reason = statusSavedCopy, ref.Reason
-	} else {
-		var err error
-		if path, res.Downloaded, err = p.fetchMMDB(ctx, ref); err != nil {
-			saved := savedMMDBETag(p.savedPath())
-			if saved == "" {
-				p.log(skipLogFormat, reasonDownload, scrubIPs(err.Error()))
-				return skipped(reasonDownload)
-			}
-			p.log(savedDownLogFormat, scrubIPs(err.Error()))
-			path = p.savedPath()
-			res.Status, res.Reason, res.ETag = statusSavedCopy, reasonDownload, saved
+		return path, res
+	}
+	var err error
+	if path, res.Downloaded, err = p.fetchMMDB(ctx, ref); err != nil {
+		saved := savedMMDBETag(p.savedPath())
+		if saved == "" {
+			p.log(skipLogFormat, who, reasonDownload, scrubIPs(err.Error()))
+			return "", skipped(reasonDownload)
 		}
+		p.log(savedDownLogFormat, who, scrubIPs(err.Error()))
+		path = p.savedPath()
+		res.Status, res.Reason, res.ETag = statusSavedCopy, reasonDownload, saved
+	}
+	return path, res
+}
+
+// mmdbHops is the fallback step of Locate: the cities of ips are read from the MMDB
+// of ref (see useMMDB). Any other problem makes the fallback skipped. Problems are logged
+// and returned as fixed reasons, never as errors: locate goes on without the fallback.
+func (p *Pipeline) mmdbHops(ctx context.Context, ref mmdbRef, ips []netip.Addr) mmdbResult {
+	if p.lookup == nil && p.MMDBBuilder == "" {
+		p.log(skipLogFormat, whoLocate, reasonNoBuilder, "no path")
+		return skipped(reasonNoBuilder)
+	}
+	path, res := p.useMMDB(ctx, ref, whoLocate)
+	if res.Status == statusSkipped {
+		return res
 	}
 	hops, err := p.lookupHops(ctx, path, ips)
 	if err != nil {
-		p.log(skipLogFormat, reasonLookup, scrubIPs(err.Error()))
+		p.log(skipLogFormat, whoLocate, reasonLookup, scrubIPs(err.Error()))
 		// The copy may be what is wrong (mmdbbuilder ran and said so): fetch it again next time.
 		var exit *exec.ExitError
 		if errors.As(err, &exit) && ctx.Err() == nil {

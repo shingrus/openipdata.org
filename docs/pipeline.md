@@ -30,7 +30,7 @@ flowchart LR
   visitors[visitors] --> t_vis[(visitor_ips)]
   t_vis --> rd[resolve-ips<br/>every 30 min]
   t_asn --> rd
-  rd --> t_rd[(network_traces<br/>ip_ptr_names<br/>rdns_geo_layer)]
+  rd --> t_rd[(network_traces<br/>ip_ptr_names<br/>customer_name_networks<br/>rdns_geo_layer)]
   t_rd --> geo
   places[OurAirports, UN/LOCODE<br/>GeoNames] --> learn[learn-rdns-rules<br/>daily 05:00]
   llm[OpenRouter<br/>name patterns only] --> learn
@@ -67,7 +67,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `build-asn-data` | `sync-source` → `ingest` → `build-mmdb` + `export-sqlite` → `publish` | `public.asn` (incl. `seen_at`) | `ip2asn-openipdata.mmdb`, `asn.sqlite3` |
 | `sync-geofeeds` | `rdap-lookups` and `probe-domains` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `60-whois` and `70-geofeeds` to private R2 | nothing |
 | `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `ip2geo-openipdata.mmdb` |
-| `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink of the sticky traced rows; candidate and wide rows are only counted) | — |
+| `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `sample-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.customer_name_networks`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink of the sticky traced rows; candidate, wide and named rows are only counted) | — |
 | `learn-rdns-rules` | `learn` → `propose-codes` | `public.rdns_city_rules` (ranks 1-3 by `learn`, atomic; rank 4 and scoped overrides by `propose-codes`), `public.rdns_llm_answers` | — |
 
 - **`sync-geofeeds`**: finds every geofeed URL (whois, IRR, RDAP, CAIDA, built-in list, ASN websites), fetches and checks each feed, drops rows that fail the ownership check, exports ~6.4M rows (36 MB gz). `discover` also builds the whois geoloc layer.
@@ -93,14 +93,15 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `discover` | reads the whois and IRR dumps, saved RDAP results, domain-found feeds, `feeds.txt` and CAIDA's lists; adds every URL to `public.geofeed_urls`; writes the whois blocks that link feeds; builds `60-whois.csv.gz` from `geoloc:` |
 | | `check-feeds` | fetches every due feed, keeps a checked copy of each working one, writes its status to `public.geofeed_urls`, writes the URL lists |
 | | `export-rows` | writes the rows of working feeds that pass the ownership check to `70-geofeeds.csv.gz`; uploads both layers to R2 behind their row-drop gates |
-| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `65-rdns` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2, then writes `38-asn-geofeed` from the geofeed layer |
+| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `67-rdns-names` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2, then writes `38-asn-geofeed` from the geofeed layer |
 | | `build-mmdb` | runs `mmdbbuilder geo` on the layers in name order with the rules table → `ip2geo-openipdata-<date>.mmdb` |
 | | `evaluate` | builds the holdout MMDB, scores both with `mmdbbuilder eval` (DB-IP, MaxMind GeoLite2, Atlas probes, GeoNames to place our cities; holdout for ours only), stores a row in `public.geo_eval`, then stamps the scores into the MMDB's metadata (`description.openipdata`; a failure never blocks publish) |
 | | `publish` | applies the 2-point gate, uploads to R2 and the GitHub release, marks the row published, pings the health check |
 | `resolve-ips` | `pick-networks` | visitor /24s (seen in the last 30 days, no trace in the last 60), most visitor IPs first, up to 1,000 a run; writes them to a batch file on the VM |
 | | `trace` | one `scamper` run (Paris ICMP traceroute) to three hosts per /24: the newest visitor IP, `.1`, a random host; stores the full path, keeps the 2 newest traces per /24 and target kind |
 | | `resolve-names` | PTR of every target and of every public answering hop (`hop_ips`); fresh names wait 30 days, not found 7; errors wait 1, 2, then 7 days and preserve stored answers; up to 500 due failures remain eligible beyond the normal 7-day trace window; counts timeouts, SERVFAIL and other failures separately |
-| | `locate` | existing rules and carried traced rows first; then learned candidate rules (target name first, then router hops; ranks in order), which give a wide vote and a non-sticky `candidate_rule` traced row that never marks the /24 located; MMDB hop fallback last; one vote per /24; replaces `public.rdns_geo_layer` |
+| | `sample-names` | the gap = /24s with a country and no city in the published MMDB (`mmdbbuilder gaps`, made again only when its ETag changes); a fixed shuffled walk over all 2^24 /24s (cursor in `sample-state.json`) takes up to 2000 gap /24s per run, `.1` plus 2 random hosts each, PTR with the `resolve-names` resolver (not stored in `ip_ptr_names`); /24s with a name go to `public.customer_name_networks`; at most one run per 25 minutes, one cycle per 180 days; DNS problems never fail it, no MMDB = `skipped` |
+| | `locate` | existing rules and carried traced rows first; then learned candidate rules (target name first, then router hops; ranks in order), which give a wide vote and a non-sticky `candidate_rule` traced row that never marks the /24 located; MMDB hop fallback last; one vote per /24; a gap /24 whose sampled customer names decode to one city (majority; a tie or another country gives none) gets a volatile row of scope `named`; replaces `public.rdns_geo_layer` |
 | `learn-rdns-rules` | `learn` | learns up to 3 rules (ranks) per domain from target and hop names, each with at least 3 distinct named IPs on the names better ranks do not decode, at least 2 distinct token values, stop list and GeoNames size limits, domestic country gate; retires learned rows it no longer reproduces; materializes token mappings in Postgres; rejection input withdraws current versions without downloads |
 | | `propose-codes` | asks an LLM (OpenRouter; only name patterns, never names or IPs) for the city code of every domain's names: 5+ hosts one domain a request, 1-4 hosts packed by country; checked answers become the rank-4 rule (GeoNames-resolved cities); learned rules it contradicts go to a second model and are overridden only when it agrees within 100 km; skipped without `OPENROUTER_API_KEY` and with `reject_domains`; API trouble never fails it (credit stop, request cap of 400) |
 
@@ -147,7 +148,8 @@ Each table has exactly one writer; data between workflows goes through these tab
 | `public.ip_ptr_names` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
 | `public.rdns_city_rules` | `learn-rdns-rules` | `resolve-ips` (candidate rules, ranks 1-4: wide votes and non-sticky traced rows) |
 | `public.rdns_llm_answers` | `learn-rdns-rules` | `learn-rdns-rules` (what was asked, and the verdict) |
-| `public.rdns_geo_layer` | `resolve-ips` | `build-geo-data` (layers `35-rdns-wide`, `65-rdns`) |
+| `public.customer_name_networks` | `resolve-ips` | `learn-rdns-rules` (the names of the sampled hosts, capped per domain), `resolve-ips` (`locate`) |
+| `public.rdns_geo_layer` | `resolve-ips` | `build-geo-data` (layers `35-rdns-wide`, `65-rdns`, `67-rdns-names`) |
 | R2 private `internal/layers/60-whois.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/layers/70-geofeeds.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | `public.generated_rules` | written outside this repo | `resolve-ips` `locate` (read only) |
@@ -170,10 +172,11 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | 50 | `50-ix.csv.gz` | `public.geo_ix_pdb`: exchange peering LANs | city | — |
 | 60 | `60-whois.csv.gz` | whois `geoloc:`, most populous place within 25 km (measured 85.8% within 100 km) | city | within-first |
 | 65 | `65-rdns.csv.gz` | `public.rdns_geo_layer`, scope `traced`: a /24 whose traceroute passed a router with a city in its name | city | same-country (only refines) |
+| 67 | `67-rdns-names.csv.gz` | `public.rdns_geo_layer`, scope `named`: a gap /24 whose sampled customer PTR names decode to one city in the row's country | city | same-country (only refines) |
 | 70 | `70-geofeeds.csv.gz` | operator geofeeds | city | within-first |
 
 - `38-asn-geofeed` is computed in `download` from the geofeed layer and `public.asn` (read once, saved as `geo/asn-prefixes.csv.gz`); the holdout build recomputes it from the kept feeds, so held-out feeds do not leak into it.
-- Optional layers (35, 38, 40, 50, 60, 65) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
+- Optional layers (35, 38, 40, 50, 60, 65, 67) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
 - `35-rdns-wide` sits right after `30-pdb` and `65-rdns` between whois and geofeeds, so every measured layer overwrites the greedy wide rows. `35-rdns-wide` is kept only if `holdout_city_pct` and the Atlas scores do not drop.
 
 ## Evaluation and publish gate

@@ -14,10 +14,16 @@
 //	              the schedule public.traced_networks; deletes visitor IPs it no longer needs
 //	ResolveNames  PTR names of the targets and every public answering hop (and the old names of located
 //	              /24s) -> public.ip_ptr_names
+//	SampleNames   customer PTR names of random /24s of the gap (country, no city, in our published
+//	              ip2geo MMDB): three hosts each; the /24s with a name go (hosts and
+//	              names) into public.customer_name_networks, not ip_ptr_names (see sample.go)
 //	Locate        rules + names + announced prefixes (+ router hop cities from our own
 //	              published ip2geo MMDB) -> public.rdns_geo_layer, which keeps the rows of
 //	              located /24s that no trace locates again (skipped while nothing it reads
 //	              has changed)
+//
+// The sampled customer names give a gap /24 whose names decode to one city a row of scope named
+// (layer 67-rdns-names, see named.go).
 //
 // A /24 that no legacy rule matches is tried against the learned candidate rules (target name,
 // then router hops), which give it a wide vote and a non-sticky candidate_rule traced row.
@@ -61,12 +67,14 @@ type Pipeline struct {
 	R2          string
 
 	// Tests only.
-	store    objectStore
-	lookup   lookupFunc
-	scamper  scamperFunc
-	intn     func(n int) int
-	resolver *ptrResolver
-	now      func() time.Time
+	store     objectStore
+	lookup    lookupFunc
+	scamper   scamperFunc
+	intn      func(n int) int
+	resolver  *ptrResolver
+	gaps      func(ctx context.Context, db, outFile string) error
+	walkSteps int // sample-names: indexes per run, instead of sampleMaxSteps (when > 0)
+	now       func() time.Time
 }
 
 func (p *Pipeline) dir() string { return filepath.Join(p.DataDir, "rdns") }

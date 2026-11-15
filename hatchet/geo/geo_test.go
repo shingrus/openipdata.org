@@ -243,8 +243,8 @@ func TestHostingQuery(t *testing.T) {
 // The layer names carry the order, in steps of 10, and the R2 layers are named as
 // sync-geofeeds uploads them.
 func TestLayerNames(t *testing.T) {
-	names := []string{RIRLayer, IPverseLayer, PDBLayer, RDNSWideLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, FeedsLayer}
-	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "30-pdb.csv.gz", "35-rdns-wide.csv.gz", "38-asn-geofeed.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "65-rdns.csv.gz", "70-geofeeds.csv.gz"}
+	names := []string{RIRLayer, IPverseLayer, PDBLayer, RDNSWideLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer, FeedsLayer}
+	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "30-pdb.csv.gz", "35-rdns-wide.csv.gz", "38-asn-geofeed.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "65-rdns.csv.gz", "67-rdns-names.csv.gz", "70-geofeeds.csv.gz"}
 	if !reflect.DeepEqual(names, want) || !sort.StringsAreSorted(names) {
 		t.Errorf("layer names = %v", names)
 	}
@@ -498,7 +498,7 @@ func TestSourceSkippedLayersJSON(t *testing.T) {
 // with a warning, no file), have no minimum, and both only refine a country.
 func TestDownloadRDNSLayers(t *testing.T) {
 	layers := t.TempDir()
-	rows := map[string]int{rdnsWide: 3, rdnsTraced: 2}
+	rows := map[string]int{rdnsWide: 3, rdnsTraced: 2, rdnsNamed: 1}
 	var scopes []string
 	write := func(_ context.Context, scope string, w *csv.Writer) (int, error) {
 		scopes = append(scopes, scope)
@@ -514,7 +514,7 @@ func TestDownloadRDNSLayers(t *testing.T) {
 		var logs []string
 		p := &Pipeline{writeRDNS: write, Progress: func(s string) { logs = append(logs, s) }}
 		src := Source{Rows: map[string]int{}}
-		for _, l := range []struct{ name, scope string }{{RDNSWideLayer, rdnsWide}, {RDNSLayer, rdnsTraced}} {
+		for _, l := range rdnsLayers {
 			err := p.downloadOptional(context.Background(), layers, &src, l.name, 0, "rDNS "+l.scope+" rows", "hint",
 				func(ctx context.Context, w *csv.Writer) (int, error) { return p.writeRDNS(ctx, l.scope, w) })
 			if err != nil {
@@ -524,8 +524,14 @@ func TestDownloadRDNSLayers(t *testing.T) {
 		return src, logs
 	}
 	src, _ := run()
-	if len(src.SkippedLayers) != 0 || src.Rows[RDNSWideLayer] != 3 || src.Rows[RDNSLayer] != 2 {
-		t.Fatalf("both scopes: %+v", src)
+	if len(src.SkippedLayers) != 0 || src.Rows[RDNSWideLayer] != 3 || src.Rows[RDNSLayer] != 2 || src.Rows[RDNSNamesLayer] != 1 {
+		t.Fatalf("all scopes: %+v", src)
+	}
+	if got := readGzip(t, filepath.Join(layers, RDNSNamesLayer)); got != "prefix,country,region,city,source\n10.0.0.0/24,DE,,Berlin,\n" {
+		t.Errorf("%s = %q", RDNSNamesLayer, got)
+	}
+	if got, want := fmt.Sprint(scopes), "[wide traced named]"; got != want {
+		t.Errorf("scopes asked = %s, want %s", got, want)
 	}
 	if got := readGzip(t, filepath.Join(layers, RDNSLayer)); got != "prefix,country,region,city,source\n10.0.0.0/24,DE,,Berlin,\n10.1.0.0/24,DE,,Berlin,\n" {
 		t.Errorf("%s = %q", RDNSLayer, got)
@@ -534,7 +540,7 @@ func TestDownloadRDNSLayers(t *testing.T) {
 	rows[rdnsWide] = 0
 	os.Remove(filepath.Join(layers, RDNSWideLayer))
 	src, logs := run()
-	if !reflect.DeepEqual(src.SkippedLayers, []string{RDNSWideLayer}) || src.Rows[RDNSLayer] != 2 || len(logs) != 2 || !strings.Contains(logs[0], "WARNING") {
+	if !reflect.DeepEqual(src.SkippedLayers, []string{RDNSWideLayer}) || src.Rows[RDNSLayer] != 2 || len(logs) != 3 || !strings.Contains(logs[0], "WARNING") {
 		t.Fatalf("no wide rows: %+v %v", src, logs)
 	}
 	if _, err := os.Stat(filepath.Join(layers, RDNSWideLayer)); !os.IsNotExist(err) {
@@ -560,7 +566,7 @@ func TestRDNSQueryReadsOneScope(t *testing.T) {
 
 // Both rDNS layers only refine: they never change a country.
 func TestRDNSLayerRules(t *testing.T) {
-	for _, name := range []string{RDNSWideLayer, RDNSLayer} {
+	for _, name := range []string{RDNSWideLayer, RDNSLayer, RDNSNamesLayer} {
 		if layerRules[name] != "-same-country" || !slices.Contains(optionalLayers, name) {
 			t.Errorf("%s: rule %q, optional %v", name, layerRules[name], slices.Contains(optionalLayers, name))
 		}

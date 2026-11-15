@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -502,5 +504,92 @@ func TestLearnerInputIncludesTargetsAndHops(t *testing.T) {
 	}
 	if !strings.Contains(inputQuery, "SELECT DISTINCT host(n.ip)") {
 		t.Error("an IP must count once")
+	}
+}
+
+// A sampled customer name keeps the country of its /24 (our MMDB's), and each IP counts once.
+func TestCollectNameAndCountries(t *testing.T) {
+	byDomain := map[string][]Name{}
+	seen := map[string]bool{}
+	skipped := 0
+	collectName(byDomain, seen, &skipped, "5.6.7.1", "h1.nyc.cust.example.net", "")      // traced name: country later
+	collectName(byDomain, seen, &skipped, "5.6.7.1", "h1.nyc.cust.example.net", "de")    // same IP again: ignored
+	collectName(byDomain, seen, &skipped, "5.6.7.50", "h2.nyc.cust.example.net", " de ") // customer name
+	collectName(byDomain, seen, &skipped, "10.0.0.1", "h3.nyc.cust.example.net", "DE")   // not public
+	collectName(byDomain, seen, &skipped, "5.6.7.60", "h_4.nyc.cust.example.net", "DE")  // label outside [a-z0-9-]
+	collectName(byDomain, seen, &skipped, "5.6.7.70", "localhost", "DE")                 // no registered domain
+	names := byDomain["example.net"]
+	if len(byDomain) != 1 || len(names) != 2 || skipped != 1 {
+		t.Fatalf("names = %+v, skipped %d", byDomain, skipped)
+	}
+	if names[0].Country != "" || names[1].Country != "DE" {
+		t.Errorf("countries = %q, %q", names[0].Country, names[1].Country)
+	}
+	var byBits [33]map[uint32]string
+	byBits[16] = map[uint32]string{5<<24 | 6<<16: "US"}
+	applyCountries(byDomain, byBits)
+	names = byDomain["example.net"]
+	if names[0].Country != "US" || names[1].Country != "DE" {
+		t.Errorf("after the announced prefixes: %q, %q (the customer name must keep DE)", names[0].Country, names[1].Country)
+	}
+}
+
+// The customer names count in the domestic gate with the country they carry.
+func TestCustomerNamesCountInDomesticGate(t *testing.T) {
+	var names []Name
+	for i := 0; i < 8; i++ {
+		names = append(names, Name{IP: "5.6.7.1", PTR: "x", Country: "DE"})
+	}
+	names = append(names, Name{IP: "5.6.7.2", PTR: "y", Country: "US"}, Name{IP: "5.6.7.3", PTR: "z", Country: "US"})
+	if !isDomestic(names) {
+		t.Error("80% of the known countries in one country is domestic")
+	}
+}
+
+// At most customerNamesPerDomain customer names stay per domain: the smallest hashes of the IP,
+// whatever the order the rows come in; a router name already seen for the IP wins.
+func TestCollectCustomerKeepsSmallestHashes(t *testing.T) {
+	var ips []string
+	for i := 1; i <= 200; i++ {
+		ips = append(ips, fmt.Sprintf("5.6.%d.%d", i/200+7, i%200+1))
+	}
+	collect := func(order []string) []string {
+		heaps := map[string]*customerHeap{}
+		seen := map[string]bool{ips[0]: true} // a router name has the first IP
+		skipped := 0
+		for _, ip := range order {
+			collectCustomer(heaps, seen, &skipped, 50, ip, "h.nyc.cust.example.net", "de")
+		}
+		var kept []string
+		for _, c := range *heaps["example.net"] {
+			if c.Country != "DE" || c.hash != ipHash(c.IP) {
+				t.Fatalf("name %+v", c)
+			}
+			kept = append(kept, c.IP)
+		}
+		sort.Strings(kept)
+		return kept
+	}
+	forward := collect(ips)
+	reversed := make([]string, len(ips))
+	for i, ip := range ips {
+		reversed[len(ips)-1-i] = ip
+	}
+	if len(forward) != 50 || !slices.Equal(forward, collect(reversed)) {
+		t.Fatalf("kept %d, order dependent", len(forward))
+	}
+	if slices.Contains(forward, ips[0]) {
+		t.Error("an IP seen as a router name was taken as a customer")
+	}
+	// They are the 50 smallest hashes of the others.
+	rest := slices.Clone(ips[1:])
+	sort.Slice(rest, func(i, j int) bool { return ipHash(rest[i]) < ipHash(rest[j]) })
+	want := slices.Clone(rest[:50])
+	sort.Strings(want)
+	if !slices.Equal(forward, want) {
+		t.Errorf("kept the wrong names")
+	}
+	if ipHash("a") != 0xe40c292c || ipHash("") != 2166136261 {
+		t.Error("not FNV-1a")
 	}
 }

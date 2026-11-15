@@ -15,7 +15,7 @@
 // public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn;
 // resolve-ips reads public.generated_rules, public.rdns_city_rules and public.asn, reads and deletes rows of
 // public.visitor_ips (the websites insert them), and writes public.network_traces,
-// public.traced_networks, public.ip_ptr_names and public.rdns_geo_layer;
+// public.traced_networks, public.ip_ptr_names, public.customer_name_networks and public.rdns_geo_layer;
 // learn-rdns-rules reads the names of every traced IP (targets, candidates, hops) and ASNs, and writes public.rdns_city_rules
 // and public.rdns_llm_answers),
 // OPENROUTER_API_KEY (optional, a secret: without it propose-codes is skipped), OPENROUTER_MODEL (default
@@ -87,8 +87,8 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["40-hosting.csv.gz"]; the optional layers are 35-rdns-wide, 40-hosting, 50-ix, 60-whois
-	// and 65-rdns (for manual test runs).
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 35-rdns-wide, 40-hosting, 50-ix, 60-whois,
+	// 65-rdns and 67-rdns-names (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
 
@@ -644,7 +644,7 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 // returns counts only.
 func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow(resolveIPsName,
-		hatchet.WithWorkflowDescription("public.visitor_ips -> scamper traces -> PTR names -> public.network_traces, public.traced_networks, public.ip_ptr_names, public.rdns_geo_layer (reads public.generated_rules and public.asn; deletes visitor IPs it no longer needs)"),
+		hatchet.WithWorkflowDescription("public.visitor_ips -> scamper traces -> PTR names -> public.network_traces, public.traced_networks, public.ip_ptr_names, public.customer_name_networks, public.rdns_geo_layer (reads public.generated_rules and public.asn; deletes visitor IPs it no longer needs)"),
 		hatchet.WithWorkflowCron("*/30 * * * *"),
 		// Its own limit: it writes no ASN table, and a run must not overlap the next one.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns")),
@@ -666,6 +666,11 @@ func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	names := wf.NewTask("resolve-names", func(ctx hatchet.Context, _ ResolveIPsInput) (rdns.NamesOutput, error) {
 		return newRDNSPipeline(taskLog(ctx)).ResolveNames(ctx)
 	}, taskRetry(hatchet.WithParents(trace), hatchet.WithExecutionTimeout(30*time.Minute))...)
+
+	// Customer PTR names of gap /24s (counts only). A DNS problem never fails it.
+	sample := wf.NewTask("sample-names", func(ctx hatchet.Context, _ ResolveIPsInput) (rdns.SampleOutput, error) {
+		return newRDNSPipeline(taskLog(ctx)).SampleNames(ctx)
+	}, taskRetry(hatchet.WithParents(names), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	wf.NewTask("locate", func(ctx hatchet.Context, input ResolveIPsInput) (rdns.LocateOutput, error) {
 		log := taskLog(ctx)
@@ -692,7 +697,7 @@ func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			}, log)
 		}
 		return out, nil
-	}, taskRetry(hatchet.WithParents(names, pick, trace), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	}, taskRetry(hatchet.WithParents(names, sample, pick, trace), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	return wf
 }
@@ -878,6 +883,9 @@ func runRDNS(ctx context.Context, args []string) error {
 		return err
 	}
 	if _, err := p.ResolveNames(ctx); err != nil {
+		return err
+	}
+	if _, err := p.SampleNames(ctx); err != nil {
 		return err
 	}
 	_, err := p.Locate(ctx, *forceReplace)
