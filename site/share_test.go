@@ -285,7 +285,7 @@ func TestHomeViewMakesNoRedisCall(t *testing.T) {
 
 func TestShareButtonPresence(t *testing.T) {
 	s, _ := shareServer(t)
-	btn := `<button class="sh" type="button" hidden>Share</button>`
+	btn := `<button class="sh" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"` // the icon, then <span>Share</span>
 	b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()
 	if !strings.Contains(b, btn) {
 		t.Error("no hidden Share button on the visitor page")

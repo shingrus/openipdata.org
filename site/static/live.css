@@ -4,6 +4,8 @@
 .sh{height:26px;min-width:92px;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer;
   font:500 12px/1 Geist,system-ui,sans-serif;letter-spacing:0;text-transform:none;white-space:nowrap}
 .sh:hover{color:var(--text)}
+.sh{display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.sh svg{width:13px;height:13px}
 .sh[hidden],.cp[hidden]{display:none}
 dd.none{color:var(--faint)} /* the other address family does not exist (the script gave up) */
 dd.c,dd.o6,dd.od{display:flex;align-items:center}

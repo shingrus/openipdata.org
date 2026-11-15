@@ -33,7 +33,7 @@
 </form>
 {{end}}
 {{define "panel"}}<section class="panel">
-<div class="head{{if .Share}} hs{{end}}"><h2>{{.Title}}</h2>{{if .Share}}<button class="sh" type="button" hidden>Share</button>{{end}}{{if .Right}}<span class="r">{{.Right}}</span>{{end}}</div>
+<div class="head{{if .Share}} hs{{end}}"><h2>{{.Title}}</h2>{{if .Share}}<button class="sh" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l4 4m-4-4L8 7m4-4v10M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg><span>Share</span></button>{{end}}{{if .Right}}<span class="r">{{.Right}}</span>{{end}}</div>
 {{if .Msg}}<p class="msg">{{if .Addr}}<span class="mono">{{.Addr}}</span>{{end}}{{.Msg}}</p>
 {{else}}<div class="conn">
 <div class="place{{if .None}} none{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>

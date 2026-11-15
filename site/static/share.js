@@ -3,12 +3,12 @@
   var b = document.querySelector(".sh");
   if (!b) return;
   b.hidden = false;
-  var busy = false, link = "", tx = b.textContent;
+  var s = b.lastChild, busy = false, link = "", tx = s.textContent;
   // A new label on the button for 1.5 s.
   function flash(text) {
     clearTimeout(b.k);
-    b.textContent = text;
-    b.k = setTimeout(function () { b.textContent = tx; }, 1500);
+    s.textContent = text;
+    b.k = setTimeout(function () { s.textContent = tx; }, 1500);
   }
   function put(u) { return navigator.clipboard.writeText(u); }
   // The link of the shared report: made by the server on the first click (POST /share), then reused.
@@ -37,7 +37,7 @@
   b.onclick = function () {
     if (busy) return;
     busy = true;
-    b.textContent = "Copying...";
+    s.textContent = "Copying...";
     var p = share(), w;
     // Safari only lets the click itself write to the clipboard: hand it the promise of the link.
     try {
