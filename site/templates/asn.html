@@ -1,4 +1,4 @@
-{{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
+{{define "val"}}{{if .Href}}<a class="lnk" href="{{.Href}}">{{.V}}</a>{{else}}{{.V}}{{end}}{{if .A}}{{if .V}} {{end}}<a class="lnk" href="{{.AHref}}">{{.A}}</a>{{end}}{{end}}{{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
 {{template "top" .}}{{with .Notice}}<section class="panel">
 <div class="head"><h1>{{$.NoticeHead}}</h1>{{with $.NoticeRight}}<span class="r">{{.}}</span>{{end}}</div>
 <p class="msg">{{.}}</p>
@@ -6,9 +6,9 @@
 {{end}}{{with .Place}}<section class="panel">
 <div class="head"><h1>{{.Title}}</h1>{{if .JSON}}<a class="r" href="{{.JSON}}">JSON</a>{{end}}</div>
 <div class="conn w">
-<div class="place{{if .None}} none{{end}}{{if .Small}} s{{end}}"><h2>{{.Big}}</h2>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
+<div class="place{{if .None}} none{{end}}{{if .Small}} s{{end}}{{if .Mono}} m{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h2>{{.Big}}</h2>{{if .Sub}}<p{{if .SubNone}} class="none"{{end}}>{{.Sub}}</p>{{end}}</div>
 <dl>
-{{range .Rows}}<div><dt>{{.K}}</dt><dd>{{if .Href}}<a class="lnk" href="{{.Href}}">{{.V}}</a>{{else}}{{.V}}{{end}}</dd></div>
+{{range .Rows}}<div><dt>{{.K}}</dt><dd>{{template "val" .}}{{range .Extra}}<br>{{template "val" .}}{{end}}</dd></div>
 {{end}}</dl>
 </div>
 </section>
@@ -24,7 +24,7 @@
 {{end}}</section>
 {{end}}{{with .Pfx}}<section class="panel">
 <div class="head"><h2>Prefixes</h2></div>
-{{range .Groups}}<div class="pf"><h3>{{.Family}}</h3><ul>{{range .List}}<li>{{.}}</li>{{end}}</ul></div>
+{{range .Groups}}<div class="pf"><h3>{{.Family}}</h3><ul>{{range .List}}<li>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</ul></div>
 {{end}}{{if .Note}}<p class="note">{{.Note}} <a href="{{.NoteHref}}">{{.NoteLink}}</a></p>
 {{end}}</section>
 {{end}}{{template "bottom" .}}

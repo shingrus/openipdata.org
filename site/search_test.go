@@ -61,7 +61,9 @@ func TestParseQueryOrder(t *testing.T) {
 		{"1.2.3", "bad", ""},
 		{"q=1.1.1.1:80", "bad", ""},
 		{"q=fe80::1%25eth0", "bad", ""},
-		{"q=1.1.1.1/24", "bad", ""},
+		{"q=1.1.1.1/24", "prefix", "1.1.1.0/24"}, // a CIDR is a prefix page, not bad
+		{"q=1.1.1.1/33", "bad", ""},
+		{"q=2001:db8::/129", "bad", ""},
 		{"q=1.2.3.4.5", "bad", ""},
 		{"q=2001:db8::zz", "bad", ""},
 		{"q=AS15169:1", "bad", ""},
@@ -90,6 +92,8 @@ func TestParseQueryOrder(t *testing.T) {
 			if !q.addr.IsValid() {
 				got = ""
 			}
+		case "prefix":
+			got = q.pfx.String()
 		case "asn":
 			got = q.asn
 		case "search":

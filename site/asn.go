@@ -4,7 +4,7 @@ package main
 // What the list pages need is read once per load into a compact slice, one
 // record per network, and never holds the JSON column: the prefix counts and
 // the country name come out of SQLite's own JSON functions while the table is
-// read. A network page reads its one row (and its prefixes) from the file per
+// read, and the announced prefixes go into one compact sorted index (pfxindex.go). A network page reads its one row (and its prefixes) from the file per
 // request. The file is checked every 30 seconds and loaded again when it
 // changes.
 
@@ -75,6 +75,7 @@ type asnData struct {
 	byHandle  map[string]int32 // normalised handle (see slugify) -> index in orgs of the organization of the first network (by number) with that handle
 	countries []countryRow
 	pages     map[string]*cachedPage
+	idx       pfxIndex // every announced prefix (see pfxindex.go)
 	loadedIn  time.Duration
 }
 
@@ -186,6 +187,10 @@ func loadASN(ctx context.Context, db *sql.DB) (*asnData, error) {
 		return nil, err
 	}
 	d.nets = slices.Clip(d.nets)
+	rows.Close() // the prefix read below needs no open result set
+	if d.idx, err = loadPrefixes(ctx, db); err != nil {
+		return nil, err
+	}
 
 	for i := range d.nets {
 		if d.nets[i].slug != "" {
@@ -392,7 +397,7 @@ func (f *asnFile) reload() bool {
 	}
 	f.mu.Unlock()
 	f.sig, f.lastErr = sig, ""
-	log.Printf("loaded %s: %d networks in %s", f.path, len(data.nets), data.loadedIn.Round(time.Millisecond))
+	log.Printf("loaded %s: %d networks, %d prefixes in %s", f.path, len(data.nets), data.idx.size(), data.loadedIn.Round(time.Millisecond))
 	return true
 }
 

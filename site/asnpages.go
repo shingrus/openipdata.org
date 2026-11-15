@@ -35,7 +35,13 @@ var rankings = []struct{ path, title string }{
 	{"/list-of-countries-by-ipv4-allocation", "Countries by IPv4 addresses"},
 }
 
-type kv struct{ K, V, Href string }
+// kv is one row of a head panel. Href links V; A is a second text after V (an AS
+// number) that AHref links; Extra are further values of the same row.
+type kv struct {
+	K, V, Href string
+	A, AHref   string
+	Extra      []kv
+}
 
 type cell struct{ Text, Href, Class string }
 
@@ -53,18 +59,23 @@ type table struct {
 }
 
 type place struct {
-	Title string
-	Big   string
-	Sub   string
-	None  bool
-	Small bool // a long name: smaller type, less height
-	Rows  []kv
-	JSON  string
+	Title   string
+	Big     string
+	None    bool
+	Small   bool // a long name: smaller type, less height
+	Mono    bool // the big line is data (a prefix), set in the mono face
+	Sub     string
+	SubNone bool          // Sub is "Location unknown": shown grey
+	Map     template.HTML // the outline map behind the place (see worldmap.go), or empty
+	Rows    []kv
+	JSON    string
 }
+
+type pfxItem struct{ Text, Href string }
 
 type pfxGroup struct {
 	Family string
-	List   []string
+	List   []pfxItem
 }
 
 type pfxPanel struct {
@@ -273,6 +284,9 @@ func asNumber(digits string) (n uint32, canon string, ok bool) {
 func (s *server) serveASN(w http.ResponseWriter, r *http.Request) bool {
 	p := r.URL.Path
 	switch {
+	case strings.HasPrefix(p, prefixPath):
+		s.servePrefix(w, r)
+		return true
 	case strings.HasPrefix(p, orgPathPrefix):
 		s.serveOrg(w, r, p[len(orgPathPrefix):])
 		return true
@@ -541,7 +555,7 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 				continue
 			}
 			l := g.list[:min(len(g.list), maxPrefixes)]
-			pp.Groups = append(pp.Groups, pfxGroup{Family: g.fam, List: l})
+			pp.Groups = append(pp.Groups, pfxGroup{Family: g.fam, List: pfxItems(l)})
 			if len(g.list) > maxPrefixes {
 				capped = append(capped, g.fam+" "+fmtInt(int64(len(g.list))))
 			}

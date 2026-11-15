@@ -173,7 +173,7 @@ func TestASNRoutes(t *testing.T) {
 			"<dt>Domain</dt><dd>example.net</dd>", "<dt>Country</dt><dd>Portugal</dd>", "<dt>Category</dt><dd>isp</dd>",
 			"<dt>IPv4 prefixes</dt><dd>2</dd>", "<dt>IPv6 prefixes</dt><dd>1</dd>", "<dt>IPv4 addresses</dt><dd>512</dd>",
 			`href="/api/as64500"`, "Same organization", `<a href="/as64501">AS64501</a>`, "EXAMPLE-TWO",
-			"<li>203.0.113.0/24</li>", "<li>2001:db8::/32</li>", `value=""`,
+			`<li><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a>`, `<li><a href="/prefix/2001:db8::/32">2001:db8::/32</a>`, `value=""`,
 			`href="/top-asn-by-ip-address"`, `href="/top-asn-by-ipv6"`, `href="/top-organizations-by-ip-address"`, `href="/list-of-countries-by-ipv4-allocation"`,
 		}, []string{"AS64500</a>", "more networks", "Showing the first"}},
 		{"upper case", "/AS64500", 301, "/as64500", nil, nil},
@@ -280,12 +280,12 @@ func TestASNCaps(t *testing.T) {
 	if n := count(body, "<li>"); n != 2*maxPrefixes {
 		t.Errorf("prefix items: %d, want %d", n, 2*maxPrefixes)
 	}
-	for _, x := range []string{"Showing the first 500 per family. Total: IPv4 600, IPv6 600.", `<a href="/api/as64503">All prefixes in JSON</a>`, "<li>198.18.1.243/32</li>"} {
+	for _, x := range []string{"Showing the first 500 per family. Total: IPv4 600, IPv6 600.", `<a href="/api/as64503">All prefixes in JSON</a>`, `<li><a href="/prefix/198.18.1.243/32">198.18.1.243/32</a>`} {
 		if !strings.Contains(body, x) {
 			t.Errorf("capped network page lacks %q", x)
 		}
 	}
-	if strings.Contains(body, "<li>198.18.1.244/32</li>") {
+	if strings.Contains(body, `<li><a href="/prefix/198.18.1.244/32">`) {
 		t.Error("prefix 501 is on the page")
 	}
 	if !strings.Contains(body, "<dt>IPv4 prefixes</dt><dd>600</dd>") {
@@ -660,7 +660,7 @@ func TestASNPageHygieneAndSize(t *testing.T) {
 		max, gzm int
 	}{
 		{"/as64500", 20 << 10, 7 << 10},
-		{"/as64503", 50 << 10, 12 << 10},
+		{"/as64503", 80 << 10, 13 << 10}, // 1,200 prefixes, each a link to its page
 		{"/as64600", 30 << 10, 9 << 10},
 		{"/asn-huge-net", 110 << 10, 14 << 10},
 		{"/top-asn-by-ip-address", 40 << 10, 9 << 10},

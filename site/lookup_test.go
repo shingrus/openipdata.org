@@ -100,7 +100,9 @@ func TestParseQuery(t *testing.T) {
 		{"15169", "asn", ""},
 		{"example.com", "search", ""},
 		{"1.1.1.1:80", "bad", ""},
-		{"1.1.1.1/24", "bad", ""},
+		{"1.1.1.1/24", "prefix", "1.1.1.0/24"},
+		{"1.1.1.1/7", "bad", ""},
+		{"1.1.1.1/33", "bad", ""},
 		{"fe80::1%25eth0", "bad", ""},
 		{"1.1.1", "bad", ""},
 		{"%zz", "bad", ""},
@@ -108,6 +110,13 @@ func TestParseQuery(t *testing.T) {
 		{"q=" + long, "bad", ""},
 	} {
 		q := parseQuery(c.raw)
+		if q.kind == "prefix" {
+			q.addr = q.pfx.Addr()
+			if q.pfx.String() != c.addr {
+				t.Errorf("%q: prefix %s, want %s", c.raw, q.pfx, c.addr)
+			}
+			c.addr = ""
+		}
 		if q.kind != c.kind || (c.addr != "" && q.addr.String() != c.addr) {
 			t.Errorf("%q: got %s %s, want %s %s", c.raw, q.kind, q.addr, c.kind, c.addr)
 		}

@@ -104,12 +104,13 @@ func clientAddr(r *http.Request, header string) (netip.Addr, bool) {
 
 // query is what the raw query string of "/" asks for.
 type query struct {
-	kind  string     // "visitor" (the home page), "lookup" (the canonical address), "redirect" (to "/" or to the canonical URL), "asn" (the page of an AS number), "search" (a name) or "bad"
-	addr  netip.Addr // lookup, and redirect to the canonical URL (invalid: redirect to "/")
-	asn   string     // asn: the number without leading zeros; empty when it is 0 or out of range
-	term  string     // search: the normalised term (see slugify)
-	canon bool       // search: the raw query is exactly the canonical URL "q=<term>"
-	input string     // bad: the text to put back into the input, already cut
+	kind  string       // "visitor" (the home page), "lookup" (the canonical address), "redirect" (to "/" or to the canonical URL), "asn" (the page of an AS number), "prefix" (the page of a CIDR prefix), "search" (a name) or "bad"
+	addr  netip.Addr   // lookup, and redirect to the canonical URL (invalid: redirect to "/")
+	pfx   netip.Prefix // prefix: the canonical (masked) prefix
+	asn   string       // asn: the number without leading zeros; empty when it is 0 or out of range
+	term  string       // search: the normalised term (see slugify)
+	canon bool         // search: the raw query is exactly the canonical URL "q=<term>"
+	input string       // bad: the text to put back into the input, already cut
 }
 
 // parseQuery reads the raw query. Empty = the visitor. Parameters without q =
@@ -143,7 +144,7 @@ func parseQuery(raw string) query {
 	} else if t, err := url.PathUnescape(raw); err == nil {
 		text = t
 	}
-	// Order: an IP address, "AS<number>", a bare number, then a name. Input
+	// Order: an IP address, "AS<number>", a bare number, a CIDR prefix, then a name. Input
 	// that looks like an attempt at an address never becomes a name search.
 	if a, ok := parseAddr(text); ok {
 		if kind == "lookup" && raw != a.String() {
@@ -153,6 +154,11 @@ func parseQuery(raw string) query {
 	}
 	if n, ok := asnInput(text); ok {
 		return query{kind: "asn", asn: n}
+	}
+	if strings.Contains(text, "/") { // a CIDR prefix, in any spelling: the canonical prefix page
+		if p, ok := parseCIDR(strings.TrimSpace(text)); ok && prefixOK(p) {
+			return query{kind: "prefix", pfx: p}
+		}
 	}
 	if looksLikeIP(text) {
 		return query{kind: "bad", input: cut(text)}
@@ -323,6 +329,7 @@ type asnRecord struct {
 type row struct {
 	K, V, A string // label, value, accent text after the value
 	Href    string // A is a link to this page
+	VHref   string // V is a link to this page
 	Fam     string // "4" or "6": a row the page script fills in with the address of that family, found at From
 	From    string
 	Own     bool // the row of the address family that is looked up (addFill places the other family's row by it)
@@ -408,9 +415,19 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	case network == "":
 		network, as = as, ""
 	}
-	pfx := dash
+	pfx, pfxHref := dash, ""
 	if found && prefix.IsValid() {
 		pfx = prefix.String()
+	}
+	// With the ASN data loaded the prefix is the longest announced one: the
+	// MMDB tree may hold only a piece of it (a more specific prefix splits it).
+	if d := s.asnf.data(); d != nil {
+		if lp, _, ok := d.idx.longest(a); ok {
+			pfx = lp.String()
+			if prefixOK(lp) {
+				pfxHref = prefixHref(lp)
+			}
+		}
 	}
 	family := "IPv6"
 	if a.Is4() {
@@ -420,7 +437,7 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	if as != "" {
 		href = s.asnLink(n.ASN)
 	}
-	p.Rows = []row{{K: "Network", V: network, A: as, Href: href}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx}}
+	p.Rows = []row{{K: "Network", V: network, A: as, Href: href}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx, VHref: pfxHref}}
 	return p
 }
 

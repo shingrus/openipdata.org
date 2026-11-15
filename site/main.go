@@ -74,13 +74,14 @@ type server struct {
 	fonts  map[string][]byte
 	scores atomic.Pointer[scores]
 
-	geo, asn *mmdbFile // kept open for lookups
-	asnf     *asnFile  // the ASN data (SQLite), loaded into memory; nothing loaded until useASN
-	realIP   string    // header that holds the visitor address, or ""
-	v4, v6   string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
-	cspFill  string    // csp of a page that has the fill script
-	public   func(netip.Addr) bool
-	world    *world // country outlines for the map, decoded once at start
+	geo, asn   *mmdbFile // kept open for lookups
+	asnf       *asnFile  // the ASN data (SQLite), loaded into memory; nothing loaded until useASN
+	realIP     string    // header that holds the visitor address, or ""
+	v4, v6     string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
+	cspFill    string    // csp of a page that has the fill script
+	public     func(netip.Addr) bool
+	world      *world // country outlines for the map, decoded once at start
+	placeLimit int    // most MMDB records read for the places of a prefix page
 }
 
 // useURLs sets V4_URL and V6_URL (already checked) and the policy of the pages
@@ -129,8 +130,8 @@ func newServer(geoPath, asnPath, realIP string) (*server, error) {
 		return nil, fmt.Errorf("map data: %w", err)
 	}
 	s := &server{
-		world: w,
-		tmpl:  tmpl, csp: csp(), fonts: map[string][]byte{},
+		world: w, placeLimit: placeRecords,
+		tmpl: tmpl, csp: csp(), fonts: map[string][]byte{},
 		geo: &mmdbFile{path: geoPath}, asn: &mmdbFile{path: asnPath}, asnf: &asnFile{},
 		realIP: realIP, public: isPublic,
 	}
@@ -221,7 +222,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // serveHome answers "/": the visitor's own connection (no query), a lookup
 // (the raw query is one address), the redirect of the lookup form (q=<address>)
-// an AS number or a name search, or the "bad" answer. Only a lookup page holds no visitor data, so only it
+// an AS number, a prefix (CIDR), or a name search, or the "bad" answer. Only a lookup page holds no visitor data, so only it
 // may be cached.
 func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
@@ -242,6 +243,11 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 			loc = "/?" + q.addr.String()
 		}
 		h.Set("Location", loc)
+		w.WriteHeader(http.StatusFound)
+		return
+	case "prefix":
+		h.Set("Cache-Control", cache)
+		h.Set("Location", prefixHref(q.pfx))
 		w.WriteHeader(http.StatusFound)
 		return
 	case "asn":
