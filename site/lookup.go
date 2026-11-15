@@ -390,7 +390,7 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 		p.Big, p.Sub = g.CityName, country
 		p.Map = s.world.placeMap(&g)
 	case country != "":
-		p.Big, p.Sub = country, "city unknown"
+		p.Big = country // no city: the country alone, no second line
 		p.Map = s.world.placeMap(&g)
 	default:
 		p.Big, p.None = "Location unknown", true
