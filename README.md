@@ -28,7 +28,7 @@ The published data files are CC0 (see [`LICENSE-DATA`](LICENSE-DATA)); the code 
 Shared code in `hatchet/`: `schema/` (Postgres tables), `publish/` (R2 and GitHub
 releases), `rirstats/` (RIR delegated-extended stats parsing, address range to
 prefixes), `download/` (conditional HTTP download) and `outputs/` (pruning old output
-directories, last log lines, file size). `sync-geofeeds`, `sync-bgp` and
+directories, last log lines, file size). `sync-geofeeds`, `sync-bgp`, `import-mlab` and
 `build-geo-data` share `rirstats` and `download` but keep their own downloaded files.
 
 `hatchet/` and `mmdbbuilder/` are separate Go modules and build separately.
@@ -48,6 +48,7 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 | `public.geo_eval` | `build-geo-data` |
 | `public.network_traces`, `public.traced_networks`, `public.ip_ptr_names`, `public.customer_name_networks`, `public.rdns_geo_layer` | `resolve-ips` |
 | `public.rdns_city_rules`, `public.rdns_llm_answers` | `learn-rdns-rules` |
+| `public.mlab_hop_names` | `import-mlab` |
 
 The three ASN workflows share one concurrency limit, so only one runs at a time. Every morning (UTC):
 `sync-peeringdb` (03:00) → `update-asn-domains` (04:00) → `build-asn-data` (06:00).
@@ -328,6 +329,60 @@ the optional layer `25-bgp`. This workflow reads no database and publishes nothi
   Task input: `{"skip_upload": true}`, `{"force_upload": true}`.
 - It runs at 03:40, well before `build-geo-data` (07:00 and 19:00), which skips the layer when the object is older than 3 days.
 
+### `import-mlab` (`hatchet/mlab/`, no cron, started by hand)
+
+M-Lab (Measurement Lab) publishes, under CC0, a traceroute from its speed-test server back to every client.
+The owner exports the last 3 hops before each client /24 from BigQuery about once a month (see "M-Lab export"
+below) and copies the CSV into the inbox. The workflow gives each client /24 the city of its hops: layer
+`36-mlab`, which `build-geo-data` reads from the private R2 bucket. Measured on RIPE Atlas it adds about 238 right
+probes (+1.7 points) at about 41% precision. Own concurrency limit `mlab`.
+
+| Task | Runs after | Does |
+|---|---|---|
+| `import` | | reads the CSV (plain or gzip, found by its first bytes) of the inbox `/var/lib/openipdata/mlab/inbox/`: the input `file` is a base name there (no path, `.csv` or `.csv.gz`), empty = the newest file. The file is untrusted: columns are found by the header (`client24,hop_ip,from_end,traces`, `first_day` optional), a bad row is counted by reason and never echoed (wrong column count, line over 4 KB, bad client /24, bad hop, `from_end` not 0 to 2, `traces` not a number of at least 1, a client or hop that is not public IPv4), `traces` above 1,000,000 count as 1,000,000, at most 200M rows are read and at least 100,000 must be valid (else a clear error that is not retried). Rows of the same (client /24, hop) are merged (smallest `from_end`, traces added). Writes `/var/lib/openipdata/mlab/pairs.csv.gz` (sorted by /24 then hop, through a `.tmp` file), replacing the last one: each export is the whole current window. At most 40M distinct pairs (12 bytes each in memory) |
+| `resolve-names` | `import` | PTR names of the distinct hop IPs with the same resolver as `resolve-ips` (system resolver, DoH fallback), stored in `public.mlab_hop_names` (`ip`, `ptr`, `status` ok / not_found / error, `resolved_at`; created by this task with `CREATE TABLE IF NOT EXISTS`). An ok or not_found answer younger than 60 days is skipped; errors are asked again every run (an error never replaces an older ok or not_found row). Answers are stored 2000 at a time, so a retry or the next run goes on where this one stopped. A soft budget of 3 hours ends it cleanly (`stopped: time`, `left`); a DNS problem never fails the task, only a database error or a cancellation does. Rows of IPs that are not in the current pairs file and older than 200 days are deleted |
+| `locate` | `resolve-names` | per client /24 two rounds. R: the hops whose name the production rules decode to a city (the legacy `public.generated_rules`, then the candidate rules of `public.rdns_city_rules`, a domain's ranks in order, as `resolve-ips` does) vote, each with the traces it has there (`from_end` 0 to 2 count the same); the city (country and normalised name) with the largest weight wins. No winner (no rule city, or a tie): M. The hops with a city in a record of our published MMDB vote the same way, but only when the record's `city_source` is `70-geofeeds`, `60-whois`, `40-hosting`, `50-ix` or `38-asn-geofeed` (`mmdbStrongSources`; never a guess, `25-bgp`, `30-pdb`, `35-rdns-wide`, `36-mlab`, `65-rdns`, `67-rdns-names`), and not a hop inside the client /24 itself. Only a city in the client /24's country (the country of its `.1` in the MMDB) votes; a client with no country does not vote. A tie in both rounds gives none. The MMDB is this workflow's own copy from the private R2 bucket in `/var/lib/openipdata/mlab/` (same dated key, ETag and saved-copy rule as `locate` of `resolve-ips`) and is read by `mmdbbuilder lookup -in ... -out ... -with-source -countries`; without a usable MMDB the M round and the country check are skipped (reported in `mmdb` and `mmdb_reason`) and the rules still work. Writes `/var/lib/openipdata/mlab/36-mlab.csv.gz` (the layer format, source `mlab`, sorted by prefix, through a `.tmp` file). Fewer than 1,000 rows fail the task without replacing the old file |
+| `upload` | `locate` | puts the layer at the fixed key `internal/layers/36-mlab.csv.gz` in the private R2 bucket (sha256 in the object's metadata; an identical object is not sent again, its upload time is renewed; `force_upload` always sends). No health-check ping: the workflow is manual |
+
+- The task outputs have counts only (rows, bad rows by reason, pairs, client /24s, hops, days; hops looked up, ok, not found, errors, left, pruned; client /24s, hops named, hops with a rule city, hops with an MMDB city, /24s located by rule and by MMDB, ties). No IP, name or secret is logged or returned.
+- `run-mlab [-file <path>] [-skip-upload] [-force-upload]` runs the four tasks once locally; `-file` imports any local CSV (the CLI only: the workflow input is a base name in the inbox). Workflow input: `{"file": "mlab-2026-11.csv", "force_upload": true}`.
+- Measured on the real 7-day export (336 MB, 8.45M rows): import 6 s and 300 MB of memory, 8.11M pairs, 1.44M client /24s, 445k hop IPs, `pairs.csv.gz` 49 MB; locate 5 s and 440 MB, 547k /24s located (28k hops decoded by a rule, 56k with a strong MMDB city).
+- `build-geo-data` puts the layer in as `36-mlab` (see its section); `learn-rdns-rules` also reads the ok hop names as router names.
+
+### M-Lab export
+
+Run this query in the BigQuery console (project `measurement-lab`; the owner's Google account is in the M-Lab Discuss group, which makes the query free). Change only the two dates; the last 21 days is a good window (about 8.5M rows and 0.3 GB a week; a longer result can pass the size BigQuery saves to Google Drive in one file). Use one window per export: the import replaces the last one.
+
+```sql
+SELECT
+  REGEXP_EXTRACT(raw.Tracelb.dst, r'^(\d+\.\d+\.\d+)\.') AS client24,
+  hop.addr AS hop_ip,
+  MIN(ARRAY_LENGTH(raw.Tracelb.nodes) - 1 - pos) AS from_end,
+  COUNT(*) AS traces
+FROM `measurement-lab.ndt_raw.scamper1`,
+     UNNEST(raw.Tracelb.nodes) AS hop WITH OFFSET AS pos
+WHERE date BETWEEN '2026-11-07' AND '2026-11-13'
+  AND STRPOS(raw.Tracelb.dst, ':') = 0
+  AND pos >= ARRAY_LENGTH(raw.Tracelb.nodes) - 3
+  AND hop.addr != raw.Tracelb.dst
+  AND hop.addr != '*'
+GROUP BY client24, hop_ip
+HAVING client24 IS NOT NULL
+```
+
+1. Save the result: "Save results" -> CSV (Google Drive), then download the file from Drive (a large result is split into several files by BigQuery; if so, run the query again for a shorter window, or concatenate the files without their repeated header lines).
+2. Copy it to the worker VM into the inbox, owned by the `openipdata` user:
+
+   ```bash
+   scp bq-results-*.csv vm:/tmp/mlab.csv
+   ssh vm 'sudo install -d -o openipdata -g openipdata -m 0750 /var/lib/openipdata/mlab/inbox &&
+           sudo install -o openipdata -g openipdata -m 0640 /tmp/mlab.csv /var/lib/openipdata/mlab/inbox/mlab-2026-11.csv && rm /tmp/mlab.csv'
+   ```
+
+   Gzip is fine too (`mlab-2026-11.csv.gz`).
+3. Start `import-mlab` in Hatchet (input `{}` takes the newest file of the inbox, or `{"file": "mlab-2026-11.csv"}`), or run `sudo -u openipdata openipdata-worker run-mlab` on the VM (it needs the env file: `PGSQL` and `R2`).
+4. The next `build-geo-data` run uses the layer. The layer is used for 45 days; export again about once a month.
+
 ### `build-geo-data` (`hatchet/geo/`, cron `0 7,19 * * *` UTC)
 
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
@@ -350,12 +405,12 @@ Measured on RIPE Atlas it is right 48% of the time (520 of 1,083 gap probes) and
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,
-`38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
+`36-mlab.csv.gz`, `38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
 `/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
 `.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
-layer name (`layerRules`): `25-bgp`, `30-pdb` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
 `70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
 
 | Task | Runs after | Does |
@@ -448,7 +503,14 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   `bgp_known_prefixes` and `bgp_prefixes`. Measured on RIPE Atlas (a stand-in geofeed layer, only where the
   published MMDB had no city): 739 gap probes answered, 389 within 50 km (52.6%), 195 million addresses filled, in about 3 seconds
   and 460 MB of memory.
-- The optional layers are `25-bgp`, `35-rdns-wide`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
+- `36-mlab` (optional, `-same-country`, between `35-rdns-wide` and `38-asn-geofeed`, so every later layer replaces it) is the city of the router hops
+  before each client /24, written by `import-mlab` (above) at `internal/layers/36-mlab.csv.gz` in the private R2 bucket.
+  `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2 layers (saved in `geo/downloads/`) and puts
+  it in the layers dir as it is. The object missing, older than 45 days (the export is made by hand about monthly) or any fetch error
+  skips the layer (`skipped_layers`, a warning); this never skips the `HC_PING_GEO` ping. The holdout build passes the layer as it is: it
+  does not learn from the geofeed rows directly, but its MMDB-hop part reads the published MMDB (which holds geofeed cities), like the
+  MMDB hop votes of `35-rdns-wide`.
+- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.
@@ -605,8 +667,12 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp` or `36-mlab` as no city too (like the `80-asn-main`
+guess), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
-smallest hash of the IP; router names win) with the country of the row. `locate` tries the legacy rules, then the
+smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
+hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the
+announced prefix gives it as for other routers; a traced name of the same IP wins, and a hop name wins over a customer name). `locate` tries the legacy rules, then the
 candidate rules, on those names: a /24 gets the city most of its names decode to (a tie gives none; the city's
 country must be the row's) as a row of scope `named` in `public.rdns_geo_layer`, which `build-geo-data` writes as
 layer `67-rdns-names` (same-country). Named rows are recomputed every rebuild: never sticky, carried, counted by the
@@ -641,6 +707,8 @@ openipdata-worker run-geofeeds -skip-upload -rdap-budget 100 -domain-budget 100 
 openipdata-worker run-bgp              # run sync-bgp once locally, without Hatchet
 openipdata-worker run-bgp -skip-upload # same, without uploading the file
 openipdata-worker run-bgp -mrt dump.gz # read a local MRT dump, write the file, upload nothing
+openipdata-worker run-mlab             # run import-mlab once locally (newest file of the inbox)
+openipdata-worker run-mlab -file export.csv -skip-upload # import a local CSV, write the layer, upload nothing
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet
 openipdata-worker run-geo -skip-publish  # same, without uploading
 openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
@@ -656,7 +724,8 @@ mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
-mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city, as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
+mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from 80-asn-main, 25-bgp or 36-mlab counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 

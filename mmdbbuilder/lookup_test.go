@@ -108,3 +108,78 @@ func TestWriteCitiesOtherRecords(t *testing.T) {
 		t.Errorf("rows %q, stats %+v", data, stats)
 	}
 }
+
+// sourcesDB is a tiny MMDB whose cities come from different layers (city_source is the layer file name).
+func sourcesDB(t *testing.T, dir string) string {
+	t.Helper()
+	l1 := writeFile(t, filepath.Join(dir, "10-rir.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.0.0/16,DE,,,rir\n")
+	l2 := writeFile(t, filepath.Join(dir, "25-bgp.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.1.0/24,DE,,Hamburg,x\n")
+	l3 := writeFile(t, filepath.Join(dir, "36-mlab.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.2.0/24,DE,,Munich,mlab\n")
+	l4 := writeFile(t, filepath.Join(dir, "70-geofeeds.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.3.0/24,DE,,Berlin,feed\n")
+	db := filepath.Join(dir, "sources.mmdb")
+	if _, err := buildGeo([]string{l1, l2, l3, l4}, "", db, false, nil, nil, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+// -with-source adds the city_source as a fourth column; without it the rows are as before.
+func TestWriteCitiesSource(t *testing.T) {
+	dir := t.TempDir()
+	db := sourcesDB(t, dir)
+	in := writeFile(t, filepath.Join(dir, "ips.txt"), "20.0.1.1\n20.0.2.1\n20.0.3.1\n20.0.0.1\n")
+	plain, with := filepath.Join(dir, "plain.tsv"), filepath.Join(dir, "with.tsv")
+	if _, err := writeCities(db, in, plain); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeCitiesSource(db, in, plain+"2", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeCitiesSource(db, in, with, true, false); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := os.ReadFile(plain)
+	b, _ := os.ReadFile(plain + "2")
+	if string(a) != string(b) || string(a) != "20.0.1.1\tDE\tHamburg\n20.0.2.1\tDE\tMunich\n20.0.3.1\tDE\tBerlin\n" {
+		t.Errorf("plain output %q (flag off %q)", a, b)
+	}
+	c, _ := os.ReadFile(with)
+	want := "20.0.1.1\tDE\tHamburg\t25-bgp\n20.0.2.1\tDE\tMunich\t36-mlab\n20.0.3.1\tDE\tBerlin\t70-geofeeds\n"
+	if string(c) != want {
+		t.Errorf("with source %q, want %q", c, want)
+	}
+}
+
+// A /24 whose city comes from 25-bgp or 36-mlab is still a gap; one from a geofeed is not.
+func TestGapsWeakSources(t *testing.T) {
+	dir := t.TempDir()
+	db := sourcesDB(t, dir)
+	out := filepath.Join(dir, "gaps.txt")
+	if _, err := writeGaps(db, out); err != nil {
+		t.Fatal(err)
+	}
+	want := "20.0.0.0/24 3 DE\n20.0.4.0/24 252 DE\n" // 20.0.3.0/24 (geofeed city) is not in it
+	if data, _ := os.ReadFile(out); string(data) != want {
+		t.Errorf("gaps = %q, want %q", data, want)
+	}
+}
+
+// -countries (with -with-source) also writes the IPs that have a country and no city, with an
+// empty city and no source; a guessed city is shown as no city; IPs with no country stay out.
+func TestWriteCitiesCountries(t *testing.T) {
+	dir := t.TempDir()
+	db := sourcesDB(t, dir)
+	in := writeFile(t, filepath.Join(dir, "ips.txt"), "20.0.0.1\n20.0.3.1\n21.0.0.1\n")
+	out := filepath.Join(dir, "c.tsv")
+	if _, err := writeCitiesSource(db, in, out, true, true); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(out)
+	if want := "20.0.0.1\tDE\t\t\n20.0.3.1\tDE\tBerlin\t70-geofeeds\n"; string(data) != want {
+		t.Errorf("rows %q, want %q", data, want)
+	}
+}

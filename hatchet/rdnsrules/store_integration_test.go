@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -675,5 +676,66 @@ func TestReadDomainNamesCustomerNamesPostgres(t *testing.T) {
 	// 5.6.9.1 is a traced name, so the announced prefix's US, not the row's FR.
 	if len(got) != 3 || got["5.6.7.1"] != "DE" || got["5.6.7.50"] != "DE" || got["5.6.9.1"] != "US" {
 		t.Errorf("names = %v", got)
+	}
+}
+
+// The learner also reads the ok names of public.mlab_hop_names as router names with no country
+// (loadRouterCountries fills it), at most mlabNamesPerDomain per domain by the smallest hash, each IP
+// once: a traced name wins, and a hop name wins over a sampled customer row. A missing table means none.
+func TestReadDomainNamesMLabHopNamesPostgres(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	conn, _ := testDB(t, "rdnsrules_mlab_it")
+	if err := schema.EnsureRDNS(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	// No table (import-mlab has not run): no hop names, no error.
+	if byDomain, _, err := readDomainNames(ctx, conn); err != nil || len(byDomain) != 0 {
+		t.Fatalf("no table: %v %v", byDomain, err)
+	}
+	if err := schema.EnsureMLab(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE public.asn (asn integer PRIMARY KEY, country text, json text, seen_at timestamptz)`,
+		`INSERT INTO public.asn VALUES (1,'US','{"prefixes":{"ipv4":["5.6.0.0/16"]}}',now())`,
+		`INSERT INTO public.ip_ptr_names(ip,ptr,status) VALUES ('5.6.9.1','t.sea.core.example.net','ok')`,
+		`INSERT INTO public.network_traces(prefix, target_kind, target, candidates, hop_ips, hops, traced_at) VALUES ('5.6.9.0/24','visitor','5.6.9.1', ARRAY['5.6.9.1'::inet], ARRAY[]::inet[], '[]', now())`,
+		`INSERT INTO public.mlab_hop_names(ip, ptr, status, resolved_at) VALUES
+			('5.6.7.1','a.nyc.core.example.net','ok',now()),
+			('5.6.7.2','b.nyc.core.example.net','not_found',now()),
+			('5.6.7.3','c.nyc.core.example.net','error',now()),
+			('5.6.9.1','dup.sea.core.example.net','ok',now()),
+			('5.6.7.50','cust.nyc.core.example.net','ok',now())`,
+		// 5.6.7.50 is also a sampled customer host: the hop name wins.
+		`INSERT INTO public.customer_name_networks (prefix, country, hosts, names, sampled_at) VALUES
+			('5.6.7.0/24','DE',ARRAY['5.6.7.50','5.6.7.60']::inet[], ARRAY['old.nyc.cust.example.net','x.nyc.cust.example.net'], now())`,
+	} {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			t.Fatalf("%v\n%s", err, stmt)
+		}
+	}
+	byDomain, _, err := readDomainNames(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loadRouterCountries(ctx, conn, byDomain); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][2]string{} // ip -> ptr, country
+	for _, n := range byDomain["example.net"] {
+		if _, dup := got[n.IP]; dup {
+			t.Errorf("%s twice", n.IP)
+		}
+		got[n.IP] = [2]string{n.PTR, n.Country}
+	}
+	want := map[string][2]string{
+		"5.6.7.1":  {"a.nyc.core.example.net", "US"},    // a hop name: the announced prefix's country
+		"5.6.7.50": {"cust.nyc.core.example.net", "US"}, // the hop name, not the customer row (DE)
+		"5.6.7.60": {"x.nyc.cust.example.net", "DE"},    // a customer name keeps the row's country
+		"5.6.9.1":  {"t.sea.core.example.net", "US"},    // the traced name wins
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("names = %v\nwant %v", got, want)
 	}
 }

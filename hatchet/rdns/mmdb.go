@@ -66,11 +66,13 @@ const (
 	savedDownLogFormat = "%s: WARNING MMDB download failed: %v; using the saved copy"
 )
 
-// objectStore is the part of publish.R2 that locate uses. Tests replace it.
-type objectStore interface {
+// ObjectStore is the part of publish.R2 that locate uses. Tests replace it.
+type ObjectStore interface {
 	Stat(ctx context.Context, key string) (publish.ObjectInfo, error)
 	DownloadIfChanged(ctx context.Context, key, path, etag string) (info publish.ObjectInfo, downloaded bool, err error)
 }
+
+type objectStore = ObjectStore
 
 // lookupFunc runs "mmdbbuilder lookup" on the MMDB at db for the IPs in inFile and
 // writes ip<TAB>country<TAB>city rows to outFile. Tests replace it.

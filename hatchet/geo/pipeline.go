@@ -22,6 +22,10 @@
 //	              most /16) got from the PTR names of routers near them; applied only
 //	              where the earlier layers give the same country; skipped while the
 //	              table has no such rows
+//	36-mlab       import-mlab (private R2, from the M-Lab traceroute export the owner copies in
+//	              by hand): the city of the router hops before each client /24; applied only
+//	              where the earlier layers give the same country; skipped while the object is
+//	              missing or older than 45 days (the health check ping is still sent)
 //	38-asn-geofeed  the dominant geofeed city of an ASN (Postgres announced prefixes, the
 //	              geofeed layer): every announced prefix of an ASN whose own geofeed rows
 //	              put 80% of their addresses in one city; applied only where the earlier
@@ -118,7 +122,7 @@ const (
 //   - -same-country: the PeeringDB rows only refine. An ASN's city must not
 //     replace more specific networks that the registration data puts in another
 //     country.
-//   - -same-country also holds for the three rDNS layers, the ASN geofeed layer and the BGP community layer: they add cities and
+//   - -same-country also holds for the three rDNS layers, the ASN geofeed layer, the BGP community layer and the M-Lab hop layer: they add cities and
 //     never change a country (a router name is evidence of a city, not of who holds the block; the
 //     ASN geofeed rows extend an ASN's own geofeed evidence to its other prefixes).
 //   - -first-country: a hosting row applies only where the RIR stats (the first
@@ -136,6 +140,7 @@ var layerRules = map[string]string{
 	RDNSWideLayer:  "-same-country",
 	HostingLayer:   "-first-country",
 	WhoisLayer:     "-within-first",
+	MLabLayer:      "-same-country",
 	RDNSLayer:      "-same-country",
 	RDNSNamesLayer: "-same-country",
 	FeedsLayer:     "-within-first",
@@ -147,7 +152,7 @@ var layerRules = map[string]string{
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{BGPLayer, RDNSWideLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
+var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -422,6 +427,11 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 	// 12. The cities that BGP community values stand for (sync-bgp's file in R2), learned on
 	// the geofeed layer.
 	if err := p.downloadBGP(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
+		return src, err
+	}
+
+	// 13. The M-Lab hop cities (import-mlab's layer file in R2), put in as it is.
+	if err := p.downloadMLab(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
 		return src, err
 	}
 	return src, nil

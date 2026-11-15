@@ -306,3 +306,17 @@ func TestEnsureRDNSLLMAnswersRunsOnlyItsTable(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureMLabOnlyCreatesItsTable(t *testing.T) {
+	r := &recorder{}
+	if err := EnsureMLab(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.sqls, mlabStatements) || len(r.sqls) != 1 {
+		t.Fatalf("got %q", r.sqls)
+	}
+	sql := r.sqls[0]
+	if !strings.HasPrefix(sql, "CREATE TABLE IF NOT EXISTS public.mlab_hop_names") || strings.Contains(sql, "ALTER") {
+		t.Errorf("unexpected statement: %s", sql)
+	}
+}

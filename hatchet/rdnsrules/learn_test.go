@@ -593,3 +593,13 @@ func TestCollectCustomerKeepsSmallestHashes(t *testing.T) {
 		t.Error("not FNV-1a")
 	}
 }
+
+// The M-Lab hop names are capped like the customer names, and only ok names are read.
+func TestMLabHopNameSettings(t *testing.T) {
+	if mlabNamesPerDomain != 5000 {
+		t.Errorf("mlabNamesPerDomain = %d", mlabNamesPerDomain)
+	}
+	if !strings.Contains(mlabQuery, "status = 'ok'") || !strings.Contains(mlabQuery, "public.mlab_hop_names") || strings.Contains(strings.ToUpper(mlabQuery), "INSERT") {
+		t.Errorf("mlabQuery = %s", mlabQuery)
+	}
+}

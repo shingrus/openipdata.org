@@ -3,7 +3,7 @@
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
 //	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
-//	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>
+//	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]
 //	mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>
 //	mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
@@ -20,9 +20,13 @@
 // such address is skipped.
 //
 // lookup with -in and -out reads an ip2geo MMDB for the IPs of a file (one per
-// line) and writes ip<TAB>country<TAB>city for each one that has a city. See lookup.go.
+// line) and writes ip<TAB>country<TAB>city for each one that has a city (a guessed city,
+// 80-asn-main, is left out); with -with-source each row also has a fourth column, the
+// record's city_source, and with -countries an IP that has a country but no city also gets a
+// row (empty city). See lookup.go.
 //
-// gaps lists the IPv4 /24s of an ip2geo MMDB that have a country and no city, as lines
+// gaps lists the IPv4 /24s of an ip2geo MMDB that have a country and no city (a city whose
+// source is 80-asn-main, 25-bgp or 36-mlab counts as none), as lines
 // "<first /24> <count of consecutive /24s> <country>". See gaps.go.
 //
 // stamp rewrites only the metadata section of an MMDB: description.en becomes a
@@ -66,7 +70,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
@@ -138,16 +142,21 @@ func runLookup(args []string) {
 	ips := flags.String("ips", "", "file with one IP per line, looked up together with the builtin IPs")
 	in := flags.String("in", "", "file with one IP per line: write each one's city to -out (an ip2geo MMDB)")
 	out := flags.String("out", "", "with -in: output TSV, ip<TAB>country<TAB>city, only for IPs that have a city")
+	withSource := flags.Bool("with-source", false, "with -in: add a fourth column, the record's city_source (empty when none)")
+	countries := flags.Bool("countries", false, "with -with-source: also write a row (empty city) for an IP whose record has a country but no city")
 	flags.Parse(args)
 
 	if *db == "" || flags.NArg() > 0 {
+		usage()
+	}
+	if (*withSource && (*in == "" || *out == "")) || (*countries && !*withSource) {
 		usage()
 	}
 	if *in != "" || *out != "" {
 		if *in == "" || *out == "" || *ip != "" || *ips != "" {
 			usage()
 		}
-		stats, err := writeCities(*db, *in, *out)
+		stats, err := writeCitiesSource(*db, *in, *out, *withSource, *countries)
 		if stats.invalid > 0 || stats.failed > 0 {
 			// Counts only: the lines themselves may be anything.
 			fmt.Fprintf(os.Stderr, "warning: skipped %d invalid lines, %d failed lookups\n", stats.invalid, stats.failed)

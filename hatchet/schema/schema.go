@@ -3,7 +3,7 @@
 // public.geofeed_urls, public.visitor_ips, public.network_traces, public.traced_networks,
 // public.ip_ptr_names, and public.rdns_geo_layer. Each table has one writer (see AGENTS.md); a workflow runs DDL only for
 // tables it writes (Ensure, EnsureGeoEval for the read-only build-geo-data, EnsureGeofeedURLs
-// for sync-geofeeds, or EnsureVisitorIPs and EnsureRDNS for resolve-ips).
+// for sync-geofeeds, EnsureVisitorIPs and EnsureRDNS for resolve-ips, or EnsureMLab for import-mlab).
 package schema
 
 import (
@@ -254,6 +254,29 @@ func EnsureGeofeedURLs(ctx context.Context, db Execer) error {
 func EnsureVisitorIPs(ctx context.Context, db Execer) error {
 	if _, err := db.Exec(ctx, visitorIPsStatement); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
+	}
+	return nil
+}
+
+// mlabStatements create public.mlab_hop_names (EnsureMLab). import-mlab is the only writer:
+// the PTR name of each router hop IP of the M-Lab pairs file (status ok, not_found or error);
+// learn-rdns-rules reads the ok names. Rows whose IP left the pairs file are deleted after 200 days.
+var mlabStatements = []string{
+	`CREATE TABLE IF NOT EXISTS public.mlab_hop_names (
+		ip inet PRIMARY KEY,
+		ptr text NOT NULL DEFAULT '',
+		status text NOT NULL,
+		resolved_at timestamptz NOT NULL
+	)`,
+}
+
+// EnsureMLab creates public.mlab_hop_names only. import-mlab runs it once, at the start of
+// its resolve-names task (CREATE TABLE IF NOT EXISTS, no ALTER).
+func EnsureMLab(ctx context.Context, db Execer) error {
+	for _, stmt := range mlabStatements {
+		if _, err := db.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("ensure schema: %w", err)
+		}
 	}
 	return nil
 }

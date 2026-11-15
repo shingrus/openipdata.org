@@ -553,6 +553,44 @@ func bgpRows(communitiesPath, feedsPath string, w *csv.Writer) (bgpStats, error)
 	return st, nil
 }
 
+// skipLayer leaves an optional layer out of this run (src.SkippedLayers) with a warning. Unlike
+// 60-whois and 70-geofeeds it never adds to src.StaleLayers, so the health check ping is still sent.
+func (p *Pipeline) skipLayer(src *Source, layer, format string, args ...any) {
+	src.SkippedLayers = append(src.SkippedLayers, layer)
+	p.log("download: WARNING "+format+"; building without the %s layer", append(args, layer)...)
+}
+
+// fetchOptionalLayer fetches the R2 object of an optional layer that another workflow (producer)
+// uploads into saved, in downloads (the same ETag and saved-copy rule as the other R2 layers: an
+// unchanged object is not downloaded again). The layer is skipped (ok false, a warning, never
+// StaleLayers) when the object is missing, older than maxAge (by its own modified time, also for a
+// reused copy) or cannot be fetched. Only a cancelled context is an error.
+func (p *Pipeline) fetchOptionalLayer(ctx context.Context, fetch r2Fetch, saved, key, layer, producer string, maxAge time.Duration, now time.Time, src *Source) (ok bool, err error) {
+	info, downloaded, err := fetch(ctx, key, saved, savedETag(saved))
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		if errors.Is(err, publish.ErrNotFound) {
+			p.skipLayer(src, layer, "%s is not in R2 (has %s uploaded it?)", key, producer)
+		} else {
+			p.skipLayer(src, layer, "%s could not be fetched from R2: %v", key, err)
+		}
+		return false, nil
+	}
+	if downloaded {
+		p.saveETag(saved, info.ETag, filepath.Base(saved))
+	} else {
+		src.R2Reused = append(src.R2Reused, layer)
+	}
+	src.R2Uploaded[layer] = info.LastModified.UTC().Format(time.RFC3339)
+	if now.Sub(info.LastModified) > maxAge {
+		p.skipLayer(src, layer, "%s is from %s; is %s failing?", key, src.R2Uploaded[layer], producer)
+		return false, nil
+	}
+	return true, nil
+}
+
 // downloadBGP writes the 25-bgp layer. It fetches the communities file sync-bgp left in R2
 // (the same ETag and saved-copy rule as the other R2 layers, in downloads) and
 // computes the layer from it and the geofeed layer in the layers directory. The layer is
@@ -561,10 +599,7 @@ func bgpRows(communitiesPath, feedsPath string, w *csv.Writer) (bgpStats, error)
 // Unlike 60-whois and 70-geofeeds it never adds to src.StaleLayers, so the health
 // check ping is still sent. Only a cancelled context or a failure to write the layer fails.
 func (p *Pipeline) downloadBGP(ctx context.Context, fetch r2Fetch, downloads, layers string, now time.Time, src *Source) error {
-	skip := func(format string, args ...any) {
-		src.SkippedLayers = append(src.SkippedLayers, BGPLayer)
-		p.log("download: WARNING "+format+"; building without the %s layer", append(args, BGPLayer)...)
-	}
+	skip := func(format string, args ...any) { p.skipLayer(src, BGPLayer, format, args...) }
 	feeds := filepath.Join(layers, FeedsLayer)
 	if _, err := os.Stat(feeds); err != nil {
 		if !os.IsNotExist(err) {
@@ -574,27 +609,8 @@ func (p *Pipeline) downloadBGP(ctx context.Context, fetch r2Fetch, downloads, la
 		return nil
 	}
 	saved := filepath.Join(downloads, bgp.OutFile)
-	info, downloaded, err := fetch(ctx, bgp.CommunitiesKey, saved, savedETag(saved))
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if errors.Is(err, publish.ErrNotFound) {
-			skip("%s is not in R2 (has sync-bgp uploaded it?)", bgp.CommunitiesKey)
-		} else {
-			skip("%s could not be fetched from R2: %v", bgp.CommunitiesKey, err)
-		}
-		return nil
-	}
-	if downloaded {
-		p.saveETag(saved, info.ETag, bgp.OutFile)
-	} else {
-		src.R2Reused = append(src.R2Reused, BGPLayer)
-	}
-	src.R2Uploaded[BGPLayer] = info.LastModified.UTC().Format(time.RFC3339)
-	if now.Sub(info.LastModified) > rowsMaxAge {
-		skip("%s is from %s; is sync-bgp failing?", bgp.CommunitiesKey, src.R2Uploaded[BGPLayer])
-		return nil
+	if ok, err := p.fetchOptionalLayer(ctx, fetch, saved, bgp.CommunitiesKey, BGPLayer, "sync-bgp", rowsMaxAge, now, src); err != nil || !ok {
+		return err
 	}
 	var stats bgpStats
 	rows, err := writeLayer(filepath.Join(layers, BGPLayer), func(w *csv.Writer) error {

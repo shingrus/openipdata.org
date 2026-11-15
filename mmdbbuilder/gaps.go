@@ -1,8 +1,9 @@
 package main
 
 // The gap list of an ip2geo MMDB (mmdbbuilder gaps): the /24s that have a country
-// but no city. A city that is only a guess (city_source 80-asn-main) does not count
-// as a city, so those /24s stay in the list. resolve-ips samples customer PTR names in them.
+// but no city. A city of a weak source (city_source 80-asn-main, 25-bgp or 36-mlab; see
+// noSampleSources) does not count as a city, so those /24s stay in the list. resolve-ips
+// samples customer PTR names in them.
 
 import (
 	"bufio"
@@ -68,7 +69,7 @@ type part struct {
 }
 
 // writeGaps walks the IPv4 networks of the MMDB at mmdbPath in address order and
-// writes the /24s whose record has a country and no city (a guessed city counts as none), as runs
+// writes the /24s whose record has a country and no city (a city of a weak source counts as none), as runs
 // "<first /24> <count of consecutive /24s> <country>" (merged when consecutive with the
 // same country), through a temporary file and a rename. A network smaller than a /24
 // gives its /24 only when no part of it has a city and all its parts agree on the country.
@@ -113,7 +114,7 @@ func writeGaps(mmdbPath, outPath string) (gapStats, error) {
 		} else if a != p.Addr() {
 			p = netip.PrefixFrom(a, p.Bits()-96)
 		}
-		country, city, err := evidenceFields(res)
+		country, city, err := gapFields(res)
 		if err != nil {
 			out.Close()
 			return stats, err

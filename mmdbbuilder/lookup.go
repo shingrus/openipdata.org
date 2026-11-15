@@ -208,6 +208,15 @@ type cityStats struct {
 // only a guess (city_source 80-asn-main) is not written: these rows are evidence for
 // routers, and a guess must not vote.
 func writeCities(mmdbPath, inPath, outPath string) (cityStats, error) {
+	return writeCitiesSource(mmdbPath, inPath, outPath, false, false)
+}
+
+// writeCitiesSource is writeCities; with withSource every row gets a fourth column, the
+// record's city_source (empty when it has none). With withCountries (only used with
+// withSource) an IP whose record has a country but no city (or only a guessed city) also gets a
+// row, with an empty city, so the caller learns its country. Without both the output is as
+// writeCities'.
+func writeCitiesSource(mmdbPath, inPath, outPath string, withSource, withCountries bool) (cityStats, error) {
 	var stats cityStats
 	reader, err := maxminddb.Open(mmdbPath)
 	if err != nil {
@@ -247,17 +256,21 @@ func writeCities(mmdbPath, inPath, outPath string) (cityStats, error) {
 		if !result.Found() {
 			continue
 		}
-		country, city, err := evidenceFields(result)
+		country, city, source, err := evidenceRecord(result, isGuessSource)
 		if err != nil {
 			stats.failed++
 			continue
 		}
 		// A city holding a tab or line break would break the row; "mmdbbuilder geo"
 		// never writes one.
-		if city == "" || strings.ContainsAny(country+city, "\t\r\n") {
+		if city == "" && !(withCountries && country != "") || strings.ContainsAny(country+city+source, "\t\r\n") {
 			continue
 		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", addr.Unmap(), country, city); err != nil {
+		row := fmt.Sprintf("%s\t%s\t%s", addr.Unmap(), country, city)
+		if withSource {
+			row += "\t" + source
+		}
+		if _, err := fmt.Fprintln(w, row); err != nil {
 			out.Close()
 			return stats, err
 		}

@@ -17,6 +17,7 @@ import (
 	"math/bits"
 	"net/netip"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,25 +41,49 @@ const (
 )
 
 // isGuessSource reports whether a city_source names a guessed city. Guesses
-// must not count as evidence for anything we build from our own MMDB (the gap
-// list, the router hop votes of lookup -in).
+// must not count as evidence for anything we build from our own MMDB (the router
+// hop votes of lookup -in).
 func isGuessSource(source string) bool { return source == asnMainSource }
+
+// noSampleSources are the city_sources whose city is weak evidence: a /24 whose city comes
+// from one of them still counts as having no city in the gap list (mmdbbuilder gaps), so
+// sample-names keeps sampling customer PTR names there (a customer name is far more precise).
+// They are the guess (80-asn-main), the BGP community layer (25-bgp) and the M-Lab hop
+// layer (36-mlab). lookup -in keeps only the guess out (isGuessSource).
+var noSampleSources = []string{asnMainSource, "25-bgp", "36-mlab"}
+
+// isWeakCitySource reports whether a city_source is one of noSampleSources.
+func isWeakCitySource(source string) bool { return slices.Contains(noSampleSources, source) }
 
 // evidenceFields is ourFields for what feeds our own evidence: the city of a
 // guessed record is left out, so the record counts as a country with no city.
 func evidenceFields(res maxminddb.Result) (country, city string, err error) {
+	country, city, _, err = evidenceRecord(res, isGuessSource)
+	return country, city, err
+}
+
+// gapFields is evidenceFields for the gap list: the city of a weak source (see
+// noSampleSources) is left out as well.
+func gapFields(res maxminddb.Result) (country, city string, err error) {
+	country, city, _, err = evidenceRecord(res, isWeakCitySource)
+	return country, city, err
+}
+
+// evidenceRecord decodes country, city and city_source of a record; the city is left out
+// (country only) when drop(city_source) is true. source is the record's own, also when dropped.
+func evidenceRecord(res maxminddb.Result, drop func(string) bool) (country, city, source string, err error) {
 	var r struct {
 		Country string `maxminddb:"country_code"`
 		City    string `maxminddb:"city_name"`
 		Source  string `maxminddb:"city_source"`
 	}
 	if err = res.Decode(&r); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	if isGuessSource(r.Source) {
+	if drop(r.Source) {
 		r.City = ""
 	}
-	return r.Country, r.City, nil
+	return r.Country, r.City, r.Source, nil
 }
 
 // asnSeg is a range of IPv4 addresses (inclusive) that belongs to one ASN.

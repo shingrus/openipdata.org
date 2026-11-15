@@ -7,6 +7,7 @@
 //	openipdata-worker run-domains                # update-asn-domains
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-bgp [-skip-upload | -force-upload] [-mrt file] # sync-bgp (-mrt: read a local dump, no download, no upload)
+//	openipdata-worker run-mlab [-file path] [-skip-upload | -force-upload] # import-mlab (-file: any local CSV instead of the newest in the inbox)
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
 //	openipdata-worker run-rdns-rules [-reject domain,...] # learn-rdns-rules (task learn)
@@ -17,6 +18,7 @@
 // resolve-ips reads public.generated_rules, public.rdns_city_rules and public.asn, reads and deletes rows of
 // public.visitor_ips (the websites insert them), and writes public.network_traces,
 // public.traced_networks, public.ip_ptr_names, public.customer_name_networks and public.rdns_geo_layer;
+// import-mlab reads public.generated_rules and public.rdns_city_rules and writes public.mlab_hop_names;
 // learn-rdns-rules reads the names of every traced IP (targets, candidates, hops) and ASNs, and writes public.rdns_city_rules
 // and public.rdns_llm_answers),
 // OPENROUTER_API_KEY (optional, a secret: without it propose-codes is skipped), OPENROUTER_MODEL (default
@@ -49,6 +51,7 @@ import (
 	"openipdata.org/hatchet/domains"
 	"openipdata.org/hatchet/geo"
 	"openipdata.org/hatchet/geofeeds"
+	"openipdata.org/hatchet/mlab"
 	"openipdata.org/hatchet/pdb"
 	"openipdata.org/hatchet/rdns"
 	"openipdata.org/hatchet/rdnsrules"
@@ -89,6 +92,15 @@ type SyncBGPInput struct {
 	ForceUpload bool `json:"force_upload"`
 }
 
+// ImportMLabInput is the import-mlab input; there is no cron, the workflow is started by hand.
+type ImportMLabInput struct {
+	// File is the base name of a .csv or .csv.gz file in the inbox (/var/lib/openipdata/mlab/inbox);
+	// empty means the newest one there.
+	File string `json:"file"`
+	// ForceUpload sends the layer even when R2 already holds the same bytes.
+	ForceUpload bool `json:"force_upload"`
+}
+
 // BuildGeoInput is the build-geo-data input; cron runs use the zero value.
 type BuildGeoInput struct {
 	// SkipPublish builds and evaluates the MMDB but uploads nothing (for manual test runs).
@@ -97,7 +109,7 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 38-asn-geofeed, 40-hosting, 50-ix, 60-whois,
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 36-mlab, 38-asn-geofeed, 40-hosting, 50-ix, 60-whois,
 	// 65-rdns and 67-rdns-names (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
@@ -142,6 +154,8 @@ func main() {
 		err = runGeofeeds(ctx, os.Args[2:])
 	case "run-bgp":
 		err = runBGP(ctx, os.Args[2:])
+	case "run-mlab":
+		err = runMLab(ctx, os.Args[2:])
 	case "run-geo":
 		err = runGeo(ctx, os.Args[2:])
 	case "run-rdns":
@@ -149,7 +163,7 @@ func main() {
 	case "run-rdns-rules":
 		err = runRDNSRules(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-geo, run-rdns, or run-rdns-rules)", command)
+		err = fmt.Errorf("unknown command %q (want serve, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-geo, run-rdns, or run-rdns-rules)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -178,6 +192,13 @@ func newPipeline(progress func(string)) (*asn.Pipeline, error) {
 // newBGPPipeline reads the environment; progress receives log lines.
 func newBGPPipeline(progress func(string)) *bgp.Pipeline {
 	return &bgp.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2"), HCPing: env("HC_PING_BGP")}
+}
+
+// newMLabPipeline reads the environment; progress receives log lines. mmdbbuilder is the binary
+// next to this one (empty when unknown: locate then skips the MMDB part).
+func newMLabPipeline(progress func(string)) *mlab.Pipeline {
+	builder, _ := mmdbBuilder()
+	return &mlab.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, MMDBBuilder: builder, R2: env("R2")}
 }
 
 // newGeoPipeline reads the environment; progress receives log lines.
@@ -293,6 +314,7 @@ func serve(ctx context.Context) error {
 			updateASNDomainsWorkflow(client),
 			syncGeofeedsWorkflow(client),
 			syncBGPWorkflow(client),
+			importMLabWorkflow(client),
 			buildGeoWorkflow(client),
 			resolveIPsWorkflow(client),
 			learnRDNSRulesWorkflow(client),
@@ -562,6 +584,46 @@ func syncBGPWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		}
 		return newBGPPipeline(taskLog(ctx)).Upload(ctx, input.ForceUpload)
 	}, taskRetry(hatchet.WithParents(extract), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	return wf
+}
+
+// importMLabWorkflow turns the M-Lab traceroute export the owner copied into the inbox into the
+// ip2geo layer 36-mlab (the city of the router hops before each client /24) in private R2, where
+// build-geo-data reads it. There is no cron.
+func importMLabWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("import-mlab",
+		hatchet.WithWorkflowDescription("M-Lab hop export (inbox) -> PTR names of the hops (public.mlab_hop_names) -> layer 36-mlab in private R2; started by hand"),
+		hatchet.WithWorkflowConcurrency(oneRunLimit("mlab")),
+	)
+	// A file or setting problem is fixed by the owner, not by a retry.
+	permanent := func(err error) error {
+		if errors.Is(err, mlab.ErrPermanent) {
+			return hatchet.NewNonRetryableError(err)
+		}
+		return err
+	}
+	imp := wf.NewTask("import", func(ctx hatchet.Context, input ImportMLabInput) (mlab.ImportOutput, error) {
+		p := newMLabPipeline(taskLog(ctx))
+		if err := p.CheckPGSQL(); err != nil {
+			return mlab.ImportOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		if err := p.CheckUpload(); err != nil {
+			return mlab.ImportOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		out, err := p.Import(ctx, input.File)
+		return out, permanent(err)
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+	names := wf.NewTask("resolve-names", func(ctx hatchet.Context, _ ImportMLabInput) (mlab.NamesOutput, error) {
+		out, err := newMLabPipeline(taskLog(ctx)).ResolveNames(ctx)
+		return out, permanent(err)
+	}, taskRetry(hatchet.WithParents(imp), hatchet.WithExecutionTimeout(3*time.Hour+15*time.Minute))...)
+	locate := wf.NewTask("locate", func(ctx hatchet.Context, _ ImportMLabInput) (mlab.LocateOutput, error) {
+		out, err := newMLabPipeline(taskLog(ctx)).Locate(ctx)
+		return out, permanent(err)
+	}, taskRetry(hatchet.WithParents(names), hatchet.WithExecutionTimeout(time.Hour))...)
+	wf.NewTask("upload", func(ctx hatchet.Context, input ImportMLabInput) (mlab.UploadOutput, error) {
+		return newMLabPipeline(taskLog(ctx)).Upload(ctx, input.ForceUpload)
+	}, taskRetry(hatchet.WithParents(locate), hatchet.WithExecutionTimeout(30*time.Minute))...)
 	return wf
 }
 
@@ -912,6 +974,50 @@ func runBGP(ctx context.Context, args []string) error {
 		return nil
 	}
 	_, err := p.Upload(ctx, *forceUpload)
+	return err
+}
+
+// runMLab runs the import-mlab tasks once, in order, without Hatchet. With -file it imports that
+// local CSV (any path); otherwise the newest file of the inbox.
+func runMLab(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-mlab", flag.ExitOnError)
+	file := flags.String("file", "", "import this local CSV (plain or .gz) instead of the newest file in the inbox")
+	skipUpload := flags.Bool("skip-upload", false, "write the layer file but do not upload it")
+	forceUpload := flags.Bool("force-upload", false, "send the layer even if R2 already holds the same bytes")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-mlab: unexpected argument %q", flags.Arg(0))
+	}
+
+	p := newMLabPipeline(cliLog)
+	if err := p.CheckPGSQL(); err != nil {
+		return err
+	}
+	if !*skipUpload {
+		if err := p.CheckUpload(); err != nil {
+			return err
+		}
+	}
+	var err error
+	if *file != "" {
+		_, err = p.ImportFile(ctx, *file)
+	} else {
+		_, err = p.Import(ctx, "")
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := p.ResolveNames(ctx); err != nil {
+		return err
+	}
+	if _, err := p.Locate(ctx); err != nil {
+		return err
+	}
+	if *skipUpload {
+		cliLog("upload: skipped")
+		return nil
+	}
+	_, err = p.Upload(ctx, *forceUpload)
 	return err
 }
 

@@ -56,6 +56,17 @@ const customerQuery = `SELECT host(h.ip), h.ptr, c.country
 // FNV-1a hash of the IP stay, so the set is the same from day to day. Router names are not capped.
 const customerNamesPerDomain = 5000
 
+// mlabQuery reads the ok PTR names of the router hops import-mlab stored (public.mlab_hop_names).
+// They are router names with no country (loadRouterCountries fills it, as for the traced routers).
+// Only run when the table exists: the learner never runs DDL on it.
+const mlabQuery = `SELECT host(ip), ptr, ''::text FROM public.mlab_hop_names WHERE status = 'ok' AND ptr <> ''`
+
+// mlabNamesPerDomain caps the M-Lab hop names of one registered domain, with the same stable
+// smallest-hash selection as customerNamesPerDomain.
+const mlabNamesPerDomain = 5000
+
+const mlabTableQuery = `SELECT to_regclass('public.mlab_hop_names') IS NOT NULL`
+
 const customerTableQuery = `SELECT to_regclass('public.customer_name_networks') IS NOT NULL`
 
 const hopIPsColumnQuery = `SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -319,11 +330,13 @@ func collectCustomer(heaps map[string]*customerHeap, seen map[string]bool, skipp
 	}
 }
 
-// readDomainNames reads the PTR names of the traced IPs of the last 180 days and of the sampled
+// readDomainNames reads the PTR names of the traced IPs of the last 180 days, the ok names of the M-Lab
+// router hops (public.mlab_hop_names, when the table exists, at most mlabNamesPerDomain per domain, no
+// country yet) and of the sampled
 // customer hosts (customer_name_networks of the last 200 days, when the table exists, at most customerNamesPerDomain per domain; their Country is the row's), grouped
 // by registered domain (public IPv4 only, labels [a-z0-9-] only; the second result counts the names
-// skipped for another label). Each IP counts once (a traced IP that is also a sampled host stays a
-// traced name). The country of the traced names is not set yet (loadRouterCountries).
+// skipped for another label). Each IP counts once (a traced IP that is also an M-Lab hop or a sampled host stays a
+// traced name; an M-Lab hop that is also a sampled host stays a hop name). The country of the traced names is not set yet (loadRouterCountries).
 func readDomainNames(ctx context.Context, conn *pgx.Conn) (map[string][]Name, int, error) {
 	skipped := 0
 	var hasHops bool
@@ -357,15 +370,13 @@ func readDomainNames(ctx context.Context, conn *pgx.Conn) (map[string][]Name, in
 	if err := add(rows, "read recent router names"); err != nil {
 		return nil, 0, err
 	}
-	// Missing table: sample-names has not run, so there are no customer names.
-	var hasCustomers bool
-	if err := conn.QueryRow(ctx, customerTableQuery).Scan(&hasCustomers); err != nil {
-		return nil, 0, safeDBError("read customer name table", err)
-	}
-	if hasCustomers {
-		rows, err := conn.Query(ctx, customerQuery)
+	// capped streams the rows of query through collectCustomer: at most limit names per domain (the
+	// smallest hashes), and an IP already in seen (a traced router) is skipped. With markSeen the kept
+	// IPs go into seen, so a later pass skips them.
+	capped := func(query, op string, limit int, markSeen bool) error {
+		rows, err := conn.Query(ctx, query)
 		if err != nil {
-			return nil, 0, safeDBError("read customer names", err)
+			return safeDBError(op, err)
 		}
 		heaps := map[string]*customerHeap{}
 		err = func() error {
@@ -373,24 +384,50 @@ func readDomainNames(ctx context.Context, conn *pgx.Conn) (map[string][]Name, in
 			for rows.Next() {
 				var ip, ptr, country string
 				if err := rows.Scan(&ip, &ptr, &country); err != nil {
-					return safeDBError("read customer names", err)
+					return safeDBError(op, err)
 				}
-				collectCustomer(heaps, seen, &skipped, customerNamesPerDomain, ip, ptr, country)
+				collectCustomer(heaps, seen, &skipped, limit, ip, ptr, country)
 			}
 			if err := rows.Err(); err != nil {
-				return safeDBError("read customer names", err)
+				return safeDBError(op, err)
 			}
 			return nil
 		}()
 		if err != nil {
-			return nil, 0, err
+			return err
 		}
 		for domain, h := range heaps {
 			list := []customerName(*h)
 			sort.Slice(list, func(i, j int) bool { return list[i].IP < list[j].IP })
 			for _, c := range list {
 				byDomain[domain] = append(byDomain[domain], c.Name)
+				if markSeen {
+					seen[c.IP] = true
+				}
 			}
+		}
+		return nil
+	}
+	// Missing table: import-mlab has not run, so there are no hop names. They are router names,
+	// so they come before the customer names (a router name wins over a customer row for the
+	// same IP) and after the traces (a traced name wins over both).
+	var hasMLab bool
+	if err := conn.QueryRow(ctx, mlabTableQuery).Scan(&hasMLab); err != nil {
+		return nil, 0, safeDBError("read M-Lab hop name table", err)
+	}
+	if hasMLab {
+		if err := capped(mlabQuery, "read M-Lab hop names", mlabNamesPerDomain, true); err != nil {
+			return nil, 0, err
+		}
+	}
+	// Missing table: sample-names has not run, so there are no customer names.
+	var hasCustomers bool
+	if err := conn.QueryRow(ctx, customerTableQuery).Scan(&hasCustomers); err != nil {
+		return nil, 0, safeDBError("read customer name table", err)
+	}
+	if hasCustomers {
+		if err := capped(customerQuery, "read customer names", customerNamesPerDomain, false); err != nil {
+			return nil, 0, err
 		}
 	}
 	return byDomain, skipped, nil

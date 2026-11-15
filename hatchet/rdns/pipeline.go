@@ -75,9 +75,18 @@ type Pipeline struct {
 	gaps      func(ctx context.Context, db, outFile string) error
 	walkSteps int // sample-names: indexes per run, instead of sampleMaxSteps (when > 0)
 	now       func() time.Time
+
+	// dirOverride is set only by MMDBCopy (export.go): the MMDB helpers then work in another
+	// workflow's directory.
+	dirOverride string
 }
 
-func (p *Pipeline) dir() string { return filepath.Join(p.DataDir, "rdns") }
+func (p *Pipeline) dir() string {
+	if p.dirOverride != "" {
+		return p.dirOverride
+	}
+	return filepath.Join(p.DataDir, "rdns")
+}
 
 func (p *Pipeline) log(format string, args ...any) {
 	if p.Progress != nil {
