@@ -330,6 +330,7 @@ type row struct {
 	K, V, A string // label, value, accent text after the value
 	Href    string // A is a link to this page
 	VHref   string // V is a link to this page
+	NHref   string // V is a plain-looking link (the organisation page)
 	Fam     string // "4" or "6": a row the page script fills in with the address of that family, found at From
 	From    string
 	Zone    string // the DNS row: the page script fills it in with the network of the visitor's DNS resolver, using names under this zone
@@ -439,8 +440,29 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	if as != "" {
 		href = s.asnLink(n.ASN)
 	}
-	p.Rows = []row{{K: "Network", V: network, A: as, Href: href}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx, VHref: pfxHref}}
+	p.Rows = []row{{K: "Network", V: network, A: as, Href: href, NHref: s.orgLink(n)}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx, VHref: pfxHref}}
 	return p
+}
+
+// orgLink is the organisation page of the network of this record, from the
+// loaded ASN data (never from the MMDB text), or "" with no data, no such
+// network or no slug.
+func (s *server) orgLink(n asnRecord) string {
+	if !isDigits(n.ASN) {
+		return ""
+	}
+	num, _, valid := asNumber(n.ASN)
+	if !valid || num == 0 {
+		return ""
+	}
+	d := s.asnf.data()
+	if d == nil {
+		return ""
+	}
+	if nw, found := d.find(num); found && nw.slug != "" {
+		return orgPathPrefix + nw.slug
+	}
+	return ""
 }
 
 // addFill puts the row of the other address family next to the family row of
