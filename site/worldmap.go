@@ -20,6 +20,7 @@ import (
 	"html/template"
 	"math"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -27,6 +28,8 @@ const (
 	frameH     = 18.2 // frame height in units
 	mapScale   = 10   // SVG units per unit (tenths)
 	clipMargin = 1.0  // land is clipped this many units outside the frame
+	clipExtraW = 0.7  // zoomed-out maps: the clip reaches this many frame widths left and right of the centre
+	clipExtraH = 1.1  // and this many frame heights above and below it
 	minRing    = 2    // rings with less area than this (SVG units squared) are not drawn
 )
 
@@ -48,9 +51,10 @@ var (
 
 var (
 	// minCos keeps the frame inside one world width plus its margin.
-	minCos  = (frameW + 2*clipMargin) / 360
-	svgOpen = fmt.Sprintf(`<svg class="map" viewBox="%d %d %d %d" preserveAspectRatio="xMidYMin slice" aria-hidden="true" focusable="false">`, -boxL, -boxT, boxL+boxR, boxT+boxB)
-	svgAim  = fmt.Sprintf(`<path class="aim" d="M%d 0H%dM0%dV%d"/><circle class="halo" r="10"/><circle class="pin" r="3.4"/>`, -boxL, boxR, -boxT, boxB)
+	minCos      = (frameW + 2*clipMargin) / 360
+	svgOpen     = fmt.Sprintf(`<svg class="map" viewBox="%d %d %d %d" preserveAspectRatio="xMidYMin slice" aria-hidden="true" focusable="false">`, -boxL, -boxT, boxL+boxR, boxT+boxB)
+	svgOpenMeet = strings.Replace(svgOpen, "xMidYMin slice", "xMidYMid meet", 1)
+	svgAim      = fmt.Sprintf(`<path class="aim" d="M%d 0H%dM0%dV%d"/><circle class="halo" r="10"/><circle class="pin" r="3.4"/>`, -boxL, boxR, -boxT, boxB)
 )
 
 type point struct{ x, y float64 }
@@ -61,6 +65,12 @@ type ipt struct{ x, y int }
 type mapDrawer struct {
 	lat0, lon0   float64
 	c            float64 // longitude scale, cos of the latitude, clamped
+	tolHere      float64 // line simplification tolerance in SVG units for the highlighted country; 0 at normal scale
+	tolOther     float64 // the same for the other land
+	sx, sy       []float64
+	keep         []bool
+	stack        [][2]int
+	zoom         float64 // the frame covers zoom times more degrees; SVG coordinates are divided by it
 	lonLo, lonHi float64 // the clip rectangle in degrees (before shifting by a world width)
 	latLo, latHi float64
 	clipL, clipR float64 // the clip rectangle in units around the point: x in -clipL..clipR
@@ -79,22 +89,80 @@ func (w *world) drawMap(lat, lon float64, highlight string, aim bool) (template.
 	if w == nil || math.IsNaN(lat) || math.IsNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180 {
 		return "", false
 	}
-	d := &mapDrawer{lat0: lat, lon0: lon}
+	return w.draw(lat, lon, math.Max(math.Cos(lat*math.Pi/180), minCos), 1, highlight, aim)
+}
+
+// Zoomed-out country maps: the main extent of the country must fit these
+// shares of the frame, else the map zooms out just enough and centres it.
+const (
+	fitW = 0.9 // the zoomed-out map keeps the whole frame in view (preserveAspectRatio meet), so the frame is used well
+	fitH = 0.84
+)
+
+// countryMap draws the country alone (no aim). A country whose main extent
+// fits the frame at the normal scale keeps the label point at the point of the
+// frame; a bigger one is shown whole, zoomed out, its extent centred.
+func (w *world) countryMap(code string) (template.HTML, bool) {
+	c := w.country(code)
+	if c == nil {
+		return "", false
+	}
+	zoom, cs := c.fit()
+	if zoom <= 1 {
+		return w.drawMap(c.labelY, c.labelX, code, false)
+	}
+	// The point of the frame is (pointX-0.5, pointY-0.5) of it away from the centre.
+	lon := c.extLon + (pointX-0.5)*frameW*zoom/cs
+	lat := c.extLat + (0.5-pointY)*frameH*zoom
+	return w.draw(lat, lon, cs, zoom, code, false)
+}
+
+// fit returns the zoom (1 = the normal scale) at which the main extent fits
+// the frame, and the longitude scale to draw at that zoom (clamped so the
+// frame never needs more than the whole world).
+func (c *wcountry) fit() (zoom, cs float64) {
+	cs = math.Max(math.Cos(c.extLat*math.Pi/180), minCos)
+	zoom = math.Max(c.extLonSpan*cs/(fitW*frameW), c.extLatSpan/(fitH*frameH))
+	if !(zoom > 1) {
+		return 1, cs
+	}
+	return zoom, math.Max(math.Cos(c.extLat*math.Pi/180), minCos*zoom)
+}
+
+// draw draws the frame whose point (lat, lon) sits at pointX, pointY, with
+// the longitude scale c and the zoom.
+func (w *world) draw(lat, lon, c, zoom float64, highlight string, aim bool) (template.HTML, bool) {
+	d := &mapDrawer{lat0: lat, lon0: lon, c: c, zoom: zoom}
+	if zoom > 1 {
+		d.tolHere, d.tolOther = tolHere*zoom, tolOther*zoom
+	}
 	if highlight != "" {
 		if d.highlight = w.country(highlight); d.highlight == nil {
 			return "", false
 		}
 	}
-	d.c = math.Max(math.Cos(lat*math.Pi/180), minCos)
 	d.clipL, d.clipR = float64(boxL)/mapScale+clipMargin, float64(boxR)/mapScale+clipMargin
 	d.clipT, d.clipB = float64(boxT)/mapScale+clipMargin, float64(boxB)/mapScale+clipMargin
-	d.lonLo, d.lonHi = lon-d.clipL/d.c, lon+d.clipR/d.c
-	d.latLo, d.latHi = lat-d.clipB, lat+d.clipT
+	open := svgOpen
+	if zoom > 1 {
+		// "meet" shows the whole frame in any box; land is also painted outside the
+		// viewBox, to fill the free space of a tall or wide box: the clip rectangle is
+		// wider and taller than the frame, around the frame centre, never more than
+		// the world wide.
+		cx, cy := float64(boxR-boxL)/2/mapScale, float64(boxB-boxT)/2/mapScale
+		hw := math.Min(clipExtraW*frameW+clipMargin, 180*c/zoom)
+		hh := clipExtraH*frameH + clipMargin
+		d.clipL, d.clipR = hw-cx, hw+cx
+		d.clipT, d.clipB = hh-cy, hh+cy
+		open = svgOpenMeet
+	}
+	d.lonLo, d.lonHi = lon-d.clipL*zoom/d.c, lon+d.clipR*zoom/d.c
+	d.latLo, d.latHi = lat-d.clipB*zoom, lat+d.clipT*zoom
 	for i := range w.countries {
 		d.country(w, &w.countries[i])
 	}
-	out := make([]byte, 0, len(svgOpen)+len(d.land)+len(d.here)+len(svgAim)+80)
-	out = append(out, svgOpen...)
+	out := make([]byte, 0, len(open)+len(d.land)+len(d.here)+len(svgAim)+80)
+	out = append(out, open...)
 	if len(d.land) > 0 {
 		out = append(out, `<path class="land" d="`...)
 		out = append(out, d.land...)
@@ -140,7 +208,7 @@ func (d *mapDrawer) poly(pts []int16, shift float64, dst *[]byte) {
 	d.a = d.a[:0]
 	inside := true
 	for i := 0; i < len(pts); i += 2 {
-		p := point{(float64(pts[i])/worldUnit + shift - d.lon0) * d.c, d.lat0 - float64(pts[i+1])/worldUnit}
+		p := point{(float64(pts[i])/worldUnit + shift - d.lon0) * d.c / d.zoom, (d.lat0 - float64(pts[i+1])/worldUnit) / d.zoom}
 		if p.x < -d.clipL || p.x > d.clipR || p.y < -d.clipT || p.y > d.clipB {
 			inside = false
 		}
@@ -153,15 +221,110 @@ func (d *mapDrawer) poly(pts []int16, shift float64, dst *[]byte) {
 			return
 		}
 	}
+	if d.tolHere > 0 {
+		tol := d.tolOther
+		if dst == &d.here {
+			tol = d.tolHere
+		}
+		ring = d.simplify(ring, tol*tol)
+		if len(ring) < 3 {
+			return
+		}
+	}
+	// The highlighted country of a map zoomed out this far is written in half units: its lines
+	// are short there, and whole units would turn them into visible steps.
+	half := d.zoom >= halfZoom && dst == &d.here
+	f := 1.0
+	if half {
+		f = 2
+	}
+	ringZoom := minRingZoom
+	if dst != &d.here {
+		ringZoom = minRingOther
+	}
 	d.ints = d.ints[:0]
 	for _, p := range ring {
-		d.ints = append(d.ints, ipt{int(math.Round(p.x * mapScale)), int(math.Round(p.y * mapScale))})
+		d.ints = append(d.ints, ipt{int(math.Round(p.x * mapScale * f)), int(math.Round(p.y * mapScale * f))})
 	}
 	r := tidy(d.ints)
-	if len(r) < 3 || abs(area2(r)) < 2*minRing {
+	if len(r) < 3 || float64(abs(area2(r))) < f*f*2*minRing*math.Max(1, d.zoom*d.zoom*ringZoom) {
 		return
 	}
-	*dst = appendRing(*dst, r)
+	*dst = appendRing(*dst, r, half)
+}
+
+// Zoomed-out maps (zoom > 1) drop points instead of coarsening the grid:
+// Douglas-Peucker with a tolerance of tol * zoom SVG units, a larger one for
+// the land that is not the highlighted country. minRingZoom scales the
+// minimum ring area with the square of the zoom.
+const (
+	tolHere      = 0.45
+	tolOther     = 2.0
+	minRingZoom  = 1.5
+	minRingOther = 3.0
+	halfZoom     = 1.8 // from this zoom the highlighted country is written in half units
+)
+
+// simplify is Douglas-Peucker on a closed ring (in units; the tolerance is in
+// SVG units, tol2 its square): the ring is split at its first point and the
+// point farthest from it, each half is simplified. The result is only good
+// until the next call.
+func (d *mapDrawer) simplify(r []point, tol2 float64) []point {
+	n := len(r)
+	if n < 4 {
+		return r
+	}
+	d.sx = d.sx[:0]
+	for _, p := range r {
+		d.sx = append(d.sx, p.x*mapScale, p.y*mapScale)
+	}
+	pt := func(i int) (float64, float64) { return d.sx[2*(i%n)], d.sx[2*(i%n)+1] }
+	d.keep = append(d.keep[:0], make([]bool, n)...)
+	far, fd := 0, -1.0
+	x0, y0 := pt(0)
+	for i := 1; i < n; i++ {
+		x, y := pt(i)
+		if dd := (x-x0)*(x-x0) + (y-y0)*(y-y0); dd > fd {
+			far, fd = i, dd
+		}
+	}
+	d.keep[0], d.keep[far] = true, true
+	d.stack = append(d.stack[:0], [2]int{0, far}, [2]int{far, n})
+	for len(d.stack) > 0 {
+		s := d.stack[len(d.stack)-1]
+		d.stack = d.stack[:len(d.stack)-1]
+		ax, ay := pt(s[0])
+		bx, by := pt(s[1])
+		dx, dy := bx-ax, by-ay
+		l2 := dx*dx + dy*dy
+		best, bi := -1.0, -1
+		for i := s[0] + 1; i < s[1]; i++ {
+			x, y := pt(i)
+			var dd float64
+			if l2 == 0 {
+				dd = (x-ax)*(x-ax) + (y-ay)*(y-ay)
+			} else {
+				t := math.Max(0, math.Min(1, ((x-ax)*dx+(y-ay)*dy)/l2))
+				ex, ey := x-ax-t*dx, y-ay-t*dy
+				dd = ex*ex + ey*ey
+			}
+			if dd > best {
+				best, bi = dd, i
+			}
+		}
+		if bi >= 0 && best > tol2 {
+			d.keep[bi] = true
+			d.stack = append(d.stack, [2]int{s[0], bi}, [2]int{bi, s[1]})
+		}
+	}
+	out := d.s1[:0]
+	for i, k := range d.keep {
+		if k {
+			out = append(out, r[i])
+		}
+	}
+	d.s1 = out
+	return out
 }
 
 // clip cuts the ring to the clip rectangle (Sutherland-Hodgman, edge by edge,
@@ -260,22 +423,37 @@ func tidy(p []ipt) []ipt {
 	return out
 }
 
-func appendNum(b []byte, n int, sep bool) []byte {
+// appendNum writes n, or n/2 ("3", "-.5", "1.5") when the numbers are half units.
+func appendNum(b []byte, n int, sep, half bool) []byte {
 	if sep && n >= 0 {
 		b = append(b, ' ')
 	}
-	return strconv.AppendInt(b, int64(n), 10)
+	if !half {
+		return strconv.AppendInt(b, int64(n), 10)
+	}
+	if n < 0 {
+		b = append(b, '-')
+		n = -n
+	}
+	if n/2 > 0 || n%2 == 0 {
+		b = strconv.AppendInt(b, int64(n/2), 10)
+	}
+	if n%2 == 1 {
+		b = append(b, '.', '5')
+	}
+	return b
 }
 
-// appendRing writes "M x y l dx dy ... z" with the shortest separators.
-func appendRing(b []byte, r []ipt) []byte {
+// appendRing writes "M x y l dx dy ... z" with the shortest separators; half
+// means the coordinates are in half units.
+func appendRing(b []byte, r []ipt, half bool) []byte {
 	b = append(b, 'M')
-	b = appendNum(b, r[0].x, false)
-	b = appendNum(b, r[0].y, true)
+	b = appendNum(b, r[0].x, false, half)
+	b = appendNum(b, r[0].y, true, half)
 	b = append(b, 'l')
 	for i := 1; i < len(r); i++ {
-		b = appendNum(b, r[i].x-r[i-1].x, i > 1)
-		b = appendNum(b, r[i].y-r[i-1].y, true)
+		b = appendNum(b, r[i].x-r[i-1].x, i > 1, half)
+		b = appendNum(b, r[i].y-r[i-1].y, true, half)
 	}
 	return append(b, 'z')
 }

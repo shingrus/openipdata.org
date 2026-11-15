@@ -346,7 +346,7 @@ type row struct {
 	NHref   string // V is a plain-looking link (the organisation page)
 	Fam     string // "4" or "6": a row the page script fills in with the address of that family, found at From
 	From    string
-	Zone    string // the DNS row: the page script fills it in with the network of the visitor's DNS resolver, using names under this zone
+	Zone    string // the DNS row: the page script fills it in with the address and company of the visitor's DNS resolver, using names under this zone
 	Own     bool   // the row of the address family that is looked up (addFill places the other family's row by it)
 }
 
@@ -376,7 +376,8 @@ func isDigits(s string) bool {
 
 // placeMap is the map behind the place of a record: with a city that has
 // coordinates, with the city at the point of the frame and the aim; with a country and no city, that
-// country's outline in the accent colour, its label point at the point of the frame, no aim;
+// country's outline in the accent colour, its label point at the point of the frame, no aim
+// (a country too big for the frame is zoomed out to fit, centred);
 // otherwise none (a city without coordinates has no map; neither does an
 // unknown country code).
 func (w *world) placeMap(g *geoRecord) template.HTML {
@@ -387,11 +388,8 @@ func (w *world) placeMap(g *geoRecord) template.HTML {
 		}
 		return ""
 	}
-	if c := w.country(g.CountryCode); c != nil {
-		m, _ := w.drawMap(c.labelY, c.labelX, g.CountryCode, false)
-		return m
-	}
-	return ""
+	m, _ := w.countryMap(g.CountryCode)
+	return m
 }
 
 // panelFor builds the panel for a public or non-public address.
@@ -505,14 +503,14 @@ func (s *server) addFill(p *panel, a netip.Addr) bool {
 }
 
 // addDNS appends the DNS row to the visitor's panel p: a dash that the page
-// script fills in with the network of the visitor's DNS resolver. It reports
+// script fills in with the address and company of the visitor's DNS resolver. It reports
 // whether a row was added, which means the page needs resolver.js. Only a
 // panel of a public address (no message) with the feature on gets it.
 func (s *server) addDNS(p *panel) bool {
 	if s.zone == "" || p.Msg != "" {
 		return false
 	}
-	p.Rows = append(p.Rows, row{K: "DNS", V: dash, Zone: s.zone})
+	p.Rows = append(p.Rows, row{K: "DNS resolver", V: dash, Zone: s.zone})
 	return true
 }
 

@@ -334,7 +334,7 @@ func TestTidyAndAppendRing(t *testing.T) {
 		{[]ipt{{-5, -6}, {-1, 2}, {3, -4}}, "M-5-6l4 8 4-6z"},
 		{[]ipt{{100, -200}, {101, -200}, {101, -190}}, "M100-200l1 0 0 10z"},
 	} {
-		if got := string(appendRing(nil, c.r)); got != c.want {
+		if got := string(appendRing(nil, c.r, false)); got != c.want {
 			t.Errorf("appendRing %v = %s, want %s", c.r, got, c.want)
 		}
 	}
@@ -529,6 +529,8 @@ var sizeCases = []struct {
 	{"Sydney", -33.87, 151.21, "", true}, {"Oslo", 59.91, 10.75, "", false}, {"Athens", 37.98, 23.73, "", false},
 	{"Jakarta", -6.21, 106.85, "", true}, {"Reykjavik", 64.15, -21.94, "", false}, {"Suva", -18.14, 178.44, "", true},
 	{"PT", 0, 0, "PT", true}, {"US", 0, 0, "US", true}, {"RU", 0, 0, "RU", false}, {"ID", 0, 0, "ID", true},
+	{"DE", 0, 0, "DE", false}, {"CA", 0, 0, "CA", false}, {"CN", 0, 0, "CN", false}, {"AU", 0, 0, "AU", true},
+	{"BR", 0, 0, "BR", true},
 }
 
 func drawCase(w *world, c struct {
@@ -541,8 +543,7 @@ func drawCase(w *world, c struct {
 		m, ok := w.drawMap(c.lat, c.lon, "", true)
 		return string(m), ok
 	}
-	k := w.country(c.country)
-	m, ok := w.drawMap(k.labelY, k.labelX, c.country, false)
+	m, ok := w.countryMap(c.country)
 	return string(m), ok
 }
 
@@ -609,4 +610,126 @@ func BenchmarkDrawMap(b *testing.B) {
 			}
 		})
 	}
+}
+
+func TestMainExtent(t *testing.T) {
+	w, err := parseWorld(worldBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ext := func(code string) *wcountry {
+		c := w.country(code)
+		if c == nil {
+			t.Fatalf("%s missing", code)
+		}
+		return c
+	}
+	// France: the far departments (French Guiana, Reunion) do not count.
+	if c := ext("FR"); c.extLon < -10 || c.extLon > 15 || c.extLat < 40 || c.extLat > 52 || c.extLonSpan > 20 || c.extLatSpan > 15 {
+		t.Errorf("FR extent %+v", *c)
+	}
+	// Russia: the piece east of the antimeridian is joined the narrow way.
+	if c := ext("RU"); c.extLonSpan > 180 || c.extLonSpan < 100 || c.extLon < 60 || c.extLon > 150 {
+		t.Errorf("RU extent centre %v span %v", c.extLon, c.extLonSpan)
+	}
+	// The United States: Hawaii is small, the extent is North America.
+	if c := ext("US"); c.extLon > -90 || c.extLon < -150 || c.extLatSpan > 50 {
+		t.Errorf("US extent centre %v,%v span %vx%v", c.extLon, c.extLat, c.extLonSpan, c.extLatSpan)
+	}
+	// New Zealand and Fiji cross or touch the antimeridian: a small span, centre in range.
+	for _, code := range []string{"NZ", "FJ"} {
+		c := ext(code)
+		if c.extLonSpan > 30 || c.extLon < -180 || c.extLon > 180 {
+			t.Errorf("%s extent centre %v span %v", code, c.extLon, c.extLonSpan)
+		}
+	}
+	if c := ext("FJ"); math.Abs(c.extLon) < 170 {
+		t.Errorf("FJ centre %v is not near the antimeridian", c.extLon)
+	}
+	// every country with an outline has a sane extent
+	for _, c := range w.countries {
+		if c.count == 0 {
+			continue
+		}
+		if c.extLonSpan <= 0 || c.extLonSpan > 360 || c.extLatSpan < 0 || c.extLon < -180 || c.extLon > 180 || c.extLat < -90 || c.extLat > 90 {
+			t.Errorf("%q: extent centre %v,%v span %vx%v", c.code, c.extLon, c.extLat, c.extLonSpan, c.extLatSpan)
+		}
+	}
+}
+
+func TestCountryMapZoomsOut(t *testing.T) {
+	w, err := parseWorld(worldBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"RU", "US", "CA", "CN", "AU", "BR"} {
+		c := w.country(code)
+		zoom, cs := c.fit()
+		if zoom <= 1 {
+			t.Errorf("%s: zoom %v, want zoomed out", code, zoom)
+			continue
+		}
+		// the extent in frame units (centre of the frame at 0.5, 0.5)
+		hw, hh := c.extLonSpan*cs/zoom/2, c.extLatSpan/zoom/2
+		if hw > fitW*frameW/2+1e-9 || hh > fitH*frameH/2+1e-9 {
+			t.Errorf("%s: the extent is %.1f x %.1f units in a frame of %v x %v", code, 2*hw, 2*hh, frameW, frameH)
+		}
+		if frameW*zoom/cs > 360 {
+			t.Errorf("%s: the frame covers %.0f degrees of longitude", code, frameW*zoom/cs)
+		}
+		m, ok := w.countryMap(code)
+		if !ok || !strings.Contains(string(m), `class="here"`) || strings.Contains(string(m), `class="aim"`) {
+			t.Errorf("%s: no highlighted map without aim", code)
+		}
+		if string(m) != string(mustDraw(t, w, code)) {
+			// placeMap goes through the same path
+			t.Errorf("%s: placeMap differs from countryMap", code)
+		}
+	}
+	// Countries that fit keep today's picture: the label point at the point of the frame.
+	for _, code := range []string{"PT", "DE", "SG", "GB", "FR", "JP"} {
+		c := w.country(code)
+		if zoom, _ := c.fit(); zoom != 1 {
+			t.Errorf("%s: zoom %v, want 1", code, zoom)
+		}
+		old, _ := w.drawMap(c.labelY, c.labelX, code, false)
+		got, _ := w.countryMap(code)
+		if old != got {
+			t.Errorf("%s: the map changed", code)
+		}
+	}
+}
+
+func TestZoomedMapMeets(t *testing.T) {
+	w, err := parseWorld(worldBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ru, _ := w.countryMap("RU")
+	if !strings.Contains(string(ru), `preserveAspectRatio="xMidYMid meet"`) || strings.Contains(string(ru), "slice") {
+		t.Errorf("RU: %.120s", ru)
+	}
+	// the viewBox is the same as for the normal scale
+	vb := regexp.MustCompile(`viewBox="[^"]*"`)
+	if vb.FindString(string(ru)) != vb.FindString(svgOpen) {
+		t.Error("the viewBox of a zoomed map changed")
+	}
+	pt, _ := w.countryMap("PT")
+	if !strings.HasPrefix(string(pt), svgOpen) || strings.Contains(string(pt), "meet") {
+		t.Errorf("PT: %.120s", pt)
+	}
+	// land is painted outside the viewBox for the free space of a tall or wide box: the
+	// clip reaches beyond the frame, never past the world.
+	for _, code := range []string{"RU", "US", "CA", "CN", "AU", "BR"} {
+		c := w.country(code)
+		zoom, cs := c.fit()
+		if hw := math.Min(clipExtraW*frameW+clipMargin, 180*cs/zoom); 2*hw*zoom/cs > 360+1e-9 {
+			t.Errorf("%s: clip covers %v degrees", code, 2*hw*zoom/cs)
+		}
+	}
+}
+
+func mustDraw(t *testing.T, w *world, code string) template.HTML {
+	t.Helper()
+	return w.placeMap(&geoRecord{CountryCode: code})
 }

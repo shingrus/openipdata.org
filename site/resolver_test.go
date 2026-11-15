@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"net"
 	"net/http/httptest"
+	"net/netip"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -142,8 +144,8 @@ func TestResolverRoute(t *testing.T) {
 		{"two tokens", "/resolver?t=" + tok + "&t=" + tok, "$-1\r\n", 400, "{}"},
 		{"not yet", "/resolver?t=" + tok, "$-1\r\n", 404, "{}"},
 		{"redis error", "/resolver?t=" + tok, "-ERR x\r\n", 503, "{}"},
-		{"known", "/resolver?t=" + tok, bulk("203.0.113.9"), 200, `{"name":"Example Net","asn":64500}`},
-		{"unknown network", "/resolver?t=" + tok, bulk("8.8.8.8"), 200, `{}`},
+		{"known", "/resolver?t=" + tok, bulk("203.0.113.9"), 200, `{"ip":"203.0.113.9","name":"EXAMPLE-NET"}`},
+		{"unknown network", "/resolver?t=" + tok, bulk("8.8.8.8"), 200, `{"ip":"8.8.8.8"}`},
 		{"private", "/resolver?t=" + tok, bulk("10.0.0.1"), 200, `{}`},
 		{"garbage", "/resolver?t=" + tok, bulk("nope"), 200, `{}`},
 	} {
@@ -155,9 +157,25 @@ func TestResolverRoute(t *testing.T) {
 		if h.Get("Cache-Control") != "no-store" || h.Get("Content-Type") != "application/json" || h.Get("Access-Control-Allow-Origin") != "*" {
 			t.Errorf("%s: headers %v", c.name, h)
 		}
-		if strings.Contains(w.Body.String(), "203.0.113.9") || strings.Contains(w.Body.String(), "8.8.8.8") {
-			t.Errorf("%s: address in the answer", c.name)
+		if strings.Contains(w.Body.String(), `"asn"`) {
+			t.Errorf("%s: asn key", c.name)
 		}
+	}
+	// With ASN data: the organisation page; a network without a slug: the network page.
+	sa, _ := asnServer(t)
+	sa.public = func(a netip.Addr) bool { return !a.IsLoopback() && !a.IsPrivate() }
+	addr, _ := fakeRedis(t, bulk("203.0.113.9"), nil)
+	sa.useURLs(u4, u6)
+	sa.useBeacon("r.openipdata.org", addr)
+	if w := resolverGet(sa, "GET", "/resolver?t="+tok); w.Body.String() != `{"ip":"203.0.113.9","name":"EXAMPLE-NET","org":"/asn-example-net"}` {
+		t.Errorf("org: %q", w.Body.String())
+	}
+	path := filepath.Join(t.TempDir(), "asn-openipdata.sqlite3")
+	writeASNFile(t, path, []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512}})
+	sn := beaconServer(t, bulk("203.0.113.9"))
+	sn.useASN(path)
+	if w := resolverGet(sn, "GET", "/resolver?t="+tok); w.Body.String() != `{"ip":"203.0.113.9","name":"EXAMPLE-NET","org":"/as64500"}` {
+		t.Errorf("no slug: %q", w.Body.String())
 	}
 	// HEAD: same status and headers, no body; POST is refused.
 	s := beaconServer(t, bulk("203.0.113.9"))
@@ -173,7 +191,7 @@ func TestDNSRowScriptAndCSP(t *testing.T) {
 	s := beaconServer(t, "$-1\r\n")
 	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
 	b, c := w.Body.String(), w.Header().Get("Content-Security-Policy")
-	if !strings.Contains(b, `<dt>DNS</dt><dd id="dns" class="od" data-zone="r.openipdata.org">—</dd>`) {
+	if !strings.Contains(b, `<dt>DNS resolver</dt><dd id="dns" class="od" data-zone="r.openipdata.org">—</dd>`) {
 		t.Errorf("row missing:\n%s", b)
 	}
 	if !strings.Contains(b, "<script>"+fillJS+"</script>\n<script>"+resolverJS+"</script>\n</body>") {
@@ -210,7 +228,7 @@ func TestDNSRowScriptAndCSP(t *testing.T) {
 		if c != "" && (c != s.csp || strings.Contains(c, scriptHash(resolverJS)) || strings.Contains(c, "*")) {
 			t.Errorf("%s: csp %s", name, c)
 		}
-		if strings.Contains(b, `id="dns"`) || strings.Contains(b, resolverJS) || strings.Contains(b, "<dt>DNS</dt>") {
+		if strings.Contains(b, `id="dns"`) || strings.Contains(b, resolverJS) || strings.Contains(b, "<dt>DNS resolver</dt>") {
 			t.Errorf("%s: has the DNS row or script", name)
 		}
 	}
@@ -234,7 +252,7 @@ func TestBeaconOff(t *testing.T) {
 
 func TestResolverScriptShape(t *testing.T) {
 	for _, x := range []string{"AbortController", "3000", "textContent", "createElement", "DOMContentLoaded", `credentials: "omit"`,
-		"crypto.getRandomValues", "0, 800, 1500, 2500", "4294967296"} {
+		"crypto.getRandomValues", "2200, 2000, 2000", "0-9a-fA-F:.", "45", "120"} {
 		if !strings.Contains(resolverJS, x) {
 			t.Errorf("resolverJS lacks %s", x)
 		}
@@ -247,7 +265,11 @@ func TestResolverScriptShape(t *testing.T) {
 	if regexp.MustCompile(`[^\x20-\x7e\n]`).MatchString(resolverJS) {
 		t.Error("non-ASCII in resolverJS")
 	}
-	if strings.Contains(resolverJS, "/resolver") || strings.Contains(resolverJS, "no-cors") {
+	if strings.Contains(resolverJS, "/resolver") {
 		t.Error("resolverJS must read the answer of its own name only")
+	}
+	// One no-cors request: the trigger that only causes the DNS lookup (its answer is not read).
+	if strings.Count(resolverJS, "no-cors") != 1 || !strings.Contains(resolverJS, `u + "t"`) {
+		t.Error("resolverJS must send exactly one trigger request to <name>/t")
 	}
 }

@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"math"
 )
 
 //go:embed static/world.bin
@@ -52,6 +53,10 @@ type wcountry struct {
 	minX, minY   float64
 	maxX, maxY   float64 // bounding box, degrees
 	first, count int32   // polygons world.polys[first:first+count]
+	// The main extent (see mainExtent): its centre and size in degrees.
+	extLon, extLat float64
+	extLonSpan     float64
+	extLatSpan     float64
 }
 
 type world struct {
@@ -205,6 +210,9 @@ func parseWorld(b []byte) (*world, error) {
 		}
 		w.countries = append(w.countries, c)
 	}
+	for i := range w.countries {
+		w.mainExtent(&w.countries[i])
+	}
 	if r.err != nil {
 		return nil, fmt.Errorf("%w: damaged data", errWorld)
 	}
@@ -215,4 +223,84 @@ func parseWorld(b []byte) (*world, error) {
 		return nil, fmt.Errorf("%w: no countries", errWorld)
 	}
 	return w, nil
+}
+
+// mainExtent sets the main extent of a country: the box around its largest
+// ring and every ring of at least a quarter of that area (plain degrees, only
+// to rank rings), so a far, small part (Hawaii, French Guiana, Svalbard) does
+// not stretch it. Longitudes are unwrapped along each ring and the arcs of the
+// rings are joined the narrower way round, so Fiji or Russia across the
+// antimeridian get a small span. The centre is in -180..180.
+func (w *world) mainExtent(c *wcountry) {
+	type ring struct {
+		lo, hi, minY, maxY, area float64
+	}
+	var rs []ring
+	best := 0.0
+	for _, p := range w.polys[c.first : c.first+c.count] {
+		pts := w.pts[p.start*2 : p.end*2]
+		n := len(pts) / 2
+		r := ring{minY: 90, maxY: -90}
+		r.lo, r.hi = math.Inf(1), math.Inf(-1)
+		var prevX, shift, a float64
+		var firstX, firstY, px, py float64
+		for i := 0; i < n; i++ {
+			x, y := float64(pts[2*i])/worldUnit, float64(pts[2*i+1])/worldUnit
+			if i > 0 {
+				if x-prevX+shift > 180 {
+					shift -= 360
+				} else if x-prevX+shift < -180 {
+					shift += 360
+				}
+			}
+			prevX = x
+			ux := x + shift
+			r.lo, r.hi = min(r.lo, ux), max(r.hi, ux)
+			r.minY, r.maxY = min(r.minY, y), max(r.maxY, y)
+			if i == 0 {
+				firstX, firstY = ux, y
+			} else {
+				a += px*y - ux*py
+			}
+			px, py = ux, y
+		}
+		a += px*firstY - firstX*py
+		r.area = math.Abs(a) / 2
+		best = max(best, r.area)
+		rs = append(rs, r)
+	}
+	var kept []ring
+	minY, maxY := 90.0, -90.0
+	for _, r := range rs {
+		if r.area >= best/4 {
+			kept = append(kept, r)
+			minY, maxY = min(minY, r.minY), max(maxY, r.maxY)
+		}
+	}
+	if len(kept) == 0 {
+		return
+	}
+	// The narrowest arc that holds every kept ring: try each ring's left end
+	// as the start.
+	span, start := math.Inf(1), 0.0
+	for _, s := range kept {
+		end := 0.0
+		for _, r := range kept {
+			off := math.Mod(r.lo-s.lo, 360)
+			if off < 0 {
+				off += 360
+			}
+			end = max(end, off+r.hi-r.lo)
+		}
+		if end < span {
+			span, start = end, s.lo
+		}
+	}
+	span = min(span, 360)
+	centre := math.Mod(start+span/2+180, 360)
+	if centre < 0 {
+		centre += 360
+	}
+	c.extLon, c.extLat = centre-180, (minY+maxY)/2
+	c.extLonSpan, c.extLatSpan = span, maxY-minY
 }

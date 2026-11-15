@@ -103,7 +103,17 @@ dl div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;
 dl div:last-child{border-bottom:0}
 dt{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 dd{min-width:0;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
-dd.o6,dd.od{display:flex;align-items:center;min-height:2lh} /* room for a long IPv6 address that arrives later: no layout shift */
+dd.o6,dd.od{display:flex;align-items:center;min-height:2lh}
+dd.od{flex-wrap:wrap;column-gap:10px}
+dd.od>*{min-width:0}
+.dn{color:var(--muted)}a.dn{color:var(--accent)}
+/* waiting for the resolver: dots instead of the dash, CSS only, for 8 s at most */
+#dns{position:relative}
+#dns:not(:has(*)){color:#0000;animation:dash 0s 8s forwards}
+#dns:not(:has(*))::before{content:"•••";position:absolute;color:var(--muted);letter-spacing:3px;clip-path:inset(0 100% 0 0);animation:dots 1s steps(4,jump-none) 8}
+@keyframes dots{to{clip-path:inset(0 -1ch 0 0)}}
+@keyframes dash{to{color:var(--text)}}
+@media (prefers-reduced-motion:reduce){#dns:not(:has(*)){animation-delay:0s}#dns::before{content:none!important}} /* room for a long IPv6 address that arrives later: no layout shift */
 dd .as{margin-left:10px;color:var(--accent)}
 dd a.lnk{color:var(--accent)}
 .msg{padding:20px;font-size:16px;color:var(--muted);overflow-wrap:anywhere}

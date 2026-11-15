@@ -2,8 +2,8 @@ package main
 
 // GET /resolver?t=<token>: the network of the DNS resolver that looked up the
 // page's one-time name. Our DNS server writes the resolver address to Redis;
-// only the network (name and AS number) leaves here, never the address. Neither
-// the token nor the address is logged.
+// the answer holds that address (the resolver's, not the visitor's), its
+// network name and a page link. Neither the token nor the address is logged.
 
 import (
 	"encoding/json"
@@ -46,7 +46,7 @@ func (s *server) serveResolver(w http.ResponseWriter, r *http.Request) {
 	}
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
-	h.Set("Access-Control-Allow-Origin", "*") // the token is a secret and the answer holds no address
+	h.Set("Access-Control-Allow-Origin", "*") // the token is a secret
 	h.Set("Content-Type", "application/json")
 	h.Set("X-Content-Type-Options", "nosniff")
 	code, body := http.StatusOK, []byte("{}")
@@ -66,18 +66,21 @@ func (s *server) serveResolver(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// resolverNetwork is the JSON of the network of a: unknown fields are left out.
+// resolverNetwork is the JSON of resolver address a: the address, the network
+// name and the page to link it to; unknown fields are left out.
 func (s *server) resolverNetwork(a netip.Addr) []byte {
 	var n asnRecord
 	s.asn.lookup(a, &n)
-	name, num := networkOf(n)
-	out := struct {
-		Name string `json:"name,omitempty"`
-		ASN  uint32 `json:"asn,omitempty"`
-	}{Name: name}
-	if v, err := strconv.ParseUint(num, 10, 32); err == nil {
-		out.ASN = uint32(v)
+	_, num := networkOf(n)
+	name := firstNonEmpty(n.Name, n.Org) // the short name (handle), not the organisation
+	org := s.orgLink(n)
+	if org == "" && num != "" {
+		org = s.asnLink(num)
 	}
-	b, _ := json.Marshal(out)
+	b, _ := json.Marshal(struct {
+		IP   string `json:"ip"`
+		Name string `json:"name,omitempty"`
+		Org  string `json:"org,omitempty"`
+	}{a.String(), name, org})
 	return b
 }
