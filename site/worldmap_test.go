@@ -445,14 +445,14 @@ func TestMapOnPages(t *testing.T) {
 				t.Errorf("%s: svg has text, script or style", c.name)
 			}
 		}
-		if n := strings.Count(body, "<script"); n != 2 {
+		if n := strings.Count(body, "<script"); n != 3 { // head, theme and panel (the copy button of the address)
 			t.Errorf("%s: %d scripts", c.name, n)
 		}
 		if strings.Contains(body, "<head>") && strings.Contains(strings.SplitN(body, "</head>", 2)[0], "<svg class=\"map\"") {
 			t.Errorf("%s: map in the head", c.name)
 		}
-		if got := w.Header().Get("Content-Security-Policy"); got != s.csp {
-			t.Errorf("%s: CSP changed: %s", c.name, got)
+		if got := w.Header().Get("Content-Security-Policy"); got != s.cspPnl[0] {
+			t.Errorf("%s: CSP is not the policy of a page with panel.js: %s", c.name, got)
 		}
 	}
 	// ASN pages and the search page have no map.
@@ -550,15 +550,22 @@ func drawCase(w *world, c struct {
 // Limits (raw bytes and gzip, measured 2026-11-15 with static/world.bin made at
 // tolerance 0.08): a map is at most 9 KB raw (the biggest, London, is about 7.8
 // KB; a typical city 4 to 5 KB) and 4 KB gzipped (the biggest is about 2.9 KB).
-// A page with a map is at most 22 KB raw and 9 KB gzipped (the biggest, about
-// 20.5 KB and 7.9 KB, is a dense coast with the fill script); a page without
-// one, such as the address-unknown page, at most 14 KB and 5 KB (about 12.6 KB
-// and 4.4 KB with the fill script).
+// A page with a map is at most 28 KB raw and 10.5 KB gzipped (2026-11-15: the
+// biggest, 28455 and 10365 bytes, is Canada on the fullest visitor page: fill
+// script, DNS script, panel.js, copy and Share buttons; before the copy, share
+// and link work it was 21974 and 8407 with the fill script only). The
+// address-unknown page is at most 14 KB and 5 KB (13900 and 4932 now, 12706 and
+// 4639 before). The visitor page with the fill script: with a map (Lisbon) at
+// most 22 KB and 9 KB (19849 and 7212 now, 15770 and 6021 before), without a
+// map at most 18432 and 6656 (17967 and 6314 now, 13846 and 5110 before).
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 22 << 10, 9 << 10
+	pageMapMaxRaw, pageMapMaxGz = 28672, 10752 // the fullest visitor page with a map: both scripts, panel.js, the DNS row, copy and Share buttons
 	pageMaxRaw, pageMaxGz       = 14 << 10, 5 << 10
+	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
+	visitorMapMaxRaw, visitorMapMaxGz = 22 << 10, 9 << 10
+	visitorMaxRaw, visitorMaxGz       = 18432, 6656
 )
 
 func TestMapSizes(t *testing.T) {
@@ -570,10 +577,12 @@ func TestMapSizes(t *testing.T) {
 			continue
 		}
 		v := makeView(*s.scores.Load())
-		v.Fill = true
-		v.Panel = &panel{Title: "Lookup", Big: "Lisbon", Sub: "Portugal", Map: template.HTML(m), Rows: []row{
-			{K: "Network", V: "Example Net", A: "AS64500", Href: "/as64500"}, {K: "IPv4", V: "203.0.113.9"},
-			{K: "IPv6", V: "—", Fam: "6", From: u6}, {K: "Prefix", V: "203.0.113.0/24"}}}
+		v.Fill, v.Res, v.Pnl = true, true, true // the fullest visitor page: both scripts, the DNS row, copy and share buttons
+		v.Panel = &panel{Title: "Your connection", Big: "Lisbon", Sub: "Portugal", Map: template.HTML(m), Copy: true,
+			Share: "https://openipdata.org/report/" + tok, Rows: []row{
+				{K: "IPv4", V: "203.0.113.9", Copy: true}, {K: "IPv6", V: "—", Fam: "6", From: u6 + "?r=" + tok, Copy: true},
+				{K: "DNS resolver", V: "—", Zone: "r.openipdata.org", Token: tok},
+				{K: "Network", Parts: []part{{Text: "EXAMPLE-NET", Href: "/as64500"}, {Text: "ISP"}, {Text: "example.net"}}}}}
 		page, err := render(s.tmpl, "home.html", v)
 		if err != nil {
 			t.Fatal(err)

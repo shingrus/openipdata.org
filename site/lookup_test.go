@@ -156,15 +156,14 @@ func TestPanelStates(t *testing.T) {
 		want, not    []string
 	}{
 		{"city", "/?203.0.113.9", 200,
-			[]string{"<h2>Lookup</h2>", "<h1>Lisbon</h1>", "<p>Portugal</p>", "<dt>Network</dt>", "Example Net", `<span class="as">AS64500</span>`,
-				"<dt>IPv4</dt><dd>203.0.113.9</dd>", "<dt>Prefix</dt><dd>203.0.113.0/24</dd>", `value="203.0.113.9"`}, []string{"Your connection", "Location unknown"}},
+			[]string{"<h2>Lookup</h2>", "<h1>Lisbon</h1>", "<p>Portugal</p>", "<dt>Network</dt>", `<dd class="c"><span class="w"><span class="v">203.0.113.9</span>`, "Example Net", "<dt>Prefix</dt><dd>203.0.113.0/24</dd>", `value="203.0.113.9"`}, []string{"Your connection", "Location unknown"}},
 		{"city v6", "/?2001:db8::5", 200,
-			[]string{"<h1>Lisbon</h1>", "<dt>IPv6</dt><dd>2001:db8::5</dd>", "<dt>Prefix</dt><dd>2001:db8::/32</dd>", "AS64500"}, nil},
-		{"IPv4", "/?203.0.113.9", 200, []string{"<dt>IPv4</dt><dd>203.0.113.9</dd>", `value="203.0.113.9"`}, []string{"::ffff"}},
+			[]string{"<h1>Lisbon</h1>", "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">2001:db8::5</span><button class=\"cp\"", "<dt>Prefix</dt><dd>2001:db8::/32</dd>", "Example Net"}, nil},
+		{"IPv4", "/?203.0.113.9", 200, []string{"<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\"", `value="203.0.113.9"`}, []string{"::ffff"}},
 		{"country only", "/?198.51.100.1", 200,
 			[]string{"<h1>Spain</h1>", `<div class="place mapped"><svg class="map"`, "<dt>Network</dt><dd>—</dd>", "<dt>Prefix</dt><dd>—</dd>"}, []string{"Lisbon", "city unknown", "<p>"}},
 		{"nothing", "/?192.0.2.1", 200,
-			[]string{`<h1>Location unknown</h1>`, `class="place none"`, "<dt>Network</dt><dd>—</dd>", "<dt>IPv4</dt><dd>192.0.2.1</dd>"}, []string{"city unknown"}},
+			[]string{`<h1>Location unknown</h1>`, `class="place none"`, "<dt>Network</dt><dd>—</dd>", "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">192.0.2.1</span><button class=\"cp\""}, []string{"city unknown"}},
 		{"not public", "/?10.1.2.3", 200,
 			[]string{"10.1.2.3", "Not a public address", `value="10.1.2.3"`}, []string{"<dt>", "Prefix"}},
 		{"not an IP", "/?1.2.3", 400,
@@ -205,7 +204,7 @@ func TestVisitorPanel(t *testing.T) {
 	// Behind nginx: peer is loopback, the header names the visitor.
 	w := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "203.0.113.9")
 	body := w.Body.String()
-	for _, x := range []string{"<h2>Your connection</h2>", "<h1>Lisbon</h1>", `value="203.0.113.9"`, "AS64500"} {
+	for _, x := range []string{"<h2>Your connection</h2>", "<h1>Lisbon</h1>", `value="203.0.113.9"`, "Example Net"} {
 		if !strings.Contains(body, x) {
 			t.Errorf("visitor page lacks %q", x)
 		}
@@ -310,7 +309,7 @@ func TestLookupFilesMissing(t *testing.T) {
 	s.public = func(netip.Addr) bool { return true }
 	w := get(s, "GET", "/?203.0.113.9")
 	body := w.Body.String()
-	for _, x := range []string{"Location unknown", "<dt>Network</dt><dd>—</dd>", "<dt>Prefix</dt><dd>—</dd>", "<dt>IPv4</dt><dd>203.0.113.9</dd>"} {
+	for _, x := range []string{"Location unknown", "<dt>Network</dt><dd>—</dd>", "<dt>Prefix</dt><dd>—</dd>", "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\""} {
 		if w.Code != 200 || !strings.Contains(body, x) {
 			t.Errorf("no files: %d lacks %q", w.Code, x)
 		}
@@ -342,7 +341,7 @@ func TestLookupReloadPicksUpNewFile(t *testing.T) {
 	copyFile(t, "testdata/lookup-geo.mmdb", geo)
 	copyFile(t, "testdata/lookup-asn.mmdb", asn)
 	s.check()
-	if b := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(b, "Lisbon") || !strings.Contains(b, "AS64500") {
+	if b := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(b, "Lisbon") || !strings.Contains(b, "Example Net") {
 		t.Error("new files not picked up")
 	}
 	// A broken replacement keeps the open reader.
@@ -351,7 +350,7 @@ func TestLookupReloadPicksUpNewFile(t *testing.T) {
 	os.Rename(asn+".new", asn)
 	os.Chtimes(asn, time.Now(), time.Now().Add(time.Minute))
 	s.check()
-	if !strings.Contains(get(s, "GET", "/?203.0.113.9").Body.String(), "AS64500") {
+	if !strings.Contains(get(s, "GET", "/?203.0.113.9").Body.String(), "Example Net") {
 		t.Error("broken file dropped the reader")
 	}
 }
@@ -382,7 +381,7 @@ func TestReaderSwapDuringLookups(t *testing.T) {
 				default:
 				}
 				w := get(s, "GET", "/?203.0.113.9")
-				if b := w.Body.String(); w.Code != 200 || !strings.Contains(b, "Lisbon") || !strings.Contains(b, "AS64500") {
+				if b := w.Body.String(); w.Code != 200 || !strings.Contains(b, "Lisbon") || !strings.Contains(b, "Example Net") {
 					t.Error("lookup failed during a swap")
 					return
 				}

@@ -194,8 +194,8 @@ func TestDNSRowScriptAndCSP(t *testing.T) {
 	if !strings.Contains(b, `<dt>DNS resolver</dt><dd id="dns" class="od" data-zone="r.openipdata.org">—</dd>`) {
 		t.Errorf("row missing:\n%s", b)
 	}
-	if !strings.Contains(b, "<script>"+fillJS+"</script>\n<script>"+resolverJS+"</script>\n</body>") {
-		t.Error("scripts not last in order fill, resolver")
+	if !strings.Contains(b, "<script>"+fillJS+"</script>\n<script>"+resolverJS+"</script>\n<script>"+panelJS+"</script>\n</body>") {
+		t.Error("scripts not last in order fill, resolver, panel")
 	}
 	for _, x := range []string{scriptHash(headJS), scriptHash(themeJS), scriptHash(fillJS), scriptHash(resolverJS),
 		"connect-src https://v4.openipdata.org https://v6.openipdata.org https://*.r.openipdata.org;", "default-src 'none'"} {
@@ -211,7 +211,7 @@ func TestDNSRowScriptAndCSP(t *testing.T) {
 	w = fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
 	c = w.Header().Get("Content-Security-Policy")
 	if strings.Contains(c, scriptHash(fillJS)) || !strings.Contains(c, scriptHash(resolverJS)) || !strings.Contains(c, "connect-src https://*.r.openipdata.org;") ||
-		!strings.Contains(w.Body.String(), "<script>"+resolverJS+"</script>\n</body>") {
+		!strings.Contains(w.Body.String(), "<script>"+resolverJS+"</script>\n<script>"+panelJS+"</script>\n</body>") {
 		t.Errorf("dns only: %s", c)
 	}
 	// Pages without the row: no row, no script, the old policy.
@@ -225,7 +225,7 @@ func TestDNSRowScriptAndCSP(t *testing.T) {
 		"top":     fromPeer(s, "/top-asn-by-ip-address", "127.0.0.1:1"),
 	} {
 		c, b := w.Header().Get("Content-Security-Policy"), w.Body.String()
-		if c != "" && (c != s.csp || strings.Contains(c, scriptHash(resolverJS)) || strings.Contains(c, "*")) {
+		if c != "" && (c != s.csp && c != s.cspPnl[0] || strings.Contains(c, scriptHash(resolverJS)) || strings.Contains(c, "*")) {
 			t.Errorf("%s: csp %s", name, c)
 		}
 		if strings.Contains(b, `id="dns"`) || strings.Contains(b, resolverJS) || strings.Contains(b, "<dt>DNS resolver</dt>") {
@@ -239,7 +239,7 @@ func TestBeaconOff(t *testing.T) {
 	s.useBeacon("", "127.0.0.1:1")
 	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
 	if b := w.Body.String(); strings.Contains(b, "DNS") || strings.Contains(b, resolverJS) || strings.Contains(w.Header().Get("Content-Security-Policy"), "*") ||
-		w.Header().Get("Content-Security-Policy") != s.cspFill {
+		w.Header().Get("Content-Security-Policy") != s.cspPnl[1] {
 		t.Error("feature off but visible")
 	}
 	if w := resolverGet(s, "GET", "/resolver?t="+tok); w.Code != 404 {

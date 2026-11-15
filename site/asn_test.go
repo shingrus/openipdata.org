@@ -169,7 +169,7 @@ func TestASNRoutes(t *testing.T) {
 	}{
 		{"network", "/as64500", 200, "", []string{
 			"<title>AS64500 · Example Net · openipdata.org</title>", "<h2>Example Net</h2>", "<p>EXAMPLE-NET</p>",
-			"<dt>Handle</dt><dd>EXAMPLE-NET</dd>", `<dd><a class="lnk" href="/asn-example-net">Example Net</a></dd>`,
+			"<dt>Handle</dt><dd>EXAMPLE-NET</dd>", `<dd><a href="/asn-example-net">Example Net</a></dd>`,
 			"<dt>Domain</dt><dd>example.net</dd>", "<dt>Country</dt><dd>Portugal</dd>", "<dt>Category</dt><dd>isp</dd>",
 			"<dt>IPv4 prefixes</dt><dd>2</dd>", "<dt>IPv6 prefixes</dt><dd>1</dd>", "<dt>IPv4 addresses</dt><dd>512</dd>",
 			`href="/api/as64500"`, "Same organization", `<a href="/as64501">AS64501</a>`, "EXAMPLE-TWO",
@@ -191,9 +191,9 @@ func TestASNRoutes(t *testing.T) {
 			"<title>AS64502 · openipdata.org</title>", "Name unknown", `class="place none s"`,
 			"<dt>Handle</dt><dd>—</dd>", "<dt>Organization</dt><dd>—</dd>", "<dt>Domain</dt><dd>—</dd>", "<dt>Country</dt><dd>—</dd>",
 			"<dt>Category</dt><dd>—</dd>", "<dt>IPv4 prefixes</dt><dd>—</dd>", "<dt>IPv6 prefixes</dt><dd>—</dd>", "<dt>IPv4 addresses</dt><dd>0</dd>",
-		}, []string{"Same organization", "<h2>Prefixes</h2>", `class="lnk"`}},
+		}, []string{"Same organization", "<h2>Prefixes</h2>"}},
 		{"json not json", "/as64504", 200, "", []string{">Broken Net</a>", "<dt>IPv4 prefixes</dt><dd>—</dd>", "<dt>Handle</dt><dd>BROKEN-NET</dd>"}, nil},
-		{"odd slug is not linked", "/as64505", 200, "", []string{"<dt>Organization</dt><dd>Odd Net</dd>"}, []string{"/asn-Odd_Net", `class="lnk"`}},
+		{"odd slug is not linked", "/as64505", 200, "", []string{"<dt>Organization</dt><dd>Odd Net</dd>"}, []string{"/asn-Odd_Net"}},
 		{"org", "/asn-example-net", 200, "", []string{
 			"<title>Example Net · openipdata.org</title>", "<h1>Organization</h1>", "<h2>Example Net</h2>",
 			"<dt>IPv4 addresses</dt><dd>768</dd>", "<dt>Networks</dt><dd>2</dd>", `<a href="/as64500">AS64500</a>`, `<a href="/as64501">AS64501</a>`, `<td class="s">Portugal</td>`,
@@ -423,13 +423,10 @@ func TestASNLookupRedirectAndLink(t *testing.T) {
 		}
 	}
 
-	// The AS text in the panel is a link when the network is in the data.
+	// The Network row of the panel links the handle to the network page when the network is in the data.
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
-	if !strings.Contains(body, `<a class="as" href="/as64500">AS64500</a>`) {
+	if !strings.Contains(body, `<dd><a href="/as64500">EXAMPLE-NET</a> · ISP · example.net</dd>`) {
 		t.Errorf("no link in the panel: %s", body)
-	}
-	if strings.Contains(body, `<span class="as">`) {
-		t.Error("span next to the link")
 	}
 }
 
@@ -444,7 +441,7 @@ func TestASNLinkNeedsTheNetwork(t *testing.T) {
 	s.public = func(netip.Addr) bool { return true }
 	s.useASN(path)
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
-	if !strings.Contains(body, `<span class="as">AS64500</span>`) || strings.Contains(body, `href="/as64500"`) {
+	if !strings.Contains(body, `<dt>Network</dt><dd>Example Net</dd>`) || strings.Contains(body, `href="/as64500"`) {
 		t.Error("a link to a network that is not in the data")
 	}
 }
@@ -483,7 +480,7 @@ func TestASNNotLoaded(t *testing.T) {
 		if w := get(s, "GET", "/"); w.Code != 200 {
 			t.Errorf("%s: home %d", name, w.Code)
 		}
-		if body := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(body, `<span class="as">AS64500</span>`) || strings.Contains(body, `<a class="as"`) {
+		if body := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(body, `<dt>Network</dt><dd>Example Net</dd>`) || strings.Contains(body, `href="/as64500"`) {
 			t.Errorf("%s: the AS text is not plain", name)
 		}
 		if w := get(s, "GET", "/healthz"); w.Code != 200 {
@@ -677,7 +674,7 @@ func TestASNPageHygieneAndSize(t *testing.T) {
 		text := w.Body.String()
 		clean := strings.ReplaceAll(text, "http://www.w3.org/2000/svg", "")
 		for _, m := range regexp.MustCompile(`https?://[^\s"'<>]+`).FindAllString(clean, -1) {
-			if m != "https://github.com/shingrus/openipdata.org" {
+			if m != "https://github.com/shingrus/openipdata.org" && m != "https://openipdata.org"+c.target { // the canonical link
 				t.Errorf("%s: unexpected URL %s", c.target, m)
 			}
 		}

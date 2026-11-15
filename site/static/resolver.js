@@ -2,15 +2,18 @@
 (function () {
   var d = document.getElementById("dns");
   if (!d || !window.crypto || !crypto.getRandomValues) return;
-  var b = crypto.getRandomValues(new Uint8Array(16)), t = "", w = [2200, 2000, 2000];
-  b.forEach(function (x) { t += (x < 16 ? "0" : "") + x.toString(16); });
+  var t = d.dataset.token || "", w = [2200, 2000, 2000]; // the server's token, when it made one for the saved report
+  if (!/^[0-9a-f]{32}$/.test(t)) {
+    t = "";
+    crypto.getRandomValues(new Uint8Array(16)).forEach(function (x) { t += (x < 16 ? "0" : "") + x.toString(16); });
+  }
   var u = "https://" + t + "." + d.dataset.zone + "/";
   function show(j) {
     var p = j && j.ip, n = j && j.name, o = j && j.org;
     if (typeof p != "string" || p.length > 45 || !/^[0-9a-fA-F:.]+$/.test(p)) return;
     d.textContent = "";
     var l = document.createElement("a");
-    l.className = "lnk"; l.href = "/?" + p; l.textContent = p;
+    l.href = "/?" + p; l.textContent = p;
     d.appendChild(l);
     if (typeof n != "string" || !n || n.length > 120) return;
     var e = document.createElement(typeof o == "string" && /^\/as(n-[a-z0-9-]{1,255}|[0-9]{1,10})$/.test(o) ? "a" : "span");

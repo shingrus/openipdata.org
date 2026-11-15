@@ -73,14 +73,14 @@ func TestVisitorRows(t *testing.T) {
 	if i4 < 0 || i6 < i4 {
 		t.Fatalf("rows IPv4, IPv6 not in order: %d %d", i4, i6)
 	}
-	if !strings.Contains(b, "<dt>IPv4</dt><dd>203.0.113.9</dd>") ||
-		!strings.Contains(b, `<dt>IPv6</dt><dd id="other" class="o6" data-fam="6" data-from="`+u6+`">—</dd>`) {
+	if !strings.Contains(b, "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\"") ||
+		!strings.Contains(b, `<dt>IPv6</dt><dd id="other" class="c o6" data-fam="6" data-from="`+u6+`"><span class="w"><span class="v">—</span><button class="cp" type="button" hidden`) {
 		t.Errorf("v4 visitor rows wrong:\n%s", b)
 	}
 	// An IPv6 visitor: IPv4 is the dash row.
 	b = fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "2001:db8::9").Body.String()
-	if !strings.Contains(b, "<dt>IPv6</dt><dd>2001:db8::9</dd>") ||
-		!strings.Contains(b, `<dt>IPv4</dt><dd id="other" class="o4" data-fam="4" data-from="`+u4+`">—</dd>`) ||
+	if !strings.Contains(b, "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">2001:db8::9</span><button class=\"cp\"") ||
+		!strings.Contains(b, `<dt>IPv4</dt><dd id="other" class="c o4" data-fam="4" data-from="`+u4+`"><span class="w"><span class="v">—</span><button class="cp" type="button" hidden`) ||
 		strings.Index(b, "<dt>IPv4</dt>") > strings.Index(b, "<dt>IPv6</dt>") {
 		t.Errorf("v6 visitor rows wrong:\n%s", b)
 	}
@@ -93,8 +93,8 @@ func TestFillScriptAndCSP(t *testing.T) {
 	s := fillServer(t, u4, u6)
 	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
 	b, c := w.Body.String(), w.Header().Get("Content-Security-Policy")
-	if !strings.Contains(b, "<script>"+fillJS+"</script>\n</body>") {
-		t.Error("fill script is not the last thing in the body")
+	if !strings.Contains(b, "<script>"+fillJS+"</script>\n<script>"+panelJS+"</script>\n</body>") {
+		t.Error("fill script and panel script are not the last things in the body")
 	}
 	if strings.Index(b, fillJS) < strings.Index(b, themeJS) || strings.Contains(b[:strings.Index(b, "</head>")], "fetch(") {
 		t.Error("fill script before the click script or in the head")
@@ -156,7 +156,7 @@ func TestEmptyURLsPageAsToday(t *testing.T) {
 		if strings.Contains(b, "fetch(") || strings.Contains(b, `id="other"`) || strings.Contains(b, "<dt>IPv6</dt>") {
 			t.Error("page differs from today")
 		}
-		if c != csp() || strings.Contains(c, "connect-src") {
+		if c != s.cspPnl[0] || strings.Contains(c, "connect-src") {
 			t.Errorf("csp: %s", c)
 		}
 	}
@@ -202,8 +202,8 @@ func TestAddFillIgnoresOtherRows(t *testing.T) {
 		addr string
 		want []string
 	}{
-		{"203.0.113.9", []string{"X", "Network", "IPv4", "IPv6", "Y", "Prefix"}},
-		{"2001:db8::9", []string{"X", "Network", "IPv4", "IPv6", "Y", "Prefix"}},
+		{"203.0.113.9", []string{"X", "IPv4", "IPv6", "Network", "Y", "Prefix"}},
+		{"2001:db8::9", []string{"X", "IPv4", "IPv6", "Network", "Y", "Prefix"}},
 	} {
 		a := netip.MustParseAddr(c.addr)
 		p := s.panelFor("Your connection", a)
@@ -254,15 +254,16 @@ func TestScriptTextRejectsEmpty(t *testing.T) {
 
 // The visitor page with the fill script, with a map (Lisbon fixture) and
 // without one (an address the geo fixture does not know), stays under the size
-// limits of TestMapSizes and TestPageHygiene. Measured 2026-11-15: 16.7 KB and
-// 6.4 KB gzipped with the Lisbon map, 12.6 KB and 4.7 KB without (before the map: 11.9 KB and 4.5 KB).
+// limits of TestMapSizes (see the numbers there). Logged: 19849 and 17967 bytes
+// (7212 and 6314 gzipped) on 2026-11-15, after the copy and share work.
 func TestVisitorPageSize(t *testing.T) {
 	s := fillServer(t, u4, u6)
 	for _, c := range []struct {
 		addr     string
 		max, gzm int
-	}{{"203.0.113.9", pageMapMaxRaw, pageMapMaxGz}, {"192.0.2.9", pageMaxRaw, pageMaxGz}} {
+	}{{"203.0.113.9", visitorMapMaxRaw, visitorMapMaxGz}, {"192.0.2.9", visitorMaxRaw, visitorMaxGz}} {
 		body := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", c.addr).Body.Bytes()
+		t.Logf("visitor page for %s: %d bytes, %d gzipped", c.addr, len(body), gzipped(body))
 		if len(body) > c.max || gzipped(body) > c.gzm {
 			t.Errorf("visitor page for %s is %d bytes (limit %d), %d gzipped (limit %d)", c.addr, len(body), c.max, gzipped(body), c.gzm)
 		}

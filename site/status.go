@@ -129,7 +129,12 @@ func (s *server) statusFacts() []fact {
 		}
 		dns = []kv{{K: "Row", V: "on"}, {K: "Zone", V: s.zone}, red}
 	}
-	return append(facts, fact{Title: "DNS beacon", Rows: dns})
+	facts = append(facts, fact{Title: "DNS beacon", Rows: dns})
+	sh := kv{K: "Share", V: "off", None: true}
+	if s.shareOn() {
+		sh = kv{K: "Share", V: "on"}
+	}
+	return append(facts, fact{Title: "Share", Rows: []kv{sh}})
 }
 
 func (s *server) serveStatus(w http.ResponseWriter, r *http.Request) {

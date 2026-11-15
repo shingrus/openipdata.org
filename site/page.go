@@ -19,7 +19,8 @@ var styleCSS string
 // The only scripts of the page: static/head.js (saved theme), static/theme.js
 // (theme button), static/fill.js (fills the row of the other address family,
 // see home.html; it sits at the end of the body) and static/resolver.js (fills
-// the DNS row, after fill.js). They are put into the page
+// the DNS row, after fill.js) and static/panel.js (the copy and share buttons,
+// last; only on a page that has them). They are put into the page
 // inline, and their sha256 goes into the CSP, so both use the very same string
 // from scriptText(): the file without its first comment line and without
 // surrounding white space. Never built from request data.
@@ -39,7 +40,10 @@ var fillSrc string
 //go:embed static/resolver.js
 var resolverSrc string
 
-var headJS, themeJS, fillJS, resolverJS = scriptText("head.js", headSrc), scriptText("theme.js", themeSrc), scriptText("fill.js", fillSrc), scriptText("resolver.js", resolverSrc)
+//go:embed static/panel.js
+var panelSrc string
+
+var headJS, themeJS, fillJS, resolverJS, panelJS = scriptText("head.js", headSrc), scriptText("theme.js", themeSrc), scriptText("fill.js", fillSrc), scriptText("resolver.js", resolverSrc), scriptText("panel.js", panelSrc)
 
 // scriptText returns the text that goes between <script> and </script>. An empty
 // file (or one with only a comment) stops the program at start.
@@ -67,6 +71,8 @@ type pageBase struct {
 	FillJS          template.JS
 	Res             bool // the page has the DNS row for resolverJS to fill
 	ResJS           template.JS
+	Pnl             bool // the page has copy or share buttons for panelJS
+	PnlJS           template.JS
 	CSS             template.CSS
 	Title           string // the page title
 	Input           string // lookup bar value
@@ -112,7 +118,7 @@ func makeCard(label string, v float64) card {
 
 func makeView(s scores) view {
 	v := view{
-		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), ResJS: template.JS(resolverJS), CSS: template.CSS(styleCSS)},
+		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), ResJS: template.JS(resolverJS), PnlJS: template.JS(panelJS), CSS: template.CSS(styleCSS)},
 		Cards: []card{
 			makeCard("right country", s.Country),
 			makeCard("right city", s.City),
@@ -151,8 +157,15 @@ func csp(origins ...string) string { return cspWith(origins, "") }
 
 // cspWith is csp for a page that may also have the DNS row: with a zone the
 // hash of resolver.js and connect-src for the names under the zone.
-func cspWith(origins []string, zone string) string {
+func cspWith(origins []string, zone string) string { return cspFor(origins, zone, false) }
+
+// cspFor is cspWith for a page that may also have the copy and share buttons
+// (pnl): the hash of panel.js, which fetches nothing.
+func cspFor(origins []string, zone string, pnl bool) string {
 	script := scriptHash(headJS) + " " + scriptHash(themeJS)
+	if pnl {
+		script += " " + scriptHash(panelJS)
+	}
 	connect := slices.Clone(origins)
 	if len(origins) > 0 {
 		script += " " + scriptHash(fillJS)

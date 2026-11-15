@@ -339,15 +339,19 @@ type asnRecord struct {
 	Org  string `maxminddb:"org"`
 }
 
+// part is one piece of a row value: text, or a link when Href is set.
+type part struct{ Text, Href string }
+
 type row struct {
-	K, V, A string // label, value, accent text after the value
-	Href    string // A is a link to this page
-	VHref   string // V is a link to this page
-	NHref   string // V is a plain-looking link (the organisation page)
-	Fam     string // "4" or "6": a row the page script fills in with the address of that family, found at From
-	From    string
-	Zone    string // the DNS row: the page script fills it in with the address and company of the visitor's DNS resolver, using names under this zone
-	Own     bool   // the row of the address family that is looked up (addFill places the other family's row by it)
+	K, V  string
+	Parts []part // the value is these parts, joined by " · " (the Network row)
+	VHref string // V is a link to this page
+	Fam   string // "4" or "6": a row the page script fills in with the address of that family, found at From
+	From  string
+	Zone  string // the DNS row: the page script fills it in with the address and company of the visitor's DNS resolver, using names under this zone
+	Token string // the DNS row: the one-time name the page asks for (made by the server when the visit is saved); empty = the script makes its own
+	Copy  bool   // V is an address with a copy button (hidden until the page script runs)
+	Own   bool   // the row of the address family that is looked up (addFill places the other family's row by it)
 }
 
 // panel is the "Your connection" / "Lookup" panel.
@@ -360,6 +364,11 @@ type panel struct {
 	None  bool          // no location: Big is shown grey
 	Map   template.HTML // the outline map behind the place (see worldmap.go), or empty
 	Rows  []row
+	Right string // right side of the head (the time of a shared report)
+	Share string // the link the Share button copies; empty = no button
+	Copy  bool   // a row has a copy button: the page has panel.js
+
+	snap *snapshot // what a visit of the home page saves (see share.go); nil on other pages
 }
 
 func isDigits(s string) bool {
@@ -408,7 +417,25 @@ func (w *world) cached(k mapKey, draw func() template.HTML) template.HTML {
 	return w.cache.get(k, draw)
 }
 
-// panelFor builds the panel for a public or non-public address.
+// placeBlock is what the place half of the panel shows for a record, and its
+// map.
+func (s *server) placeBlock(g *geoRecord) (big, sub string, none bool, m template.HTML) {
+	country := g.CountryName
+	if country == "" {
+		country = g.CountryCode
+	}
+	switch {
+	case g.CityName != "":
+		return g.CityName, country, false, s.world.placeMap(g)
+	case country != "":
+		return country, "", false, s.world.placeMap(g) // no city: the country alone, no second line
+	}
+	return "Location unknown", "", true, ""
+}
+
+// panelFor builds the panel for a public or non-public address: the family
+// row, the Network row and the Prefix row, in this order (the visitor's own
+// page rearranges them, see visitorRows).
 func (s *server) panelFor(title string, a netip.Addr) panel {
 	p := panel{Title: title}
 	if !s.public(a) {
@@ -417,34 +444,11 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	}
 	var g geoRecord
 	s.geo.lookup(a, &g)
-	country := g.CountryName
-	if country == "" {
-		country = g.CountryCode
-	}
-	switch {
-	case g.CityName != "":
-		p.Big, p.Sub = g.CityName, country
-		p.Map = s.world.placeMap(&g)
-	case country != "":
-		p.Big = country // no city: the country alone, no second line
-		p.Map = s.world.placeMap(&g)
-	default:
-		p.Big, p.None = "Location unknown", true
-	}
+	p.Big, p.Sub, p.None, p.Map = s.placeBlock(&g)
 
 	var n asnRecord
 	prefix, found := s.asn.lookup(a, &n)
-	network, num := networkOf(n)
-	as := ""
-	if num != "" {
-		as = "AS" + num
-	}
-	switch {
-	case network == "" && as == "":
-		network = dash
-	case network == "":
-		network, as = as, ""
-	}
+	info := s.networkInfo(n)
 	pfx, pfxHref := dash, ""
 	if found && prefix.IsValid() {
 		pfx = prefix.String()
@@ -459,16 +463,26 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 			}
 		}
 	}
-	family := "IPv6"
+	family, fam := "IPv6", 6
 	if a.Is4() {
-		family = "IPv4"
+		family, fam = "IPv4", 4
 	}
-	href := ""
-	if as != "" {
-		href = s.asnLink(n.ASN)
+	p.Rows = []row{{K: family, V: a.String(), Own: true, Copy: true}, {K: "Network", Parts: info.parts()}, {K: "Prefix", V: pfx, VHref: pfxHref}}
+	p.Copy = true
+	p.snap = &snapshot{Created: s.now().UTC().Format(time.RFC3339), IP: a.String(), Family: fam, Network: info}
+	if g.CityName != "" || g.CountryCode != "" || g.CountryName != "" {
+		p.snap.Place = placeSnap{City: clip(g.CityName, 120), Country: clip(g.CountryName, 120), CC: clip(g.CountryCode, 2)}
+		if lat, lon, ok := g.coords(); ok && g.CityName != "" {
+			p.snap.Place.Lat, p.snap.Place.Lon = &lat, &lon
+		}
 	}
-	p.Rows = []row{{K: "Network", V: network, A: as, Href: href, NHref: s.orgLink(n)}, {K: family, V: a.String(), Own: true}, {K: "Prefix", V: pfx, VHref: pfxHref}}
 	return p
+}
+
+// visitorRows turns the panel of the visitor's own address into the rows of
+// the visitor's page: no Prefix row.
+func visitorRows(p *panel) {
+	p.Rows = slices.DeleteFunc(p.Rows, func(r row) bool { return r.K == "Prefix" })
 }
 
 // orgLink is the organisation page of the network of this record, from the
@@ -514,11 +528,11 @@ func (s *server) addFill(p *panel, a netip.Addr) bool {
 	if a.Is4() {
 		own++ // IPv4 first, then IPv6: after the family row for an IPv4 address, before it for IPv6
 	}
-	p.Rows = slices.Insert(p.Rows, own, row{K: "IPv" + fam, V: dash, Fam: fam, From: from})
+	p.Rows = slices.Insert(p.Rows, own, row{K: "IPv" + fam, V: dash, Fam: fam, From: from, Copy: true})
 	return true
 }
 
-// addDNS appends the DNS row to the visitor's panel p: a dash that the page
+// addDNS puts the DNS row (before the Network row) into the visitor's panel p: a dash that the page
 // script fills in with the address and company of the visitor's DNS resolver. It reports
 // whether a row was added, which means the page needs resolver.js. Only a
 // panel of a public address (no message) with the feature on gets it.
@@ -526,7 +540,11 @@ func (s *server) addDNS(p *panel) bool {
 	if s.zone == "" || p.Msg != "" {
 		return false
 	}
-	p.Rows = append(p.Rows, row{K: "DNS resolver", V: dash, Zone: s.zone})
+	i := slices.IndexFunc(p.Rows, func(r row) bool { return r.K == "Network" }) // before the Network row
+	if i < 0 {
+		i = len(p.Rows)
+	}
+	p.Rows = slices.Insert(p.Rows, i, row{K: "DNS resolver", V: dash, Zone: s.zone})
 	return true
 }
 

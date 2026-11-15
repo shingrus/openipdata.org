@@ -2,7 +2,7 @@
 (function () {
   var d = document.getElementById("other");
   if (!d) return;
-  var f = d.dataset.fam, u = d.dataset.from;
+  var f = d.dataset.fam, u = d.dataset.from, v = d.querySelector(".v"), b = d.querySelector(".cp");
   function ok(s) {
     if (f == "4") {
       var p = s.split(".");
@@ -15,7 +15,7 @@
       var c = new AbortController(), k = setTimeout(function () { c.abort(); }, 4000);
       fetch(u, { signal: c.signal, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
         .then(function (r) { return r.ok ? r.text() : ""; })
-        .then(function (t) { t = t.trim(); if (ok(t)) d.textContent = t; })
+        .then(function (t) { t = t.trim(); if (v && ok(t)) { v.textContent = t; if (b) b.hidden = false; } })
         .catch(function () {})
         .then(function () { clearTimeout(k); });
     } catch (e) {}

@@ -4,6 +4,7 @@ package main
 // page's one-time name. Our DNS server writes the resolver address to Redis;
 // the answer holds that address (the resolver's, not the visitor's), its
 // network name and a page link. Neither the token nor the address is logged.
+// With a saved report (see share.go) the answer is also added to it.
 
 import (
 	"encoding/json"
@@ -57,7 +58,11 @@ func (s *server) serveResolver(w http.ResponseWriter, r *http.Request) {
 	} else if !found {
 		code = http.StatusNotFound
 	} else if a, ok := parseAddr(val); ok && s.public(a) {
-		body = s.resolverNetwork(a)
+		info := s.resolverNetwork(a)
+		body, _ = json.Marshal(info)
+		if r.Method == http.MethodGet {
+			s.noteResolver(t[0], info) // the report of the page that made this name, if it has one
+		}
 	}
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(code)
@@ -66,9 +71,9 @@ func (s *server) serveResolver(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// resolverNetwork is the JSON of resolver address a: the address, the network
-// name and the page to link it to; unknown fields are left out.
-func (s *server) resolverNetwork(a netip.Addr) []byte {
+// resolverNetwork is the answer about resolver address a: the address, the
+// network name and the page to link it to; unknown fields are left out.
+func (s *server) resolverNetwork(a netip.Addr) resolverSnap {
 	var n asnRecord
 	s.asn.lookup(a, &n)
 	_, num := networkOf(n)
@@ -77,10 +82,5 @@ func (s *server) resolverNetwork(a netip.Addr) []byte {
 	if org == "" && num != "" {
 		org = s.asnLink(num)
 	}
-	b, _ := json.Marshal(struct {
-		IP   string `json:"ip"`
-		Name string `json:"name,omitempty"`
-		Org  string `json:"org,omitempty"`
-	}{a.String(), name, org})
-	return b
+	return resolverSnap{IP: a.String(), Name: clip(name, 120), Org: org}
 }

@@ -1,14 +1,4 @@
-{{template "top" .}}{{with .Panel}}<section class="panel">
-<div class="head"><h2>{{.Title}}</h2></div>
-{{if .Msg}}<p class="msg">{{if .Addr}}<span class="mono">{{.Addr}}</span>{{end}}{{.Msg}}</p>
-{{else}}<div class="conn">
-<div class="place{{if .None}} none{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
-<dl>
-{{range .Rows}}<div><dt>{{.K}}</dt><dd{{if .Fam}} id="other" class="o{{.Fam}}" data-fam="{{.Fam}}" data-from="{{.From}}"{{else if .Zone}} id="dns" class="od" data-zone="{{.Zone}}"{{end}}>{{if .VHref}}<a class="lnk" href="{{.VHref}}">{{.V}}</a>{{else if .NHref}}<a href="{{.NHref}}">{{.V}}</a>{{else}}{{.V}}{{end}}{{if .A}}{{if .Href}}<a class="as" href="{{.Href}}">{{.A}}</a>{{else}}<span class="as">{{.A}}</span>{{end}}{{end}}</dd></div>
-{{end}}</dl>
-</div>
-{{end}}</section>
-{{end}}<section class="panel">
+{{template "top" .}}{{with .Panel}}{{template "panel" .}}{{end}}<section class="panel">
 <div class="head"><h2>Accuracy</h2>{{if .Updated}} <span class="r">Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time></span>{{end}}</div>
 <div class="acc">
 {{range .Cards}}<div><span class="num">{{.Num}}{{if .Pct}}<i>%</i>{{end}}</span><span class="lab">{{.Label}}</span><span class="bar" style="--v:{{.Bar}}"></span></div>

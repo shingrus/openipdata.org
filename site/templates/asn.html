@@ -1,4 +1,4 @@
-{{define "val"}}{{if .Href}}<a class="lnk" href="{{.Href}}">{{.V}}</a>{{else}}{{.V}}{{end}}{{if .A}}{{if .V}} {{end}}<a class="lnk" href="{{.AHref}}">{{.A}}</a>{{end}}{{end}}{{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
+{{define "val"}}{{if .Href}}<a href="{{.Href}}">{{.V}}</a>{{else}}{{.V}}{{end}}{{if .A}}{{if .V}} {{end}}<a href="{{.AHref}}">{{.A}}</a>{{end}}{{end}}{{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
 {{template "top" .}}{{with .Notice}}<section class="panel">
 <div class="head"><h1>{{$.NoticeHead}}</h1>{{with $.NoticeRight}}<span class="r">{{.}}</span>{{end}}</div>
 <p class="msg">{{.}}</p>

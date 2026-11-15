@@ -1,8 +1,9 @@
 package main
 
-// A tiny Redis client for one command: HGET beacon:<token> resolver_ip, over
-// loopback. Standard library only. Neither the token nor the value is ever
-// logged or put in an error: errors are one of a few fixed kinds.
+// A tiny Redis client over loopback, one connection per command: HGET (the
+// resolver of a beacon name), GET, SET with EX and SET XX KEEPTTL (shared
+// reports). Standard library only. No key, token, id or value is ever logged
+// or put in an error: errors are one of a few fixed kinds.
 
 import (
 	"bufio"
@@ -12,6 +13,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -49,10 +51,67 @@ func checkRedisAddr(v string) error {
 	return nil
 }
 
-// hget returns the value of the field, found = false for a null reply. Any
-// other outcome is an error of a fixed kind.
-func (c *redisClient) hget(key, field string) (val string, found bool, err error) {
-	val, found, err = c.do(key, field)
+// reply is one Redis answer: a status line ("+OK"), an integer, or a bulk
+// string (null = the key does not exist).
+type reply struct {
+	kind byte // '+', ':' or '$'
+	text string
+	null bool
+}
+
+// call sends one command and reads one answer. A bulk longer than max, an
+// error reply and anything unexpected are errors of fixed kinds. Nothing of
+// the command or the answer is logged or put in an error.
+func (c *redisClient) call(max int, args ...string) (reply, error) {
+	dl := time.Now().Add(redisDeadline)
+	conn, err := (&net.Dialer{Deadline: dl}).Dial("tcp", c.addr)
+	if err != nil {
+		return reply{}, errRedisConnect
+	}
+	defer conn.Close()
+	conn.SetDeadline(dl)
+	var b strings.Builder
+	fmt.Fprintf(&b, "*%d\r\n", len(args))
+	for _, a := range args {
+		fmt.Fprintf(&b, "$%d\r\n%s\r\n", len(a), a)
+	}
+	if _, err := io.WriteString(conn, b.String()); err != nil {
+		return reply{}, redisErr(err)
+	}
+	br := bufio.NewReaderSize(conn, 128)
+	line, err := br.ReadSlice('\n') // a longer line is bufio.ErrBufferFull: unexpected
+	if err != nil {
+		return reply{}, redisErr(err)
+	}
+	if len(line) < 4 || line[len(line)-2] != '\r' {
+		return reply{}, errRedisReply
+	}
+	body := string(line[1 : len(line)-2])
+	switch line[0] {
+	case '+', ':':
+		return reply{kind: line[0], text: body}, nil
+	case '$':
+		n, err := strconv.Atoi(body)
+		if err != nil || n < -1 || n > max {
+			return reply{}, errRedisReply
+		}
+		if n == -1 {
+			return reply{kind: '$', null: true}, nil
+		}
+		buf := make([]byte, n+2)
+		if _, err := io.ReadFull(br, buf); err != nil {
+			return reply{}, redisErr(err)
+		}
+		if buf[n] != '\r' || buf[n+1] != '\n' {
+			return reply{}, errRedisReply
+		}
+		return reply{kind: '$', text: string(buf[:n])}, nil
+	}
+	return reply{}, errRedisReply // error reply or garbage
+}
+
+// note logs the kind of a failure once until the next good answer.
+func (c *redisClient) note(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch {
@@ -62,43 +121,61 @@ func (c *redisClient) hget(key, field string) (val string, found bool, err error
 		c.lastErr = err.Error()
 		log.Printf("redis: %v", err)
 	}
-	return
 }
 
-func (c *redisClient) do(key, field string) (string, bool, error) {
-	dl := time.Now().Add(redisDeadline)
-	conn, err := (&net.Dialer{Deadline: dl}).Dial("tcp", c.addr)
-	if err != nil {
-		return "", false, errRedisConnect
+// hget returns the value of the field, found = false for a null reply. Any
+// other outcome is an error of a fixed kind.
+func (c *redisClient) hget(key, field string) (val string, found bool, err error) {
+	r, err := c.call(redisMaxValue, "HGET", key, field)
+	c.note(err)
+	if err == nil && r.kind != '$' {
+		err = errRedisReply
 	}
-	defer conn.Close()
-	conn.SetDeadline(dl)
-	if _, err := fmt.Fprintf(conn, "*3\r\n$4\r\nHGET\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(field), field); err != nil {
-		return "", false, redisErr(err)
+	if err != nil || r.null {
+		return "", false, err
 	}
-	br := bufio.NewReaderSize(conn, 128)
-	line, err := br.ReadSlice('\n') // a longer line is bufio.ErrBufferFull: unexpected
-	if err != nil {
-		return "", false, redisErr(err)
+	return r.text, true, nil
+}
+
+// get returns the string at key (at most max bytes), found = false for none.
+func (c *redisClient) get(key string, max int) (val string, found bool, err error) {
+	r, err := c.call(max, "GET", key)
+	c.note(err)
+	if err == nil && r.kind != '$' {
+		err = errRedisReply
 	}
-	if len(line) < 4 || line[0] != '$' || line[len(line)-2] != '\r' {
-		return "", false, errRedisReply // error reply, integer, status or garbage
+	if err != nil || r.null {
+		return "", false, err
 	}
-	n, err := strconv.Atoi(string(line[1 : len(line)-2]))
-	if err != nil || n < -1 || n > redisMaxValue {
-		return "", false, errRedisReply
+	return r.text, true, nil
+}
+
+// setEX stores val at key, to expire after ttl (whole seconds).
+func (c *redisClient) setEX(key, val string, ttl time.Duration) error {
+	r, err := c.call(8, "SET", key, val, "EX", strconv.Itoa(int(ttl/time.Second)))
+	if err == nil && (r.kind != '+' || r.text != "OK") {
+		err = errRedisReply
 	}
-	if n == -1 {
-		return "", false, nil
+	c.note(err)
+	return err
+}
+
+// replaceKeepTTL replaces the value of an existing key and keeps its
+// remaining lifetime (SET XX KEEPTTL: a key that has just expired is not
+// created again, so nothing is left without an expiry). found = false when
+// the key does not exist.
+func (c *redisClient) replaceKeepTTL(key, val string) (found bool, err error) {
+	r, err := c.call(8, "SET", key, val, "XX", "KEEPTTL")
+	switch {
+	case err != nil:
+	case r.kind == '+' && r.text == "OK":
+		found = true
+	case r.kind == '$' && r.null:
+	default:
+		err = errRedisReply
 	}
-	buf := make([]byte, n+2)
-	if _, err := io.ReadFull(br, buf); err != nil {
-		return "", false, redisErr(err)
-	}
-	if buf[n] != '\r' || buf[n+1] != '\n' {
-		return "", false, errRedisReply
-	}
-	return string(buf[:n]), true, nil
+	c.note(err)
+	return found, err
 }
 
 func redisErr(err error) error {
@@ -112,6 +189,6 @@ func redisErr(err error) error {
 // ping reports whether Redis answers a command (the key cannot exist; a null
 // reply is an answer). Nothing is logged.
 func (c *redisClient) ping() bool {
-	_, _, err := c.do("status:none", "x")
+	_, err := c.call(redisMaxValue, "HGET", "status:none", "x")
 	return err == nil
 }

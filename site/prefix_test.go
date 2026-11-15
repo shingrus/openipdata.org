@@ -356,14 +356,14 @@ func TestPrefixPages(t *testing.T) {
 	}{
 		{"exact, two networks", "/prefix/203.0.113.0/24", true, []string{
 			"<title>203.0.113.0/24 · AS64500 · Example Net · openipdata.org</title>", "<h1>Prefix</h1>", `<div class="place s m mapped">`, "<h2>203.0.113.0/24</h2>", "<p>Lisbon, Portugal</p>",
-			`<dd>Example Net <a class="lnk" href="/as64500">AS64500</a><br>Example Two <a class="lnk" href="/as64501">AS64501</a></dd>`,
+			`<dd>Example Net <a href="/as64500">AS64500</a><br>Example Two <a href="/as64501">AS64501</a></dd>`,
 			"<dt>Addresses</dt><dd>256</dd>", `class="aim"`,
 			"More specific prefixes", `<td class="a"><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></td><td class="a"><a href="/as64501">AS64501</a></td><td>Example Two</td>`,
 			`value=""`, `href="/top-asn-by-ip-address"`,
 		}, []string{"Part of", "Places", "Location unknown", "more prefixes"}},
 		{"covered only, inside one record", "/prefix/203.0.113.0/25", false, []string{
 			"<title>203.0.113.0/25 · openipdata.org</title>", "<p>Lisbon, Portugal</p>", `class="aim"`,
-			`<dt>Part of</dt><dd><a class="lnk" href="/prefix/203.0.113.0/24">203.0.113.0/24</a> <a class="lnk" href="/as64500">AS64500</a></dd>`,
+			`<dt>Part of</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a> <a href="/as64500">AS64500</a></dd>`,
 			"<dt>Addresses</dt><dd>128</dd>",
 		}, []string{"<dt>Network</dt>", "More specific", "Places"}},
 		{"IPv6 exact", "/prefix/2001:db8::/32", true, []string{
@@ -371,10 +371,10 @@ func TestPrefixPages(t *testing.T) {
 			`<a href="/prefix/2001:db8:1::/48">2001:db8:1::/48</a>`, `<a href="/prefix/2001:db8:ffff::/48">`, "<dt>Network</dt>",
 		}, []string{"<dt>Addresses</dt>", "Part of"}},
 		{"IPv6 leaf with a parent", "/prefix/2001:db8:1::/48", true, []string{
-			"<dt>/64s</dt><dd>65,536</dd>", `<dt>Part of</dt><dd><a class="lnk" href="/prefix/2001:db8::/32">2001:db8::/32</a> <a class="lnk" href="/as64500">AS64500</a></dd>`, "<dt>Network</dt><dd>Big Net",
+			"<dt>/64s</dt><dd>65,536</dd>", `<dt>Part of</dt><dd><a href="/prefix/2001:db8::/32">2001:db8::/32</a> <a href="/as64500">AS64500</a></dd>`, "<dt>Network</dt><dd>Big Net",
 		}, []string{"More specific"}},
 		{"IPv6 longer than /64", "/prefix/2001:db8:1::/96", false, []string{"<dt>/64s</dt><dd>&lt;1</dd>", "Part of"}, nil},
-		{"IPv6 /128", "/prefix/2001:db8:1::5/128", false, []string{"<h2>2001:db8:1::5/128</h2>", "<dt>/64s</dt><dd>&lt;1</dd>", `class="lnk" href="/prefix/2001:db8:1::/48"`}, nil},
+		{"IPv6 /128", "/prefix/2001:db8:1::5/128", false, []string{"<h2>2001:db8:1::5/128</h2>", "<dt>/64s</dt><dd>&lt;1</dd>", `<a href="/prefix/2001:db8:1::/48"`}, nil},
 		{"announced only inside", "/prefix/198.18.0.0/21", false, []string{"<dt>Addresses</dt><dd>2,048</dd>", "More specific prefixes"}, []string{"Part of", "<dt>Network</dt>"}},
 		{"a piece of a prefix with a smaller piece announced", "/prefix/198.18.0.0/23", false, []string{"198.18.0.0/22", `href="/prefix/198.18.0.0/25"`}, nil},
 		{"many networks, one prefix", "/prefix/198.18.8.0/24", true, []string{
@@ -543,9 +543,9 @@ func TestPrefixLinksOnOtherPages(t *testing.T) {
 
 	// The lookup panel shows the longest announced prefix and links it.
 	for _, c := range []struct{ target, want string }{
-		{"/?203.0.113.9", `<dt>Prefix</dt><dd><a class="lnk" href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`},
-		{"/?203.0.113.200", `<dd><a class="lnk" href="/prefix/203.0.113.128/25">203.0.113.128/25</a></dd>`}, // the MMDB says /24
-		{"/?2001:db8::5", `<a class="lnk" href="/prefix/2001:db8::/32">2001:db8::/32</a>`},
+		{"/?203.0.113.9", `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`},
+		{"/?203.0.113.200", `<dd><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></dd>`}, // the MMDB says /24
+		{"/?2001:db8::5", `<a href="/prefix/2001:db8::/32">2001:db8::/32</a>`},
 	} {
 		if b := get(s, "GET", c.target).Body.String(); !strings.Contains(b, c.want) {
 			t.Errorf("%s: no %q", c.target, c.want)
@@ -555,9 +555,9 @@ func TestPrefixLinksOnOtherPages(t *testing.T) {
 	if b := get(s, "GET", "/?192.0.2.1").Body.String(); !strings.Contains(b, "<dt>Prefix</dt><dd>—</dd>") {
 		t.Error("an address with no prefix")
 	}
-	// The visitor's page stays private and has the link as well.
+	// The visitor's page stays private and has no Prefix row, so no prefix link.
 	w := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "203.0.113.9")
-	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || !strings.Contains(w.Body.String(), `href="/prefix/203.0.113.0/24"`) {
+	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || strings.Contains(w.Body.String(), `href="/prefix/`) {
 		t.Errorf("visitor page: %v", w.Header())
 	}
 	// Without the ASN data the panel keeps today's value, unlinked.

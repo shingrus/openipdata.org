@@ -1,19 +1,15 @@
 /* The ASN pages: added to style.css on those pages only. */
 .head h1{font:inherit;color:var(--text);min-width:0}
-.head a.r:hover{color:var(--accent)}
 .place.s{min-height:150px}
 .place h2{position:relative;font-size:clamp(26px,4.5vw,40px);font-weight:600;line-height:1.08;letter-spacing:-.03em;overflow-wrap:anywhere}
 .place.none h2{color:var(--faint)}
 .place.m h2{font:500 clamp(20px,3.6vw,30px)/1.15 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.02em}
 .place p.none{color:var(--faint)}
-.pf a:hover{text-decoration:underline}
 .place.s p{font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
 .conn.w dl div,.fact dl div{grid-template-columns:132px minmax(0,1fr)}
 dt{overflow-wrap:anywhere}
 dd.none{color:var(--faint)}
 .fact dl{grid-auto-rows:auto}
-.tbl a,.note a{color:var(--accent)}
-dd a.lnk:hover,.tbl a:hover,.note a:hover{text-decoration:underline}
 .tbl{width:100%;border-collapse:collapse}
 .tbl th{padding:10px 20px;text-align:left;font-size:11px;font-weight:500;line-height:1.3;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
 .tbl td{padding:9px 20px;border-bottom:1px solid var(--line);vertical-align:baseline;overflow-wrap:break-word}

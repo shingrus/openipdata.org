@@ -187,9 +187,13 @@ beacon_prepare() {
     # rejects the configuration: unknown module 'mod-dnstap').
     apt-get install -y -qq knot knot-module-dnstap redis-server python3-certbot-dns-rfc2136 openssl >/dev/null
 
-    # Redis: loopback only, nothing kept on disk, a hard memory limit that drops the oldest keys, so a
-    # flood of random names cannot fill the memory. A marked block at the end of the file (the last
-    # setting wins); rewritten on every run.
+    # Redis: loopback only. It holds two kinds of keys: the beacon keys of the DNS row (short lived, a
+    # flood of random names must not fill the memory) and the shared reports of the website (30 days,
+    # visitor addresses included; see AGENTS.md, "Share"), which must survive a restart and must not be
+    # pushed out by beacon keys. So: RDB snapshots on (appendonly stays off), and a memory limit with
+    # volatile-ttl, which drops the keys that expire soonest first (beacons, 10 minutes or less, before
+    # reports, 30 days). (save lines add up, so the empty save first clears the distribution's own list.)
+    # A marked block at the end of the file (the last setting wins); rewritten on every run.
     local tmp
     tmp="$(mktemp)"
     sed '/^# BEGIN openipdata-beacon$/,/^# END openipdata-beacon$/d' "$REDIS_CONF" >"$tmp"
@@ -199,15 +203,17 @@ bind 127.0.0.1
 port 6379
 protected-mode yes
 save ""
+save 900 1
+save 300 100
 appendonly no
-maxmemory 64mb
-maxmemory-policy allkeys-lru
+maxmemory 256mb
+maxmemory-policy volatile-ttl
 # END openipdata-beacon
 REDIS
     if ! cmp -s "$tmp" "$REDIS_CONF"; then
         cat "$tmp" >"$REDIS_CONF"
         systemctl restart redis-server
-        log "redis: settings written (loopback only, no persistence, 64mb allkeys-lru)"
+        log "redis: settings written (loopback only, RDB snapshots, 256mb volatile-ttl)"
     fi
     rm -f "$tmp"
     systemctl enable --now redis-server >/dev/null 2>&1 || log "warning: could not enable redis-server"

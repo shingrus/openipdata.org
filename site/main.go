@@ -27,7 +27,15 @@
 //	          up (<token>.<zone>, e.g. r.openipdata.org); empty (the default) = no DNS row,
 //	          no script, /resolver answers 404.
 //	REDIS_ADDR  loopback address of the Redis where our DNS server records the
-//	          resolver of each name (default 127.0.0.1:6379).
+//	          resolver of each name, and where shared reports are kept (default
+//	          127.0.0.1:6379).
+//	SHARE     on (default) or off: save a snapshot of every visit of the home page
+//	          for 30 days so the Share button can link to it, and serve
+//	          /report/<id>. Needs Redis; with it off nothing is written and
+//	          /report/... answers 404.
+//	SITE_ORIGIN  origin of the share links, the canonical URLs, robots.txt and the
+//	          sitemaps (default https://openipdata.org; an absolute https URL
+//	          without path).
 //
 // Both MMDBs are opened again when their file changes; a missing file only
 // means unknown values on the page. The ASN SQLite file is loaded again when
@@ -52,6 +60,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -90,6 +99,10 @@ type server struct {
 	origins    []string  // origins of V4_URL and V6_URL
 	zone       string    // names of the DNS row are <token>.<zone>; empty = no DNS row
 	redis      *redisClient
+	share      bool           // SHARE: save a snapshot of every visit and serve /report/<id> (needs Redis)
+	origin     string         // SITE_ORIGIN: the origin of the share links
+	shareMu    [64]sync.Mutex // updates of one report run one after another (see updateReport)
+	cspPnl     [4]string      // csp of a page that has panel.js, by fill (1) and res (2)
 	public     func(netip.Addr) bool
 	world      *world           // country outlines for the map, decoded once at start
 	placeLimit int              // most MMDB records read for the places of a prefix page
@@ -126,10 +139,26 @@ func (s *server) buildCSP() {
 		s.cspRes = cspWith(nil, s.zone)
 		s.cspBoth = cspWith(s.origins, s.zone)
 	}
+	// The same four with panel.js.
+	s.cspPnl[0] = cspFor(nil, "", true)
+	s.cspPnl[1] = cspFor(s.origins, "", true)
+	s.cspPnl[2] = cspFor(nil, s.zone, true)
+	s.cspPnl[3] = cspFor(s.origins, s.zone, true)
 }
 
-// pageCSP is the policy of a page with the fill script and/or the DNS row script.
-func (s *server) pageCSP(fill, res bool) string {
+// pageCSP is the policy of a page with the fill script, the DNS row script
+// and/or the panel script (copy and share buttons).
+func (s *server) pageCSP(fill, res, pnl bool) string {
+	if pnl {
+		i := 0
+		if fill {
+			i |= 1
+		}
+		if res {
+			i |= 2
+		}
+		return s.cspPnl[i]
+	}
 	switch {
 	case fill && res:
 		return s.cspBoth
@@ -171,7 +200,7 @@ func newServer(geoPath, asnPath, realIP string) (*server, error) {
 		world: w, placeLimit: placeRecords,
 		tmpl: tmpl, csp: csp(), fonts: map[string][]byte{},
 		geo: &mmdbFile{path: geoPath}, asn: &mmdbFile{path: asnPath}, asnf: &asnFile{},
-		realIP: realIP, public: isPublic,
+		realIP: realIP, public: isPublic, share: true, origin: defaultOrigin,
 		started: time.Now(), now: time.Now,
 	}
 	for _, name := range []string{"geist-latin.woff2", "geist-mono-latin.woff2"} {
@@ -187,6 +216,7 @@ func newServer(geoPath, asnPath, realIP string) (*server, error) {
 	s.asn.reload()
 	sc := s.geo.stamp()
 	s.scores.Store(&sc)
+	s.buildCSP()
 	return s, nil
 }
 
@@ -243,6 +273,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMovedPermanently)
 	case p == "/resolver":
 		s.serveResolver(w, r)
+	case strings.HasPrefix(p, "/report/"):
+		s.serveReport(w, r)
 	case s.serveASN(w, r):
 	case p == "/healthz":
 		w.Header().Set("Cache-Control", "no-store")
@@ -321,17 +353,22 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		if a, ok := clientAddr(r, s.realIP); ok {
 			input = a.String()
 			p = s.panelFor("Your connection", a)
+			visitorRows(&p)
 			fill = s.addFill(&p, a)
 			res = s.addDNS(&p)
+			if r.Method == http.MethodGet { // a HEAD request (a monitor) saves nothing
+				s.startShare(&p)
+			}
 		} else {
 			p = panel{Title: "Your connection", Msg: "Address unknown"}
 		}
 	}
 	v := makeView(*s.scores.Load())
 	v.Panel, v.Input, v.Title, v.Fill, v.Res = &p, input, title, fill, res
+	v.Pnl = p.Copy
 	v.NoIndex = q.kind == "bad" || q.kind == "lookup"
-	if fill || res {
-		h.Set("Content-Security-Policy", s.pageCSP(fill, res))
+	if fill || res || v.Pnl {
+		h.Set("Content-Security-Policy", s.pageCSP(fill, res, v.Pnl))
 	}
 	body, err := render(s.tmpl, "home.html", v)
 	if err != nil {
@@ -359,6 +396,7 @@ func (s *server) serveIP(w http.ResponseWriter, r *http.Request) {
 	code, body := http.StatusOK, "unknown\n"
 	if a, ok := clientAddr(r, s.realIP); ok {
 		body = a.String() + "\n"
+		s.noteOther(r, a) // r=<report id>: the report gets this address when it is the other family's
 	} else {
 		code = http.StatusServiceUnavailable
 	}
@@ -461,10 +499,28 @@ func main() {
 		fatal("REDIS_ADDR", err)
 	}
 
+	shareOn := true
+	switch os.Getenv("SHARE") {
+	case "", "on":
+	case "off":
+		shareOn = false
+	default:
+		fatal("SHARE", errors.New("must be on or off"))
+	}
+	origin := defaultOrigin
+	if v := os.Getenv("SITE_ORIGIN"); v != "" {
+		o, err := checkOrigin(v)
+		if err != nil {
+			fatal("SITE_ORIGIN", err)
+		}
+		origin = o
+	}
+
 	s, err := newServer(mmdb, asnDB, realIP)
 	if err != nil {
 		fatal("start", err)
 	}
+	s.useShare(shareOn, origin)
 	s.useURLs(urls["V4_URL"], urls["V6_URL"])
 	s.useBeacon(zone, redisAddr)
 	s.useASN(asnSQLite)
