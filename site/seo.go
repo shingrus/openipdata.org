@@ -163,7 +163,7 @@ func (s *server) static() *seoStatic {
 	}
 	eo := xmlEscape(s.origin)
 	p := &seoStatic{origin: s.origin}
-	p.robots = []byte("User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nSitemap: " + s.canon("/sitemap.xml") + "\n")
+	p.robots = []byte("User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nDisallow: /json\nSitemap: " + s.canon("/sitemap.xml") + "\n")
 	p.llms = []byte(s.llmsText())
 	pg := []byte(urlsetOpen)
 	pg = appendLoc(pg, "url", eo, "/")
@@ -225,6 +225,23 @@ type sitemapSet struct {
 	netF, orgF []smFile
 	idxOnce    sync.Once
 	idx        *cachedPage
+	ctyF       smFile // /sitemap-countries.xml: every country page, in the order of the Countries ranking
+}
+
+// countriesSitemap builds /sitemap-countries.xml on its first request.
+func (s *server) countriesSitemap(d *asnData) *cachedPage {
+	f := &d.sitemaps().ctyF
+	f.once.Do(func() {
+		eo := xmlEscape(s.origin)
+		b := []byte(urlsetOpen)
+		for _, c := range d.countries {
+			if slug := d.cslug[c.cc]; slug != "" {
+				b = appendLoc(b, "url", eo, countryHrefOf(slug))
+			}
+		}
+		f.pg = newPage(append(b, "</urlset>\n"...))
+	})
+	return f.pg
 }
 
 func chunks(n int) int { return (n + sitemapChunk - 1) / sitemapChunk }
@@ -290,6 +307,7 @@ func (s *server) sitemapIndex(d *asnData) *cachedPage {
 		for k := 1; k <= len(m.orgF); k++ {
 			b = appendLoc(b, "sitemap", eo, "/sitemap-organizations-"+strconv.Itoa(k)+".xml")
 		}
+		b = appendLoc(b, "sitemap", eo, "/sitemap-countries.xml")
 		m.idx = newPage(append(b, "</sitemapindex>\n"...))
 	})
 	return m.idx
@@ -315,6 +333,14 @@ func (s *server) serveSitemap(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		servePage(w, r, s.sitemapIndex(d), xmlType, seoCache)
+		return true
+	case "/sitemap-countries.xml":
+		d := s.asnf.data()
+		if d == nil {
+			sitemapNotLoaded(w, r)
+			return true
+		}
+		servePage(w, r, s.countriesSitemap(d), xmlType, seoCache)
 		return true
 	}
 	var orgs bool

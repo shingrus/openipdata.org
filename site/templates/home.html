@@ -1,4 +1,5 @@
-{{template "top" .}}{{with .Panel}}{{template "panel" .}}{{end}}<section class="panel">
+{{template "top" .}}{{with .Panel}}{{template "panel" .}}{{end}}{{if .Hint}}<p class="hint">API: <a href="{{.Hint}}">curl {{.HintHost}}{{.Hint}}</a></p>
+{{end}}<section class="panel">
 <div class="head"><h2>Accuracy</h2>{{if .Updated}} <span class="r">Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time></span>{{end}}</div>
 <div class="acc">
 {{range .Cards}}<div><span class="num">{{.Num}}{{if .Pct}}<i>%</i>{{end}}</span><span class="lab">{{.Label}}</span><span class="bar" style="--v:{{.Bar}}"></span></div>

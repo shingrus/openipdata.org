@@ -244,6 +244,9 @@ func (s *server) llmsText() string {
 	b.WriteString("- " + o + "/as<number>: one network\n")
 	b.WriteString("- " + o + "/prefix/<cidr>: one announced prefix\n")
 	b.WriteString("- " + o + "/api/as<number>: one network as JSON\n")
+	b.WriteString("- " + o + "/json: your own address as JSON (country, city, coordinates, network)\n")
+	b.WriteString("- " + o + "/json/<ip>: one address as JSON\n")
+	b.WriteString("- " + o + "/<country>-asn-list: the networks of one country (for example /united-kingdom-asn-list)\n")
 	return b.String()
 }
 

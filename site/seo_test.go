@@ -156,7 +156,7 @@ func TestCutWords(t *testing.T) {
 
 func TestRobotsTxt(t *testing.T) {
 	s, _ := asnServer(t)
-	want := "User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nSitemap: https://openipdata.org/sitemap.xml\n"
+	want := "User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nDisallow: /json\nSitemap: https://openipdata.org/sitemap.xml\n"
 	w := get(s, "GET", "/robots.txt")
 	if w.Code != 200 || w.Body.String() != want {
 		t.Errorf("robots.txt: %d %q", w.Code, w.Body.String())
@@ -208,7 +208,7 @@ func TestSitemaps(t *testing.T) {
 	w := get(s, "GET", "/sitemap.xml")
 	var idx sitemapIndex
 	parseXML(t, w.Body.String(), &idx)
-	want := []string{"https://openipdata.org/sitemap-pages.xml", "https://openipdata.org/sitemap-networks-1.xml", "https://openipdata.org/sitemap-organizations-1.xml"}
+	want := []string{"https://openipdata.org/sitemap-pages.xml", "https://openipdata.org/sitemap-networks-1.xml", "https://openipdata.org/sitemap-organizations-1.xml", "https://openipdata.org/sitemap-countries.xml"}
 	if fmt.Sprint(idx.Sitemaps) != fmt.Sprint(want) || !strings.Contains(w.Body.String(), `xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`) {
 		t.Errorf("index %v", idx.Sitemaps)
 	}
@@ -259,7 +259,7 @@ func TestSitemapChunks(t *testing.T) {
 	var idx sitemapIndex
 	parseXML(t, get(s, "GET", "/sitemap.xml").Body.String(), &idx)
 	// 645 networks = 7 files; 5 organizations = 1 file.
-	if len(idx.Sitemaps) != 1+7+1 || idx.Sitemaps[7] != "https://openipdata.org/sitemap-networks-7.xml" || idx.Sitemaps[8] != "https://openipdata.org/sitemap-organizations-1.xml" {
+	if len(idx.Sitemaps) != 1+7+1+1 || idx.Sitemaps[7] != "https://openipdata.org/sitemap-networks-7.xml" || idx.Sitemaps[8] != "https://openipdata.org/sitemap-organizations-1.xml" {
 		t.Errorf("index %v", idx.Sitemaps)
 	}
 	seen := map[string]bool{}

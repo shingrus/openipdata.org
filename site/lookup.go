@@ -364,12 +364,17 @@ type panel struct {
 	Addr  string
 	Big   string
 	Sub   string
-	None  bool          // no location: Big is shown grey
-	Map   template.HTML // the outline map behind the place (see worldmap.go), or empty
-	Rows  []row
-	Right string // right side of the head (the time of a shared report)
-	Share bool   // the visitor's own page has the (hidden) Share button, which makes a report on demand (POST /share)
-	Copy  bool   // a row has a copy button: the page has panel.js
+	// BigHref or SubHref: the country name (Big when there is no city, else Sub) links to its country page.
+	BigHref, SubHref string
+	None             bool          // no location: Big is shown grey
+	Map              template.HTML // the outline map behind the place (see worldmap.go), or empty
+	Rows             []row
+	Right            string      // right side of the head (the time of a shared report)
+	Share            bool        // the visitor's own page has the (hidden) Share button, which makes a report on demand (POST /share)
+	Copy             bool        // a row has a copy button: the page has panel.js
+	Hdr              template.JS // the visitor's own page only: the request headers as JSON for the Headers button (never on a lookup or report page)
+
+	Br *browserRow // the visitor's own page only: the Browser row (never on a lookup or report page)
 
 	snap *snapshot // what a visit of the home page saves (see share.go); nil on other pages
 }
@@ -436,6 +441,26 @@ func (s *server) placeBlock(g *geoRecord) (big, sub string, none bool, m templat
 	return "Location unknown", "", true, ""
 }
 
+// addrData is what the two MMDBs and the loaded ASN data know about a public
+// address: the geo record, the ip2asn record and the network as the panel shows
+// it (with the announced prefix). The panel and the JSON API both read it here.
+func (s *server) addrData(a netip.Addr) (g geoRecord, n asnRecord, info netSnap) {
+	s.geo.lookup(a, &g)
+	prefix, found := s.asn.lookup(a, &n)
+	info = s.networkInfo(n)
+	if found && prefix.IsValid() {
+		info.Prefix = prefix.String()
+	}
+	// With the ASN data loaded the prefix is the longest announced one: the
+	// MMDB tree may hold only a piece of it (a more specific prefix splits it).
+	if d := s.asnf.data(); d != nil {
+		if lp, _, ok := d.idx.longest(a); ok {
+			info.Prefix = lp.String()
+		}
+	}
+	return g, n, info
+}
+
 // panelFor builds the panel for a public or non-public address: the family
 // row, the Network row and the Prefix row, in this order (the visitor's own
 // page rearranges them, see visitorRows).
@@ -445,21 +470,13 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 		p.Addr, p.Msg = a.String(), "Not a public address"
 		return p
 	}
-	var g geoRecord
-	s.geo.lookup(a, &g)
+	g, _, info := s.addrData(a)
 	p.Big, p.Sub, p.None, p.Map = s.placeBlock(&g)
-
-	var n asnRecord
-	prefix, found := s.asn.lookup(a, &n)
-	info := s.networkInfo(n)
-	if found && prefix.IsValid() {
-		info.Prefix = prefix.String()
-	}
-	// With the ASN data loaded the prefix is the longest announced one: the
-	// MMDB tree may hold only a piece of it (a more specific prefix splits it).
-	if d := s.asnf.data(); d != nil {
-		if lp, _, ok := d.idx.longest(a); ok {
-			info.Prefix = lp.String()
+	if href := s.countryHref(g.CountryCode); href != "" {
+		if g.CityName != "" {
+			p.SubHref = href
+		} else {
+			p.BigHref = href
 		}
 	}
 	family, fam := "IPv6", 6

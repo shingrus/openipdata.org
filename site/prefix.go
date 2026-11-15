@@ -183,7 +183,7 @@ func (s *server) locate(p netip.Prefix, pl *place, v *asnView) {
 		for _, a := range sum.places[:min(k, maxPlaceRows)] {
 			t.Rows = append(t.Rows, []cell{
 				{Text: orElseDash(a.rec.CityName)},
-				{Text: countryText(&a.rec)},
+				{Text: countryText(&a.rec), Href: s.countryHref(a.rec.CountryCode)},
 				{Text: fmtShare(a.amount, sum.total), Class: "n"},
 			})
 		}

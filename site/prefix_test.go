@@ -434,13 +434,13 @@ func TestPrefixPlaces(t *testing.T) {
 		{"nothing known", "/prefix/203.0.114.0/24", []string{`<p class="none">Location unknown</p>`}, []string{"Places", `<svg class="map"`, `class="here"`}},
 		{"two places and a gap", "/prefix/198.18.0.0/24", []string{
 			"<h2>Places</h2>", `<span class="r">2</span>`,
-			`<td>Lisbon</td><td>Portugal</td><td class="n">50.0%</td>`, `<td>—</td><td>Spain</td><td class="n">25.0%</td>`, `<td>Unknown</td><td>—</td><td class="n">25.0%</td>`,
+			`<td>Lisbon</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<td>—</td><td><a href="/spain-asn-list">Spain</a></td><td class="n">25.0%</td>`, `<td>Unknown</td><td>—</td><td class="n">25.0%</td>`,
 		}, []string{"Lisbon, Portugal", `<svg class="map"`, "more places"}},
 		{"two cities of one country", "/prefix/198.18.1.0/24", []string{
-			`<td>Lisbon</td><td>Portugal</td><td class="n">50.0%</td>`, `<td>Porto</td><td>Portugal</td><td class="n">50.0%</td>`, `<svg class="map"`, `class="here"`,
+			`<td>Lisbon</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<td>Porto</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<svg class="map"`, `class="here"`,
 		}, []string{`class="aim"`, "Unknown", "<p>"}},
 		{"part of a prefix, a gap and one place", "/prefix/198.18.0.0/23", []string{
-			`<td>Lisbon</td><td>Portugal</td><td class="n">`, `<td>Unknown</td>`,
+			`<td>Lisbon</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">`, `<td>Unknown</td>`,
 		}, nil},
 	} {
 		w := get(s, "GET", c.target)
@@ -462,7 +462,7 @@ func TestPrefixPlaces(t *testing.T) {
 	}
 	// The order: biggest first.
 	body := get(s, "GET", "/prefix/198.18.0.0/24").Body.String()
-	if strings.Index(body, "<td>Lisbon</td>") > strings.Index(body, "<td>Spain</td>") {
+	if strings.Index(body, "<td>Lisbon</td>") > strings.Index(body, ">Spain</a></td>") {
 		t.Error("places are not biggest first")
 	}
 

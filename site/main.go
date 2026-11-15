@@ -288,6 +288,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveHome(w, r)
 	case p == "/ip":
 		s.serveIP(w, r)
+	case p == "/json" || strings.HasPrefix(p, "/json/"):
+		s.serveIPJSON(w, r)
 	case p == "/status":
 		s.serveStatus(w, r)
 	case p == "/ss":
@@ -393,6 +395,10 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 			p = s.panelFor("Your connection", a)
 			fill = s.addFill(&p, a)
 			res = s.addDNS(&p)
+			if p.Msg == "" {
+				p.Hdr = s.requestHeaders(r) // the visitor's own headers, only back to the visitor
+				p.Br = browserRowFor(r.UserAgent(), r.Header.Get("Sec-CH-UA"))
+			}
 			p.Share = s.shareOn() && p.Msg == "" // a page view stores nothing; the button makes the report
 		} else {
 			p = panel{Title: "Your connection", Msg: "Address unknown"}
@@ -401,6 +407,15 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	v := makeView(*s.scores.Load())
 	v.Panel, v.Input, v.Title, v.Fill, v.Res = &p, input, title, fill, res
 	v.Pnl = p.Copy
+	if p.Msg == "" {
+		v.HintHost = strings.TrimPrefix(strings.TrimPrefix(s.origin, "https://"), "http://")
+		switch q.kind {
+		case "lookup":
+			v.Hint = "/json/" + q.addr.String()
+		case "visitor":
+			v.Hint = "/json"
+		}
+	}
 	share := p.Share
 	v.Share = share
 	v.Desc, v.Canon = desc, canon

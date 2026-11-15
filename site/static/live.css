@@ -1,12 +1,19 @@
 /* The parts of the connection panel that only the home, lookup and shared report pages have:
    the copy and Share buttons, the rows a script fills in, the waiting dots. */
 .head.hs{min-height:48px} /* room for the Share button, which the script shows later */
-.sh{height:26px;min-width:92px;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer;
+.sh,.hd{height:26px;min-width:92px;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer;
   font:500 12px/1 Geist,system-ui,sans-serif;letter-spacing:0;text-transform:none;white-space:nowrap}
-.sh:hover{color:var(--text)}
+.sh:hover,.hd:hover{color:var(--text)}
 .sh{display:inline-flex;align-items:center;justify-content:center;gap:6px}
 .sh svg{width:13px;height:13px}
-.sh[hidden],.cp[hidden]{display:none}
+/* the Browser row: logos, name, and the Headers button at the right end */
+.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+dd.br{display:flex;align-items:center;gap:5px;white-space:nowrap;flex-wrap:wrap}
+dd.br .os{display:inline-flex}
+dd.br .sep{color:var(--faint)}
+dd.br .hd{margin-left:auto;height:22px;min-width:0;padding:0 7px;font-size:11px}
+.hint{margin:10px 2px 0;font:12px/1.4 'Geist Mono',ui-monospace,monospace;color:var(--faint)}
+.sh[hidden],.hd[hidden],.cp[hidden]{display:none}
 dd.none{color:var(--faint)} /* the other address family does not exist (the script gave up) */
 dd.c,dd.o6,dd.od{display:flex;align-items:center}
 dd.o6,dd.od{min-height:2lh}

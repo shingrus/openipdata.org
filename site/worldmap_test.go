@@ -562,11 +562,11 @@ func drawCase(w *world, c struct {
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 28672, 10240 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons
+	pageMapMaxRaw, pageMapMaxGz = 40960, 13824 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), the API hint (39651 and 13306 now; 29696 and 10752 before the row)
 	pageMaxRaw, pageMaxGz       = 14 << 10, 5 << 10
 	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
-	visitorMapMaxRaw, visitorMapMaxGz = 19456, 7168 // 18667 and 6730 now
-	visitorMaxRaw, visitorMaxGz       = 17408, 6144 // 16730 and 5808 now (comments and indentation left out of the scripts, Share code in share.js), 19052 before
+	visitorMapMaxRaw, visitorMapMaxGz = 20480, 7168 // 18667 and 6730 now
+	visitorMaxRaw, visitorMaxGz       = 18432, 6144 // 16730 and 5808 now (comments and indentation left out of the scripts, Share code in share.js), 19052 before
 )
 
 func TestMapSizes(t *testing.T) {
@@ -583,7 +583,9 @@ func TestMapSizes(t *testing.T) {
 			Share: true, Rows: []row{
 				{K: "IPv4", V: "203.0.113.9", Copy: true}, {K: "IPv6", V: "—", Fam: "6", From: u6, Copy: true},
 				{K: "DNS resolver", V: "—", Zone: "r.openipdata.org"},
-				{K: "Network", Parts: []part{{Text: "EXAMPLE-NET", Href: "/as64500"}, {Text: "ISP"}, {Text: "example.net"}}}}}
+				{K: "Network", Parts: []part{{Text: "EXAMPLE-NET", Href: "/as64500"}, {Text: "ISP"}, {Text: "example.net"}}}},
+			Hdr: template.JS(strings.Repeat("x", 600)), Br: browserRowFor("Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0", "")} // the biggest icons: Firefox and Linux
+		v.Hint, v.HintHost = "/json", "openipdata.org"
 		page, err := render(s.tmpl, "home.html", v)
 		if err != nil {
 			t.Fatal(err)

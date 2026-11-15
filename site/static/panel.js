@@ -5,6 +5,21 @@
     // The other family's button waits for its address.
     if (!all[i].closest("[data-fam]")) all[i].hidden = false;
   }
+  // The Headers button (the visitor's own page): copies the request headers, a JSON data block of the page.
+  // The text is there already, so the write is called right inside the click.
+  var hd = document.querySelector(".hd"), hj = document.getElementById("hdrs");
+  if (hd && hj) {
+    hd.hidden = false;
+    var hl = hd.textContent;
+    hd.onclick = function () {
+      function flash(text) {
+        clearTimeout(hd.k);
+        hd.textContent = text;
+        hd.k = setTimeout(function () { hd.textContent = hl; }, 1500);
+      }
+      (navigator.clipboard ? navigator.clipboard.writeText(hj.textContent) : Promise.reject()).then(function () { flash("Copied"); }, function () { flash("Copy failed"); });
+    };
+  }
   document.addEventListener("click", function (e) {
     var b = e.target.closest ? e.target.closest(".cp") : null;
     if (!b) return;

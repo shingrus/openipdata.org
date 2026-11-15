@@ -178,7 +178,11 @@ func (s *server) renderASNPages(d *asnData) {
 		t := table{Title: title, H1: true, Right: fmtInt(int64(len(d.countries))) + " countries",
 			Cols: []column{{"#", "r"}, {"Country", ""}, {"IPv4 addresses", "n"}, {"Networks", "n"}}}
 		for i, c := range d.countries {
-			t.Rows = append(t.Rows, []cell{{Text: strconv.Itoa(i + 1), Class: "r"}, {Text: c.name}, {Text: fmtInt(c.v4), Class: "n"}, {Text: fmtInt(int64(c.n)), Class: "n"}})
+			name := cell{Text: c.name}
+			if slug := d.cslug[c.cc]; slug != "" {
+				name.Href = countryHrefOf(slug)
+			}
+			t.Rows = append(t.Rows, []cell{{Text: strconv.Itoa(i + 1), Class: "r"}, name, {Text: fmtInt(c.v4), Class: "n"}, {Text: fmtInt(int64(c.n)), Class: "n"}})
 		}
 		return t
 	}
@@ -329,7 +333,7 @@ func (s *server) serveASN(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 	}
-	return false
+	return s.serveCountry(w, r)
 }
 
 func (s *server) serveRanking(w http.ResponseWriter, r *http.Request, path string) {
@@ -507,11 +511,15 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 	if row.v4.Valid {
 		v4 = fmtInt(row.v4.Int64)
 	}
+	ctry := kv{K: "Country", V: orElseDash(country)}
+	if slug := d.cslug[cc]; slug != "" && country != "" {
+		ctry.Href = countryHrefOf(slug)
+	}
 	pl.Rows = []kv{
 		{K: "Handle", V: orElseDash(handle)},
 		org,
 		{K: "Domain", V: orElseDash(row.domain)},
-		{K: "Country", V: orElseDash(country)},
+		ctry,
 		{K: "Category", V: orElseDash(cat)},
 		{K: "IPv4 prefixes", V: pfxCount(j.Prefixes.IPv4)},
 		{K: "IPv6 prefixes", V: pfxCount(j.Prefixes.IPv6)},

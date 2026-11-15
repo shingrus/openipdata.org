@@ -170,7 +170,7 @@ func TestASNRoutes(t *testing.T) {
 		{"network", "/as64500", 200, "", []string{
 			"<title>AS64500 Example Net: IP ranges and prefixes</title>", "<h2>Example Net</h2>", "<p>EXAMPLE-NET</p>",
 			"<dt>Handle</dt><dd>EXAMPLE-NET</dd>", `<dd><a href="/asn-example-net">Example Net</a></dd>`,
-			"<dt>Domain</dt><dd>example.net</dd>", "<dt>Country</dt><dd>Portugal</dd>", "<dt>Category</dt><dd>isp</dd>",
+			"<dt>Domain</dt><dd>example.net</dd>", `<dt>Country</dt><dd><a href="/portugal-asn-list">Portugal</a></dd>`, "<dt>Category</dt><dd>isp</dd>",
 			"<dt>IPv4 prefixes</dt><dd>2</dd>", "<dt>IPv6 prefixes</dt><dd>1</dd>", "<dt>IPv4 addresses</dt><dd>512</dd>",
 			`href="/api/as64500"`, "Same organization", `<a href="/as64501">AS64501</a>`, "EXAMPLE-TWO",
 			`<li><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a>`, `<li><a href="/prefix/2001:db8::/32">2001:db8::/32</a>`, `value=""`,
@@ -207,7 +207,7 @@ func TestASNRoutes(t *testing.T) {
 		{"top v4", "/top-asn-by-ip-address", 200, "", []string{"<title>Top networks by IPv4 addresses · openipdata.org</title>", "<h1>Top networks by IPv4 addresses</h1>", "Top 100", `<a href="/as64719">AS64719</a>`}, nil},
 		{"top v6", "/top-asn-by-ipv6", 200, "", []string{"<h1>Top networks by IPv6 space</h1>", "<th class=\"n\">IPv6 /64s</th>", "65,536", `<a href="/as64500">AS64500</a>`}, nil},
 		{"top orgs", "/top-organizations-by-ip-address", 200, "", []string{"<h1>Top organizations by IPv4 addresses</h1>", `<a href="/asn-huge-net">Huge Net</a>`, `<a href="/asn-many-net">Many Net</a>`}, nil},
-		{"countries", "/list-of-countries-by-ipv4-allocation", 200, "", []string{"<h1>Countries by IPv4 addresses</h1>", "<td>Germany</td>", "<td>France</td>", "<td>Portugal</td>", "<td>Spain</td>"}, nil},
+		{"countries", "/list-of-countries-by-ipv4-allocation", 200, "", []string{"<h1>Countries by IPv4 addresses</h1>", `<td><a href="/germany-asn-list">Germany</a></td>`, `<td><a href="/france-asn-list">France</a></td>`, `<td><a href="/portugal-asn-list">Portugal</a></td>`, `<td><a href="/spain-asn-list">Spain</a></td>`}, nil},
 		{"top trailing slash", "/top-asn-by-ip-address/", 404, "", nil, nil},
 		{"top other", "/top-asn", 404, "", nil, nil},
 	} {

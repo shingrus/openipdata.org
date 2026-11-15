@@ -75,8 +75,12 @@ type asnData struct {
 	byHandle  map[string]int32 // normalised handle (see slugify) -> index in orgs of the organization of the first network (by number) with that handle
 	countries []countryRow
 	pages     map[string]*cachedPage
-	sm        sitemapSet // sitemap files, built on demand (see seo.go)
-	idx       pfxIndex   // every announced prefix (see pfxindex.go)
+	cslug     map[string]string // country code -> slug of its page /<slug>-asn-list (see country.go)
+	cbySlug   map[string]string // slug -> country code
+	cpMu      sync.Mutex
+	cpg       map[string]*cachedPage // country pages, rendered on the first request of each
+	sm        sitemapSet             // sitemap files, built on demand (see seo.go)
+	idx       pfxIndex               // every announced prefix (see pfxindex.go)
 	loadedIn  time.Duration
 }
 
@@ -289,6 +293,7 @@ func loadASN(ctx context.Context, db *sql.DB) (*asnData, error) {
 		}
 		return strings.Compare(a.cc, b.cc)
 	})
+	d.indexCountries()
 	d.loadedIn = time.Since(started)
 	return d, nil
 }

@@ -85,7 +85,7 @@ func TestPanelRowOrder(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	b := w.Body.String()
-	if got := strings.Join(keys(b), ","); got != "IPv4,IPv6,DNS resolver,Network" {
+	if got := strings.Join(keys(b), ","); got != "IPv4,IPv6,DNS resolver,Network,Browser" {
 		t.Errorf("visitor rows: %s", got)
 	}
 	if strings.Contains(b, "AS64500") || strings.Contains(b, "<dt>Prefix") {

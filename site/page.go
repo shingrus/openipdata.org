@@ -143,6 +143,8 @@ type view struct {
 	UpdatedISO  string
 	UpdatedText string
 	Panel       *panel
+	Hint        string // the JSON API line under the panel: "/json" or "/json/<ip>"; empty = no line
+	HintHost    string // host of SITE_ORIGIN
 }
 
 // fmtPct returns the number with one decimal, or false when v is missing,

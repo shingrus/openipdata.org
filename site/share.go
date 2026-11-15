@@ -243,6 +243,13 @@ func (s *server) reportPanel(sn *snapshot, created time.Time) panel {
 	p := panel{Title: "Shared report", Right: "Shared " + created.UTC().Format("2 Jan 2006 15:04 UTC") + " · expires " + created.Add(reportTTL).UTC().Format("2 Jan 2006")}
 	g := geoRecord{CityName: sn.Place.City, CountryName: sn.Place.Country, CountryCode: sn.Place.CC, Latitude: sn.Place.Lat, Longitude: sn.Place.Lon}
 	p.Big, p.Sub, p.None, p.Map = s.placeBlock(&g)
+	if href := s.countryHref(g.CountryCode); href != "" {
+		if g.CityName != "" {
+			p.SubHref = href
+		} else {
+			p.BigHref = href
+		}
+	}
 	addr := func(k string, v string) row {
 		if a, ok := parseAddr(v); ok && a.String() == v {
 			p.Copy = true

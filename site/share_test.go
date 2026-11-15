@@ -581,7 +581,7 @@ func TestReportPage(t *testing.T) {
 		`<dt>IPv4</dt><dd class="c"><span class="w"><span class="v">203.0.113.9</span><button class="cp"`, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::9</span><button class="cp"`,
 		`<dt>DNS resolver</dt><dd class="od"><a href="/?203.0.113.50">203.0.113.50</a><a class="dn" href="/asn-example-net">EXAMPLE-NET</a></dd>`,
 		`<dt>Network</dt><dd><a href="/asn-example-net">EXAMPLE-NET</a> · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
-		"<h1>Lisbon</h1>", "<p>Portugal</p>", `class="place mapped"`, `<svg class="map"`,
+		"<h1>Lisbon</h1>", `<p><a href="/portugal-asn-list">Portugal</a></p>`, `class="place mapped"`, `<svg class="map"`,
 	} {
 		if !strings.Contains(b, x) {
 			t.Errorf("report lacks %q", x)
@@ -662,7 +662,7 @@ func TestReportShownAsStored(t *testing.T) {
 		m.kv["report:"+id] = string(b)
 		m.mu.Unlock()
 		body := get(s, "GET", "/report/"+id).Body.String()
-		if !strings.Contains(body, c.want) || !strings.Contains(body, "<h1>Spain</h1>") || strings.Contains(body, "Lisbon") || !strings.Contains(body, `class="here"`) {
+		if !strings.Contains(body, c.want) || !strings.Contains(body, `<h1><a href="/spain-asn-list">Spain</a></h1>`) || strings.Contains(body, "Lisbon") || !strings.Contains(body, `class="here"`) {
 			t.Errorf("%s: the report is not shown as stored", c.name)
 		}
 	}
