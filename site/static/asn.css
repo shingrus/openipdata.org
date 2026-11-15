@@ -8,8 +8,10 @@
 .place p.none{color:var(--faint)}
 .pf a:hover{text-decoration:underline}
 .place.s p{font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
-.conn.w dl div{grid-template-columns:132px minmax(0,1fr)}
+.conn.w dl div,.fact dl div{grid-template-columns:132px minmax(0,1fr)}
 dt{overflow-wrap:anywhere}
+dd.none{color:var(--faint)}
+.fact dl{grid-auto-rows:auto}
 .tbl a,.note a{color:var(--accent)}
 dd a.lnk:hover,.tbl a:hover,.note a:hover{text-decoration:underline}
 .tbl{width:100%;border-collapse:collapse}
@@ -29,7 +31,7 @@ dd a.lnk:hover,.tbl a:hover,.note a:hover{text-decoration:underline}
 .pf ul li{break-inside:avoid}
 .pf:last-of-type{border-bottom:0}
 @media (max-width:700px){
-  .conn.w dl div{grid-template-columns:112px minmax(0,1fr)}
+  .conn.w dl div,.fact dl div{grid-template-columns:112px minmax(0,1fr)}
   .place.s{min-height:100px}
   .tbl th,.tbl td{padding-inline:6px}
   .tbl td.n,.tbl td.a,.tbl td.r{font-size:13px}

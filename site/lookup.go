@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oschwald/maxminddb-golang/v2"
 )
@@ -225,6 +226,7 @@ type mmdbFile struct {
 
 	mu sync.RWMutex
 	r  *maxminddb.Reader // nil until a file opened
+	st fileStatus        // about the open file; set with r
 
 	// Only reload (the watch goroutine, or a test) touches these.
 	sig     fileSig
@@ -252,9 +254,13 @@ func (f *mmdbFile) reload() bool {
 		f.fail(err)
 		return false
 	}
+	st := fileStatus{Loaded: true, LoadedAt: time.Now(), Size: info.Size()}
+	if r.Metadata.BuildEpoch > 0 {
+		st.Built = r.Metadata.BuildTime().UTC()
+	}
 	f.mu.Lock()
 	old := f.r
-	f.r = r
+	f.r, f.st = r, st
 	if old != nil {
 		old.Close() // no lookup is inside: they hold the read lock
 	}
@@ -262,6 +268,13 @@ func (f *mmdbFile) reload() bool {
 	f.sig, f.lastErr = sig, ""
 	log.Printf("opened %s", f.path)
 	return true
+}
+
+// status describes the open file (Loaded is false when none is open).
+func (f *mmdbFile) status() fileStatus {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.st
 }
 
 // stamp returns the scores in the metadata of the open file, or empty scores

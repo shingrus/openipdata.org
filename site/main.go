@@ -91,8 +91,10 @@ type server struct {
 	zone       string    // names of the DNS row are <token>.<zone>; empty = no DNS row
 	redis      *redisClient
 	public     func(netip.Addr) bool
-	world      *world // country outlines for the map, decoded once at start
-	placeLimit int    // most MMDB records read for the places of a prefix page
+	world      *world           // country outlines for the map, decoded once at start
+	placeLimit int              // most MMDB records read for the places of a prefix page
+	started    time.Time        // when this process started (the status page)
+	now        func() time.Time // the clock of the status page; time.Now
 }
 
 // useURLs sets V4_URL and V6_URL (already checked) and the policy of the pages
@@ -170,6 +172,7 @@ func newServer(geoPath, asnPath, realIP string) (*server, error) {
 		tmpl: tmpl, csp: csp(), fonts: map[string][]byte{},
 		geo: &mmdbFile{path: geoPath}, asn: &mmdbFile{path: asnPath}, asnf: &asnFile{},
 		realIP: realIP, public: isPublic,
+		started: time.Now(), now: time.Now,
 	}
 	for _, name := range []string{"geist-latin.woff2", "geist-mono-latin.woff2"} {
 		b, err := fontFiles.ReadFile("static/fonts/" + name)
@@ -232,6 +235,12 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveHome(w, r)
 	case p == "/ip":
 		s.serveIP(w, r)
+	case p == "/status":
+		s.serveStatus(w, r)
+	case p == "/ss":
+		w.Header().Set("Cache-Control", asnCache)
+		w.Header().Set("Location", "/status")
+		w.WriteHeader(http.StatusMovedPermanently)
 	case p == "/resolver":
 		s.serveResolver(w, r)
 	case s.serveASN(w, r):

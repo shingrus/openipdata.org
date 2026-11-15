@@ -22,6 +22,12 @@
 </table>
 {{if .Note}}<p class="note">{{.Note}}{{if .NoteHref}} · <a href="{{.NoteHref}}">{{.NoteLink}}</a>{{end}}</p>
 {{end}}</section>
+{{end}}{{range .Facts}}<section class="panel fact">
+<div class="head"><h2>{{.Title}}</h2></div>
+<dl>
+{{range .Rows}}<div><dt>{{.K}}</dt><dd{{if .None}} class="none"{{end}}>{{.V}}</dd></div>
+{{end}}</dl>
+</section>
 {{end}}{{with .Pfx}}<section class="panel">
 <div class="head"><h2>Prefixes</h2></div>
 {{range .Groups}}<div class="pf"><h3>{{.Family}}</h3><ul>{{range .List}}<li>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</ul></div>

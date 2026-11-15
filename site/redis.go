@@ -108,3 +108,10 @@ func redisErr(err error) error {
 	}
 	return errRedisReply
 }
+
+// ping reports whether Redis answers a command (the key cannot exist; a null
+// reply is an answer). Nothing is logged.
+func (c *redisClient) ping() bool {
+	_, _, err := c.do("status:none", "x")
+	return err == nil
+}

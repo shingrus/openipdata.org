@@ -317,6 +317,7 @@ func top(d *asnData, idx []int32, amount func(*network) float64) []int32 {
 type asnLoaded struct {
 	db   *sql.DB
 	data *asnData
+	st   fileStatus
 }
 
 // asnFile is the SQLite file kept open for the network page and loaded into
@@ -391,7 +392,7 @@ func (f *asnFile) reload() bool {
 	}
 	f.mu.Lock()
 	old := f.cur
-	f.cur = &asnLoaded{db: db, data: data}
+	f.cur = &asnLoaded{db: db, data: data, st: fileStatus{Loaded: true, Built: info.ModTime().UTC(), LoadedAt: time.Now(), Size: info.Size()}}
 	if old != nil {
 		old.db.Close() // no request is inside: they hold the read lock
 	}
@@ -417,6 +418,16 @@ func (f *asnFile) data() *asnData {
 		return nil
 	}
 	return f.cur.data
+}
+
+// status describes the loaded file and its data (nil when nothing is loaded).
+func (f *asnFile) status() (fileStatus, *asnData) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	if f.cur == nil {
+		return fileStatus{}, nil
+	}
+	return f.cur.st, f.cur.data
 }
 
 // read runs fn with the open file and the data of the same load. The file is

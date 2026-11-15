@@ -40,6 +40,7 @@ var rankings = []struct{ path, title string }{
 type kv struct {
 	K, V, Href string
 	A, AHref   string
+	None       bool // V is "unknown" or "not loaded": shown grey
 	Extra      []kv
 }
 
@@ -94,6 +95,7 @@ type asnView struct {
 	Place       *place
 	Tables      []table
 	Pfx         *pfxPanel
+	Facts       []fact // panels of label/value rows (the status page)
 }
 
 // asnBase is the base of an ASN page; noindex keeps the page out of search
