@@ -645,6 +645,35 @@ type BuildMMDBOutput struct {
 	Prefixes  map[string]int `json:"prefixes"` // networks written per layer
 	Skipped   map[string]int `json:"skipped,omitempty"`
 	SizeBytes int64          `json:"size_bytes"`
+	// Coordinates is "on" when the build placed cities with the GeoNames copy
+	// (latitude and longitude), or "skipped: <reason>" when it was built without.
+	Coordinates string `json:"coordinates"`
+	// CoordinatesPlaced and CoordinatesUnplaced count the new records with a city
+	// that got coordinates and that GeoNames could not place (counts only).
+	CoordinatesPlaced   int `json:"coordinates_placed,omitempty"`
+	CoordinatesUnplaced int `json:"coordinates_unplaced,omitempty"`
+}
+
+// coordinatesSummary matches mmdbbuilder's "coordinates: P records placed, U cities not placed".
+var coordinatesSummary = regexp.MustCompile(`(?m)^coordinates: (\d+) records placed, (\d+) cities not placed$`)
+
+// geoNamesWait bounds the GeoNames download of the build: a stalled server
+// only costs the coordinates, never the build.
+const geoNamesWait = 5 * time.Minute
+
+// prepareGeoNames makes build-geo-data's own copy of GeoNames cities1000.txt
+// available (the same copy, 7-day gate and .checked file the evaluation uses).
+// It returns the path, or "" and the reason; a problem here never fails the build.
+func (p *Pipeline) prepareGeoNames(ctx context.Context) (path, status string) {
+	dir := p.evalDir()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", "skipped: " + err.Error()
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, geoNamesWait)
+	defer cancel()
+	path, status = p.fetchGeoNames(fetchCtx, newHTTPClient(), dir, time.Now().UTC())
+	p.log("mmdb: geonames: %s", status)
+	return path, status
 }
 
 // layerSummary matches mmdbbuilder's "layer <name>: R rows, P prefixes, S skipped".
@@ -675,7 +704,9 @@ func (p *Pipeline) layerFiles() ([]string, error) {
 // ASN layer recomputed from them); an empty path leaves that layer out, and
 // out of its rule flag. BuildMMDB passes none, and it and the holdout build both
 // go through here, so they use the same layers and rules.
-func (p *Pipeline) geoArgs(out string, replace map[string]string) ([]string, error) {
+//
+// extra are more flags of "mmdbbuilder geo", put before the layer files.
+func (p *Pipeline) geoArgs(out string, replace map[string]string, extra ...string) ([]string, error) {
 	names, err := p.layerFiles()
 	if err != nil {
 		return nil, err
@@ -686,6 +717,7 @@ func (p *Pipeline) geoArgs(out string, replace map[string]string) ([]string, err
 	}
 	names = slices.DeleteFunc(names, func(name string) bool { path, ok := replace[name]; return ok && path == "" })
 	args := []string{"geo", "-out", out, "-names", filepath.Join(p.layersDir(), NamesFile)}
+	args = append(args, extra...)
 	// One flag per distinct rule of layerRules, sorted, naming its layers that are there.
 	var flags []string
 	for _, flag := range layerRules {
@@ -735,18 +767,45 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	}
 	// mmdbbuilder writes through a temporary file and renames it into place.
 	final := filepath.Join(dir, fmt.Sprintf(mmdbFileFormat, src.DateTag))
-	args, err := p.geoArgs(final, nil)
+	// GeoNames gives the cities their coordinates. Without it, or when the
+	// builder cannot read it, the MMDB is built without them.
+	geonames, status := p.prepareGeoNames(ctx)
+	if err := ctx.Err(); err != nil {
+		return BuildMMDBOutput{}, err
+	}
+	coordinates := "skipped: " + strings.TrimPrefix(status, "skipped: ")
+	var extra []string
+	if geonames != "" {
+		extra = []string{"-geonames", geonames}
+		coordinates = "on"
+		if strings.HasPrefix(status, "stale: ") {
+			coordinates = "on (" + status + ")"
+		}
+	}
+	args, err := p.geoArgs(final, nil, extra...)
 	if err != nil {
 		return BuildMMDBOutput{}, err
 	}
 	stdout, err := p.runBuilder(ctx, args)
+	if err != nil && geonames != "" && strings.Contains(err.Error(), geonames) {
+		// The builder named the GeoNames file in its error: build again without it.
+		p.log("mmdb: geonames unusable, building without coordinates: %v", err)
+		coordinates = "skipped: the builder could not read the GeoNames file"
+		if args, err = p.geoArgs(final, nil); err == nil {
+			stdout, err = p.runBuilder(ctx, args)
+		}
+	}
 	if err != nil {
 		return BuildMMDBOutput{}, err
 	}
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
-	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final)}
+	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates}
+	if m := coordinatesSummary.FindStringSubmatch(stdout); m != nil {
+		out.CoordinatesPlaced, _ = strconv.Atoi(m[1])
+		out.CoordinatesUnplaced, _ = strconv.Atoi(m[2])
+	}
 	for _, m := range layerSummary.FindAllStringSubmatch(stdout, -1) {
 		out.Prefixes[m[1]], _ = strconv.Atoi(m[2])
 		if n, _ := strconv.Atoi(m[3]); n > 0 {

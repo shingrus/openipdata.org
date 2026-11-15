@@ -1,13 +1,14 @@
 // Command mmdbbuilder builds and checks openipdata MMDB files.
 //
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
-//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
+//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>
 //	mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
-// For geo, a layer named in -same-country applies only where the country so
+// For geo, -geonames adds latitude and longitude to the records whose city it places.
+// A layer named in -same-country applies only where the country so
 // far is the same or unknown. A layer named in -within-first is used only for
 // rows no broader than one prefix of the first layer; others are skipped. A
 // layer named in -first-country applies a row only to the addresses where the
@@ -54,7 +55,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>")
@@ -67,6 +68,7 @@ func runGeo(args []string) {
 	out := flags.String("out", "", "output MMDB path")
 	names := flags.String("names", "", "country names, one code<TAB>name per line (tzdata names fill the gaps)")
 	debugMode := flags.Bool("debug", false, "include the network in each record")
+	geonames := flags.String("geonames", "", "GeoNames cities1000.txt: records whose city it places get latitude and longitude (optional)")
 	sameCountry := flags.String("same-country", "", "layer file names (comma-separated) whose rows apply only where the country so far is the same or unknown")
 	withinFirst := flags.String("within-first", "", "layer file names (comma-separated) whose rows are used only if no broader than one prefix of the first layer")
 	firstCountry := flags.String("first-country", "", "layer file names (comma-separated) whose rows apply only to the addresses where the first layer gives the row's country")
@@ -75,18 +77,31 @@ func runGeo(args []string) {
 	if *out == "" || flags.NArg() == 0 {
 		usage()
 	}
-	stats, err := buildGeo(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry))
-	prefixes := 0
+	var index geoNames
+	if *geonames != "" {
+		var err error
+		if index, err = loadGeoNames(*geonames); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s: %v\n", *geonames, err)
+			os.Exit(1)
+		}
+	}
+	stats, err := buildGeo(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index)
+	prefixes, placed, unplaced := 0, 0, 0
 	for _, s := range stats {
 		fmt.Printf("layer %s: %d rows, %d prefixes, %d skipped\n", s.name, s.rows, s.prefixes, s.skipped)
 		if s.noCity > 0 {
 			fmt.Printf("layer %s: %d cities left out\n", s.name, s.noCity)
 		}
 		prefixes += s.prefixes
+		placed += s.placed
+		unplaced += s.unplaced
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+	if index != nil {
+		fmt.Printf("coordinates: %d records placed, %d cities not placed\n", placed, unplaced)
 	}
 	fmt.Printf("wrote %s (%d layers, %d prefixes)\n", *out, len(stats), prefixes)
 }

@@ -155,7 +155,10 @@ func TestBuildMMDBArgs(t *testing.T) {
 		"echo 'layer 10-rir.csv.gz: 10 rows, 9 prefixes, 1 skipped'\n"+
 		"echo 'layer 70-geofeeds.csv.gz: 5 rows, 5 prefixes, 0 skipped'\n"+
 		"echo 'wrote x (2 layers, 14 prefixes)'\n"), 0o755)
-	p := &Pipeline{DataDir: dir, MMDBBuilder: script}
+	// GeoNames cannot be fetched here: the build goes on without coordinates.
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "down", 500) }))
+	defer down.Close()
+	p := &Pipeline{DataDir: dir, MMDBBuilder: script, refURLs: &evalURLs{geonames: down.URL + "/cities1000.zip"}}
 	touchLayers(t, p, FeedsLayer, RIRLayer, PDBLayer, IXLayer, NamesFile)
 	out, err := p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
 	if err != nil {
@@ -173,6 +176,9 @@ func TestBuildMMDBArgs(t *testing.T) {
 	if !reflect.DeepEqual(out.Prefixes, map[string]int{RIRLayer: 9, FeedsLayer: 5}) ||
 		!reflect.DeepEqual(out.Skipped, map[string]int{RIRLayer: 1}) {
 		t.Errorf("out = %+v", out)
+	}
+	if !strings.HasPrefix(out.Coordinates, "skipped: ") || out.CoordinatesPlaced != 0 {
+		t.Errorf("coordinates = %q, want skipped", out.Coordinates)
 	}
 	// No layers directory: an error, no build.
 	os.RemoveAll(layers)
@@ -558,5 +564,61 @@ func TestRDNSLayerRules(t *testing.T) {
 		if layerRules[name] != "-same-country" || !slices.Contains(optionalLayers, name) {
 			t.Errorf("%s: rule %q, optional %v", name, layerRules[name], slices.Contains(optionalLayers, name))
 		}
+	}
+}
+
+// With the GeoNames copy in place the build passes -geonames (before the layer
+// files) and reports the counts; when the builder cannot read the file, the build
+// is repeated without the flag.
+func TestBuildMMDBGeoNames(t *testing.T) {
+	archive, requests := zipBytes(t, geoNamesSample), 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Write(archive)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	script := filepath.Join(dir, "mmdbbuilder")
+	// Fails like the real one when told to read a GeoNames file that contains "BAD".
+	os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" >> "+argsFile+"\n"+
+		"for a in \"$@\"; do if [ -f \"$a\" ] && grep -q BAD \"$a\" 2>/dev/null; then echo \"error: $a: bad\" >&2; exit 1; fi; done\n"+
+		"echo 'layer 10-rir.csv.gz: 10 rows, 9 prefixes, 1 skipped'\n"+
+		"echo 'coordinates: 7 records placed, 2 cities not placed'\n"+
+		"echo 'wrote x (1 layers, 9 prefixes)'\n"), 0o755)
+	p := &Pipeline{DataDir: dir, MMDBBuilder: script, refURLs: &evalURLs{geonames: server.URL + "/cities1000.zip"}}
+	touchLayers(t, p, RIRLayer, NamesFile)
+	out, err := p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt := filepath.Join(p.evalDir(), "cities1000.txt")
+	args, _ := os.ReadFile(argsFile)
+	names := filepath.Join(p.layersDir(), NamesFile)
+	if want := "-names " + names + " -geonames " + txt + " " + filepath.Join(p.layersDir(), RIRLayer); !strings.Contains(string(args), want) {
+		t.Errorf("args = %s\nwant them to contain %s", args, want)
+	}
+	if out.Coordinates != "on" || out.CoordinatesPlaced != 7 || out.CoordinatesUnplaced != 2 {
+		t.Errorf("out = %+v", out)
+	}
+	// The evaluation reuses the same copy: a second build makes no request.
+	if _, err := p.BuildMMDB(context.Background(), Source{DateTag: "20261109"}); err != nil || requests != 1 {
+		t.Errorf("second build: %v, %d requests", err, requests)
+	}
+
+	// A file the builder refuses: built again without the flag.
+	os.WriteFile(txt, []byte("BAD\n"), 0o640)
+	os.Remove(argsFile)
+	out, err = p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ = os.ReadFile(argsFile)
+	if lines := strings.Split(strings.TrimSpace(string(args)), "\n"); len(lines) != 2 ||
+		!strings.Contains(lines[0], "-geonames") || strings.Contains(lines[1], "-geonames") {
+		t.Errorf("args = %s", args)
+	}
+	if !strings.HasPrefix(out.Coordinates, "skipped: ") {
+		t.Errorf("coordinates = %q", out.Coordinates)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -37,6 +38,8 @@ type geoLayerStats struct {
 	prefixes int // networks written (repeated prefixes count once)
 	skipped  int // unusable rows (see warnings)
 	noCity   int // rows whose city was left out (too long or not plain text)
+	placed   int // new records that got coordinates (only with GeoNames)
+	unplaced int // new records with a city that GeoNames could not place
 }
 
 type geoEntry struct {
@@ -80,7 +83,14 @@ type place struct{ code, city, source string }
 // wrote the city. A layer replaces the whole record, so city_source always
 // names the layer behind the city; a record without a city has none. With
 // debug the record also has network.
-func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool) ([]geoLayerStats, error) {
+//
+// With a GeoNames index (nil: none), a record whose city the index places
+// (the placing rule of the evaluation, geoNames.place) also has latitude and
+// longitude, doubles rounded to 4 decimals. A city that is not placed, and a
+// record without a city, have neither. A record is made once per (country,
+// city, source), so every prefix of a place shares the values; the counts in
+// the layer stats are per new record, in the layer that first made it.
+func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames) ([]geoLayerStats, error) {
 	names, err := loadNames(namesPath)
 	if err != nil {
 		return nil, err
@@ -146,6 +156,15 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 				setString(record, "country_name", names[key.code])
 				setString(record, "city_name", key.city)
 				setString(record, "city_source", key.source)
+				if index != nil && key.city != "" {
+					if p, ok := index.place(key.code, key.city); ok {
+						record["latitude"] = mmdbtype.Float64(round4(p.lat))
+						record["longitude"] = mmdbtype.Float64(round4(p.lon))
+						s.placed++
+					} else {
+						s.unplaced++
+					}
+				}
 				idx = len(records)
 				places[key] = idx
 				records = append(records, record)
@@ -203,6 +222,9 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 	}
 	return stats, writeAtomic(writer, outPath)
 }
+
+// round4 rounds a coordinate to 4 decimals (about 10 m).
+func round4(x float64) float64 { return math.Round(x*1e4) / 1e4 }
 
 // layerSource is a layer file's name without the .csv.gz or .csv suffix.
 func layerSource(name string) string {

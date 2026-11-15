@@ -911,6 +911,14 @@ type gnPlace struct {
 // geoNames maps country code + normalized name to the most populous place of that name.
 type geoNames map[string]gnPlace
 
+// place finds a city: the most populous place of that country and name (a
+// primary name beats an alternate). This is the one placing rule, used by the
+// Atlas city score and by "mmdbbuilder geo -geonames".
+func (g geoNames) place(country, city string) (gnPlace, bool) {
+	p, ok := g[geoNamesKey(normCountry(country), city)]
+	return p, ok
+}
+
 func geoNamesKey(country, city string) string { return country + "|" + normCity(city) }
 
 // loadGeoNames reads a GeoNames dump (cities1000.txt, tab-separated) and
@@ -985,7 +993,7 @@ func geoNamesPlacer(reader *maxminddb.Reader, index geoNames) cityPlacer {
 		if city == "" {
 			return 0, 0, noCity, "", nil
 		}
-		p, ok := index[geoNamesKey(country, city)]
+		p, ok := index.place(country, city)
 		if !ok {
 			return 0, 0, unplaced, r.Source, nil
 		}

@@ -15,7 +15,7 @@ func lookupDB(t *testing.T, dir string) string {
 		"45.0.5.0/24,DE,,Berlin,test\n"+
 		"46.0.0.0/16,FR,,,test\n")
 	db := filepath.Join(dir, "geo.mmdb")
-	if _, err := buildGeo([]string{layer}, "", db, false, nil, nil, nil); err != nil {
+	if _, err := buildGeo([]string{layer}, "", db, false, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	return db

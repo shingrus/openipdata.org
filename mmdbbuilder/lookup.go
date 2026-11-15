@@ -48,6 +48,7 @@ func printLookups(mmdbPath, testIP, ipsPath string) error {
 
 	found, notFound, invalid, lookupErrors := 0, 0, 0, 0
 	countryCounts := map[string]int{}
+	withCoords := 0
 	for _, ipStr := range ips {
 		addr, err := netip.ParseAddr(ipStr)
 		if err != nil {
@@ -76,12 +77,15 @@ func printLookups(mmdbPath, testIP, ipsPath string) error {
 			countryCounts[code]++
 		}
 		found++
+		if _, ok := record["latitude"]; ok {
+			withCoords++
+		}
 		encoded, err := json.Marshal(record)
 		if err != nil {
 			fmt.Printf("%s: %v\n", ipStr, record)
 			continue
 		}
-		fmt.Printf("%s: %s\n", ipStr, encoded)
+		fmt.Printf("%s: %s\n", ipStr, encoded) // latitude and longitude show here when the record has them
 	}
 
 	total := len(ips)
@@ -104,6 +108,9 @@ func printLookups(mmdbPath, testIP, ipsPath string) error {
 	fmt.Printf("  invalid IPs: %d (%.1f%% of total)\n", invalid, percent(invalid, total))
 	fmt.Printf("  lookups: %d\n", lookups)
 	fmt.Printf("  found: %d (%.1f%% of lookups)\n", found, percent(found, lookups))
+	if withCoords > 0 {
+		fmt.Printf("  with latitude/longitude: %d (%.1f%% of found)\n", withCoords, percent(withCoords, found))
+	}
 	fmt.Printf("  not found: %d (%.1f%% of lookups)\n", notFound, percent(notFound, lookups))
 	fmt.Printf("  errors: %d (%.1f%% of lookups)\n", lookupErrors, percent(lookupErrors, lookups))
 

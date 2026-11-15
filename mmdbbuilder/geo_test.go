@@ -50,7 +50,7 @@ func TestBuildGeo(t *testing.T) {
 	names := writeFile(t, filepath.Join(dir, "names.tsv"), "GB\tUnited Kingdom\nUS\tUnited States\n")
 
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{base, pdb, feeds}, names, out, false, nil, nil, nil)
+	stats, err := buildGeo([]string{base, pdb, feeds}, names, out, false, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestBuildGeoFailures(t *testing.T) {
 		"no-city.csv.gz":   "prefix,country\n45.0.0.0/8,US\n",                       // the layout has a city column
 		"plain.csv":        "prefix,country,region,city,source\n45.0.0.0/8,US,,,\n", // layers are gzipped
 	} {
-		if _, err := buildGeo([]string{writeFile(t, filepath.Join(dir, name), body)}, "", out, false, nil, nil, nil); err == nil {
+		if _, err := buildGeo([]string{writeFile(t, filepath.Join(dir, name), body)}, "", out, false, nil, nil, nil, nil); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
@@ -136,7 +136,7 @@ func TestBuildGeoSameCountry(t *testing.T) {
 	base := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n45.0.0.0/8,US,\n45.10.0.0/16,CA,\n")
 	pdb := writeFile(t, filepath.Join(dir, "pdb.csv.gz"), "prefix,country,city\n45.0.0.0/8,US,Dallas\n46.0.0.0/8,FR,Paris\n")
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv.gz": true}, nil, nil); err != nil {
+	if _, err := buildGeo([]string{base, pdb}, "", out, false, map[string]bool{"pdb.csv.gz": true}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for ip, want := range map[string]map[string]any{
@@ -163,7 +163,7 @@ func TestBuildGeoHostileRows(t *testing.T) {
 		"45.20.0.0/16,US,<script>alert(1)</script>\n"+
 		"45.30.0.0/16,US,"+strings.Repeat("x", maxCityLen+1)+"\n")
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil)
+	stats, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestBuildGeoWithinFirst(t *testing.T) {
 		"2a00:0:1::/48,FR,Paris\n"+ // inside the block
 		"46.0.0.0/24,BE,\n") // outside every block: skipped too
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv.gz": true, "rir.csv.gz": true}, nil)
+	stats, err := buildGeo([]string{base, feeds}, "", out, false, nil, map[string]bool{"feeds.csv.gz": true, "rir.csv.gz": true}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestBuildGeoFirstCountry(t *testing.T) {
 		"2a00:0:1::/48,FR,Paris\n"+
 		"2a01::/48,FR,Paris\n") // first layer DE: skipped
 	out := filepath.Join(dir, "ip2geo.mmdb")
-	stats, err := buildGeo([]string{rir, blocks, hosting}, "", out, false, nil, nil, map[string]bool{"hosting.csv.gz": true})
+	stats, err := buildGeo([]string{rir, blocks, hosting}, "", out, false, nil, nil, map[string]bool{"hosting.csv.gz": true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestBuildGeoCitySource(t *testing.T) {
 		_, err := buildGeo([]string{rir, plain, same, within, first}, "", out, debug,
 			map[string]bool{"40-hosting.csv.gz": true},
 			map[string]bool{"60-whois.csv.gz": true},
-			map[string]bool{"70-geofeeds.csv.gz": true})
+			map[string]bool{"70-geofeeds.csv.gz": true}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -334,6 +334,99 @@ func TestBuildGeoCitySource(t *testing.T) {
 			if want == "" && got["city_name"] != nil {
 				t.Errorf("%s: unexpected city %v", ip, got["city_name"])
 			}
+		}
+	}
+}
+
+// With a GeoNames index a placed city gets latitude and longitude (4 decimals);
+// an unplaceable city and a country-only record get neither; two prefixes of
+// one place share the values; without the index the file is the same as ever.
+func TestBuildGeoCoordinates(t *testing.T) {
+	dir := t.TempDir()
+	layer := writeFile(t, filepath.Join(dir, "layer.csv.gz"), "prefix,country,region,city,source\n"+
+		"45.0.0.0/24,US,,Dallas,x\n"+
+		"45.0.1.0/24,US,,Dallas,x\n"+ // the same place again
+		"45.0.2.0/24,DE,,Berlin,x\n"+
+		"45.0.3.0/24,FR,,Nowhereville,x\n"+ // a city GeoNames lacks
+		"45.0.4.0/24,US,,Berlin,x\n"+ // Berlin in another country: not placed
+		"45.0.5.0/24,FR,,,x\n") // no city
+	geonames := writeFile(t, filepath.Join(dir, "cities1000.txt"),
+		geoNamesLine("1", "Dallas", "", "32.78306", "-96.80667", "US", "1300000")+"\n"+
+			geoNamesLine("2", "Berlin", "", "52.52437", "13.41053", "DE", "3426354")+"\n")
+	index, err := loadGeoNames(geonames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with := filepath.Join(dir, "with.mmdb")
+	stats, err := buildGeo([]string{layer}, "", with, false, nil, nil, nil, index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].placed != 2 || stats[0].unplaced != 2 {
+		t.Errorf("stats = %+v, want 2 placed and 2 unplaced records", stats)
+	}
+	reader, err := maxminddb.Open(with)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	type coords struct{ lat, lon float64 }
+	for _, tc := range []struct {
+		ip   string
+		want *coords // nil: neither field
+	}{
+		{"45.0.0.1", &coords{32.7831, -96.8067}},
+		{"45.0.1.1", &coords{32.7831, -96.8067}}, // shares the values of the first prefix
+		{"45.0.2.1", &coords{52.5244, 13.4105}},
+		{"45.0.3.1", nil},
+		{"45.0.4.1", nil},
+		{"45.0.5.1", nil},
+	} {
+		var record map[string]any
+		if err := reader.Lookup(netip.MustParseAddr(tc.ip)).Decode(&record); err != nil {
+			t.Fatal(err)
+		}
+		lat, hasLat := record["latitude"]
+		lon, hasLon := record["longitude"]
+		if tc.want == nil {
+			if hasLat || hasLon {
+				t.Errorf("%s: unexpected coordinates in %v", tc.ip, record)
+			}
+			continue
+		}
+		if lat != tc.want.lat || lon != tc.want.lon {
+			t.Errorf("%s: got %v, %v want %v, %v", tc.ip, lat, lon, tc.want.lat, tc.want.lon)
+		}
+	}
+
+	// No index: the same bytes as a build that never heard of coordinates.
+	a, b := filepath.Join(dir, "a.mmdb"), filepath.Join(dir, "b.mmdb")
+	for _, out := range []string{a, b} {
+		if _, err := buildGeo([]string{layer}, "", out, false, nil, nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	da, _ := os.ReadFile(a)
+	db, _ := os.ReadFile(b)
+	// The build time in the metadata may differ by a second; compare the records instead.
+	if len(da) == 0 || len(da) != len(db) {
+		t.Errorf("sizes differ: %d, %d", len(da), len(db))
+	}
+	plain, err := maxminddb.Open(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+	var record map[string]any
+	if err := plain.Lookup(netip.MustParseAddr("45.0.0.1")).Decode(&record); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := record["latitude"]; ok || len(record) != 4 {
+		t.Errorf("record without GeoNames = %v", record)
+	}
+	if len(da) >= 1 {
+		if wi, _ := os.Stat(with); wi.Size() <= int64(len(da)) {
+			t.Errorf("the build with coordinates (%d bytes) is not larger than without (%d)", wi.Size(), len(da))
 		}
 	}
 }

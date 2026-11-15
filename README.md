@@ -304,7 +304,10 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
 layers before it put under its prefixes. A record has `country_code`, `country_name`, `city_name` and,
 when it has a city, `city_source`: the name of the layer file without `.csv.gz` (e.g. `70-geofeeds`) that wrote
-the city (a record without a city has none). `eval` scores our cities per `city_source`.
+the city (a record without a city has none). When the build has GeoNames, a record whose city GeoNames
+places (country + name, the most populous place on a clash: the same rule `eval` uses) also has `latitude` and
+`longitude`, doubles rounded to 4 decimals; a city that is not placed and a record without a city have neither.
+`eval` scores our cities per `city_source` and does not read the coordinates.
 
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
@@ -320,7 +323,7 @@ layer name (`layerRules`): `30-pdb` and `38-asn-geofeed` `-same-country`, `40-ho
 | Task | Runs after | Does |
 |---|---|---|
 | `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2 |
-| `build-mmdb` | `download` | runs `mmdbbuilder geo` on all the layer files → `ip2geo-openipdata-<date>.mmdb` |
+| `build-mmdb` | `download` | makes the GeoNames copy available, runs `mmdbbuilder geo` on all the layer files (with `-geonames` when the copy is there) → `ip2geo-openipdata-<date>.mmdb`; the output says `coordinates: on` or `skipped: <reason>`, with the counts of placed and unplaced cities |
 | `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2) against RIPE Atlas (country and city) and our MMDB against a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
 
@@ -434,7 +437,7 @@ task output (its scores are then left out of `metrics`, never zero):
 | DB-IP Lite city (CC BY 4.0) | `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz`, this month's, last month's if not out yet | country and city agreement |
 | MaxMind GeoLite2 City (GeoLite EULA, attribution required) | `https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=...&suffix=tar.gz`, needs `MAXMIND_LICENSE_KEY`; skipped without it; no request while the local archive was checked less than 3 days ago (30 downloads a day) | country and city agreement, rating scores |
 | RIPE Atlas probes | `https://ftp.ripe.net/ripe/atlas/probes/archive/meta-latest` (daily JSON, bzip2): connected probes with a public IPv4 address and a country, kept as `atlas-probes.csv` (`ip,country,lat,lon`) | per-probe country and city accuracy |
-| GeoNames `cities1000` (CC BY 4.0, attribution: GeoNames, geonames.org) | `https://download.geonames.org/export/dump/cities1000.zip`, `cities1000.txt` unpacked; own copy in the eval dir, no request while the local archive was checked less than 7 days ago | places our city names (we have no coordinates) for `atlas_city_pct` |
+| GeoNames `cities1000` (CC BY 4.0, attribution: GeoNames, geonames.org) | `https://download.geonames.org/export/dump/cities1000.zip`, `cities1000.txt` unpacked; own copy in the eval dir, no request while the local archive was checked less than 7 days ago | places our city names for `atlas_city_pct`, and gives the MMDB records their `latitude` and `longitude` (the `build-mmdb` task fetches it first; a failed download only skips the coordinates) |
 | Geofeed holdout | a frozen 10% of the feeds (`public.geofeed_urls` rows with `id % 10 = 0` first seen before 2026-11-11, so the sample does not move when the feed list changes) are left out of a second build, `holdout.mmdb`, with the real build's arguments | how well the lower layers guess what operators declared |
 
 The MaxMind key is a secret and sits in the download URL: every error of that
@@ -566,7 +569,7 @@ openipdata-worker run-rdns-rules       # learn candidate rules once locally
 openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule, without learning
 openipdata-worker run-rdns-rules -codes [-domains a.net,b.net] [-force] # only the LLM task propose-codes (needs OPENROUTER_API_KEY)
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
-mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
+mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] <layer.csv.gz>...
 mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
