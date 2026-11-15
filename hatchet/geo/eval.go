@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // EvalOutput is what Evaluate scored. Metrics holds the numbers
@@ -73,7 +74,11 @@ func (p *Pipeline) stampMMDB(ctx context.Context, src Source, mmdbPath string, o
 	fail := func(err error) string {
 		msg := "failed: " + strings.TrimSpace(strings.SplitN(err.Error(), "\n", 2)[0])
 		if len(msg) > 300 {
-			msg = msg[:300]
+			n := 300
+			for n > 0 && !utf8.RuneStart(msg[n]) {
+				n--
+			}
+			msg = msg[:n]
 		}
 		p.log("eval: stamp %s", msg)
 		return msg
@@ -93,6 +98,7 @@ func (p *Pipeline) stampMMDB(ctx context.Context, src Source, mmdbPath string, o
 	tmp := mmdbPath + ".stamped.tmp"
 	if _, err := p.runBuilder(ctx, []string{"stamp", "-db", mmdbPath, "-meta", metaPath, "-out", tmp}); err != nil {
 		os.Remove(tmp)
+		os.Remove(tmp + ".tmp") // mmdbbuilder's own temporary file, left when it is killed
 		return fail(err)
 	}
 	if err := os.Rename(tmp, mmdbPath); err != nil {

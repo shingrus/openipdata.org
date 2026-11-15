@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"openipdata.org/hatchet/download"
 )
@@ -686,6 +687,70 @@ esac`
 		}
 		if !strings.Contains(strings.Join(logs, "\n"), "eval: stamp failed") {
 			t.Errorf("not logged: %v", logs)
+		}
+	})
+}
+
+// A failed evaluation is never stamped; a failed stamp leaves no temporary
+// files; a long failure text is cut at a character boundary.
+func TestEvaluateStampEdges(t *testing.T) {
+	src := Source{DateTag: "2026-11-10"}
+	script := `case "$1" in
+eval) echo '{"atlas_country_pct": 97.5}';;
+stamp) touch "$(dirname "$0")/stamp-called"; echo partial > "$7.tmp"
+  [ -f "$(dirname "$0")/stamp-long" ] && { printf '€%.0s' $(seq 1 200) >&2; echo >&2; exit 1; }
+  echo boom >&2; exit 1;;
+esac`
+	t.Run("evaluate error", func(t *testing.T) {
+		p := evalPipeline(t, script)
+		mmdb := filepath.Join(p.DataDir, "ip2geo.mmdb")
+		os.WriteFile(mmdb, []byte("MMDB"), 0o640)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := p.Evaluate(ctx, src, mmdb); err == nil {
+			t.Fatal("no error for a cancelled context")
+		}
+		if got, _ := os.ReadFile(mmdb); string(got) != "MMDB" {
+			t.Errorf("mmdb changed: %q", got)
+		}
+		if _, err := os.Stat(filepath.Join(p.DataDir, "stamp-called")); !os.IsNotExist(err) {
+			t.Errorf("stamp was run: %v", err)
+		}
+	})
+	t.Run("temporary files removed", func(t *testing.T) {
+		p := evalPipeline(t, script)
+		mmdb := filepath.Join(p.DataDir, "ip2geo.mmdb")
+		os.WriteFile(mmdb, []byte("MMDB"), 0o640)
+		out, err := p.Evaluate(context.Background(), src, mmdb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(out.Stamp, "failed: ") {
+			t.Errorf("Stamp = %q", out.Stamp)
+		}
+		if _, err := os.Stat(filepath.Join(p.DataDir, "stamp-called")); err != nil {
+			t.Errorf("stamp was not run: %v", err)
+		}
+		if got, _ := os.ReadFile(mmdb); string(got) != "MMDB" {
+			t.Errorf("mmdb changed: %q", got)
+		}
+		for _, f := range []string{mmdb + ".stamped.tmp", mmdb + ".stamped.tmp.tmp"} {
+			if _, err := os.Stat(f); !os.IsNotExist(err) {
+				t.Errorf("%s left: %v", f, err)
+			}
+		}
+	})
+	t.Run("long multi-byte message", func(t *testing.T) {
+		p := evalPipeline(t, script)
+		os.WriteFile(filepath.Join(p.DataDir, "stamp-long"), nil, 0o640)
+		mmdb := filepath.Join(p.DataDir, "ip2geo.mmdb")
+		os.WriteFile(mmdb, []byte("MMDB"), 0o640)
+		out, err := p.Evaluate(context.Background(), src, mmdb)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !utf8.ValidString(out.Stamp) || len(out.Stamp) > 300 || !strings.Contains(out.Stamp, "€") {
+			t.Errorf("Stamp = %q (%d bytes)", out.Stamp, len(out.Stamp))
 		}
 	})
 }
