@@ -73,6 +73,9 @@ type Pipeline struct {
 	MMDBBuilder string
 	R2          string
 
+	// PTRResolver is the local recursive resolver for resolve-names (empty: the system resolver).
+	PTRResolver string
+
 	// Tests only.
 	store        rdns.ObjectStore
 	lookup       lookupFunc

@@ -47,8 +47,9 @@ log "installing OS packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 # git: the worker clones source repos into the data dir. curl: Go download.
-# build-essential: only to build scamper below.
-apt-get install -y -q --no-install-recommends ca-certificates curl git build-essential
+# build-essential: only to build scamper below. unbound: the local resolver of the worker's PTR
+# lookups; bind9-dnsutils (dig): only for its smoke test below.
+apt-get install -y -q --no-install-recommends ca-certificates curl git build-essential unbound bind9-dnsutils
 # The apt scamper is setuid root and cannot start under the unit; keep it off the PATH.
 if [[ "$(dpkg-query -W -f='${Status}' scamper 2>/dev/null)" == "install ok installed" ]]; then
     log "removing the apt package scamper"
@@ -139,8 +140,118 @@ else
     install -m 0640 -o root -g "$RUN_AS" "$SCRIPT_DIR/$SERVICE_NAME.env.example" "$ENV_FILE"
 fi
 
+# Local recursive resolver for the worker's PTR lookups only (the bulk lookups are rate limited at
+# the public resolvers, and the questions about visitor IPs should not go to third parties).
+# unbound listens on 127.0.0.1:5335 with no query log and no DNSSEC validation (PTR names are hints;
+# a broken signature must not lose a name). The system DNS (systemd-resolved, /etc/resolv.conf) is
+# not touched. The worker is pointed at it by a unit drop-in, written only when the smoke test passes.
+UNBOUND_CONF=/etc/unbound/unbound.conf.d/openipdata.conf
+UNBOUND_ADDR=127.0.0.1:5335
+DROPIN_DIR=/etc/systemd/system/$SERVICE_NAME.service.d
+DROPIN=$DROPIN_DIR/ptr-resolver.conf
+
+# The package ships a unit that can point the system resolver at unbound; never wanted here.
+systemctl disable --now unbound-resolvconf.service >/dev/null 2>&1 || true
+
+log "configuring unbound: $UNBOUND_CONF"
+UNBOUND_TMP="$(mktemp "$UNBOUND_CONF.XXXXXX")"
+cat >"$UNBOUND_TMP" <<'UNBOUND_EOF'
+# Managed by init-hatchet-runner-vm.sh (rewritten on every run). Resolver of the worker's PTR lookups.
+server:
+    interface: 127.0.0.1
+    port: 5335
+    access-control: 127.0.0.0/8 allow
+    verbosity: 0
+    log-queries: no
+    log-replies: no
+    log-servfail: no
+    use-syslog: yes
+    hide-identity: yes
+    hide-version: yes
+    qname-minimisation: yes
+    # The VM may have no usable IPv6 route; trying IPv6 name servers first would slow every lookup.
+    prefer-ip4: yes
+    # No DNSSEC validation: a PTR name is a hint, and a broken signature must not lose it.
+    module-config: "iterator"
+    msg-cache-size: 64m
+    rrset-cache-size: 128m
+    neg-cache-size: 16m
+    num-threads: 2
+    so-reuseport: yes
+    outgoing-range: 4096
+    num-queries-per-thread: 2048
+    cache-min-ttl: 300
+    cache-max-negative-ttl: 3600
+UNBOUND_EOF
+chmod 0644 "$UNBOUND_TMP"
+UNBOUND_CHANGED=0
+if ! cmp -s "$UNBOUND_TMP" "$UNBOUND_CONF"; then
+    UNBOUND_CHANGED=1
+fi
+mv "$UNBOUND_TMP" "$UNBOUND_CONF"
+
+UNBOUND_OK=0
+if unbound-checkconf >/dev/null 2>&1; then
+    systemctl enable unbound >/dev/null 2>&1 || log "warning: could not enable unbound"
+    if [[ "$UNBOUND_CHANGED" -eq 1 ]] || ! systemctl is-active --quiet unbound; then
+        log "restarting unbound"
+        systemctl restart unbound || log "warning: unbound did not restart"
+    fi
+    UNBOUND_OK=1
+else
+    log "warning: unbound-checkconf rejects the configuration; removing $UNBOUND_CONF, the worker keeps the system DNS"
+    rm -f "$UNBOUND_CONF"
+    systemctl disable --now unbound >/dev/null 2>&1 || true
+fi
+
+# Smoke test: one reverse lookup through unbound must print a name.
+UNBOUND_PASS=0
+if [[ "$UNBOUND_OK" -eq 1 ]]; then
+    log "smoke test: reverse lookup of 1.1.1.1 through unbound"
+    # A cold cache can make the first lookup slow: up to 3 tries, 2 seconds apart.
+    for attempt in 1 2 3; do
+        if [[ -n "$(dig +short +time=3 +tries=2 @127.0.0.1 -p 5335 -x 1.1.1.1 2>/dev/null)" ]]; then
+            UNBOUND_PASS=1
+            break
+        fi
+        [[ "$attempt" -lt 3 ]] && sleep 2
+    done
+    if [[ "$UNBOUND_PASS" -eq 1 ]]; then
+        log "smoke test passed: unbound answers on $UNBOUND_ADDR"
+    else
+        log "warning: unbound smoke test failed; the worker keeps the system DNS"
+    fi
+fi
+
+# The worker gets the setting from a unit drop-in (the env file is never edited); a PTR_RESOLVER
+# line in the env file overrides it, and an empty one turns it off. daemon-reload below.
+if [[ "$UNBOUND_PASS" -eq 1 ]]; then
+    mkdir -p "$DROPIN_DIR"
+    DROPIN_TMP="$(mktemp "$DROPIN.XXXXXX")"
+    cat >"$DROPIN_TMP" <<DROPIN_EOF
+[Unit]
+Wants=unbound.service
+After=unbound.service
+
+[Service]
+Environment=PTR_RESOLVER=$UNBOUND_ADDR
+DROPIN_EOF
+    chmod 0644 "$DROPIN_TMP"
+    if cmp -s "$DROPIN_TMP" "$DROPIN"; then
+        rm -f "$DROPIN_TMP"
+    else
+        log "installing drop-in: $DROPIN"
+        mv "$DROPIN_TMP" "$DROPIN"
+    fi
+elif [[ -e "$DROPIN" ]]; then
+    log "removing drop-in: $DROPIN"
+    rm -f "$DROPIN"
+    rmdir "$DROPIN_DIR" 2>/dev/null || true
+fi
+
 log "installing systemd unit: $SERVICE_NAME"
 install -m 0644 -o root -g root "$SCRIPT_DIR/$SERVICE_NAME.service" "/etc/systemd/system/$SERVICE_NAME.service"
+# Also loads a changed or removed drop-in; the restart below (every run with a token) applies it.
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME" >/dev/null
 

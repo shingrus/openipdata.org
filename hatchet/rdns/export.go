@@ -39,8 +39,9 @@ type NameAnswer struct {
 // DNS-over-HTTPS when it fails.
 type NameResolver struct{ r *ptrResolver }
 
-// NewNameResolver makes the production resolver.
-func NewNameResolver() *NameResolver { return &NameResolver{r: newPTRResolver()} }
+// NewNameResolver makes the production resolver; addr is PTR_RESOLVER (empty: the system
+// resolver), checked by CheckPTRResolver.
+func NewNameResolver(addr string) *NameResolver { return &NameResolver{r: newPTRResolver(addr)} }
 
 // ResolveAll looks up every IP with at most workers lookups at a time. The answers are in the
 // order of ips; doh counts the lookups that needed the fallback.

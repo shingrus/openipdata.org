@@ -28,6 +28,8 @@
 // GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
 // HC_PING_GEO and HC_PING_BGP (optional), MAXMIND_LICENSE_KEY (optional secret: the
 // MaxMind GeoLite2 City reference of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
+// PTR_RESOLVER (optional, host:port of a local recursive resolver on loopback, e.g. 127.0.0.1:5335: the PTR
+// lookups of resolve-ips and import-mlab ask it first, then DoH; empty = the system resolver; checked at start),
 // mmdbbuilder and scamper (resolve-ips; built without privilege separation) are expected next to this binary.
 package main
 
@@ -141,6 +143,13 @@ func main() {
 		command = os.Args[1]
 	}
 	var err error
+	if command == "serve" || command == "run-rdns" || command == "run-mlab" {
+		err = rdns.CheckPTRResolver(env("PTR_RESOLVER"))
+	}
+	if err != nil {
+		slog.Error("openipdata-worker failed", "err", err)
+		os.Exit(1)
+	}
 	switch command {
 	case "serve":
 		err = serve(ctx)
@@ -198,7 +207,7 @@ func newBGPPipeline(progress func(string)) *bgp.Pipeline {
 // next to this one (empty when unknown: locate then skips the MMDB part).
 func newMLabPipeline(progress func(string)) *mlab.Pipeline {
 	builder, _ := mmdbBuilder()
-	return &mlab.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, MMDBBuilder: builder, R2: env("R2")}
+	return &mlab.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, MMDBBuilder: builder, R2: env("R2"), PTRResolver: env("PTR_RESOLVER")}
 }
 
 // newGeoPipeline reads the environment; progress receives log lines.
@@ -267,7 +276,7 @@ func newGeofeedsPipeline(progress func(string)) *geofeeds.Pipeline {
 func newRDNSPipeline(progress func(string)) *rdns.Pipeline {
 	scamper, _ := nextToExecutable("scamper")
 	builder, _ := mmdbBuilder() // empty when unknown: locate then skips the MMDB hop fallback
-	return &rdns.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, Scamper: scamper, MMDBBuilder: builder, R2: env("R2")}
+	return &rdns.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, Scamper: scamper, MMDBBuilder: builder, R2: env("R2"), PTRResolver: env("PTR_RESOLVER")}
 }
 
 func newRDNSRulesPipeline(progress func(string)) *rdnsrules.Pipeline {

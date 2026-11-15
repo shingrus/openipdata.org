@@ -66,6 +66,10 @@ type Pipeline struct {
 	MMDBBuilder string
 	R2          string
 
+	// PTRResolver is the local recursive resolver (host:port on loopback) that resolve-names and
+	// sample-names ask first; empty means the system resolver. DoH stays the fallback.
+	PTRResolver string
+
 	// Tests only.
 	store     objectStore
 	lookup    lookupFunc

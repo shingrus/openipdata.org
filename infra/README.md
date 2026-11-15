@@ -38,7 +38,7 @@ A restart interrupts running tasks, which Hatchet retries, so deploy between run
 | `/var/cache/openipdata-build/` | root `0700` | Go toolchain and module/build caches for the build |
 | `/etc/systemd/system/openipdata-worker.service` | root | runs the worker as `openipdata`; starts once `HATCHET_CLIENT_TOKEN` is set |
 
-Packages: `ca-certificates`, `curl`, `git`, `build-essential` (only to build `scamper`). The apt package `scamper` is removed if installed.
+Packages: `ca-certificates`, `curl`, `git`, `build-essential` (only to build `scamper`), `unbound` and `bind9-dnsutils` (`dig`, only for the smoke test of unbound). The apt package `scamper` is removed if installed.
 
 The unit keeps `NoNewPrivileges=true` and grants only `CAP_NET_RAW` (`AmbientCapabilities` and
 `CapabilityBoundingSet`): `scamper` sends ICMP probes over a raw socket as the `openipdata` user.
@@ -61,6 +61,31 @@ and only changed code is recompiled. `sudo rm -rf /var/cache/openipdata-build` g
 clean build next time. Override both to change Go:
 `sudo GO_VERSION=1.27.4 GO_SHA256=<sha> bash init-hatchet-runner-vm.sh`
 (checksums at `https://go.dev/dl/?mode=json`); the old toolchain is removed.
+
+## Local resolver (unbound)
+
+The PTR lookups of `resolve-ips` (`resolve-names`, `sample-names`) and `import-mlab` go through a
+local `unbound` recursive resolver instead of the system DNS, which rate limits bulk lookups and
+would see the PTR questions about visitor IPs. The script writes `/etc/unbound/unbound.conf.d/openipdata.conf`
+on every run: it listens on `127.0.0.1:5335` only, has no query log, and does no DNSSEC validation. The
+script validates it with `unbound-checkconf` (on failure it removes the file and warns, the worker keeps
+the system DNS), restarts unbound only when the file changed or it was not active, disables the packaged
+`unbound-resolvconf.service`, and never touches systemd-resolved or `/etc/resolv.conf`.
+
+After a passing smoke test the script writes the drop-in
+`/etc/systemd/system/openipdata-worker.service.d/ptr-resolver.conf` (`Environment=PTR_RESOLVER=127.0.0.1:5335`,
+`Wants=` and `After=unbound.service`); without a passing test it removes the drop-in. The re-run restarts the
+worker, which applies a changed drop-in. A `PTR_RESOLVER=` line in the env file overrides the drop-in:
+`PTR_RESOLVER=` (empty) turns it off, and the worker then uses the system DNS.
+
+Check:
+
+```bash
+dig +short +time=3 +tries=2 @127.0.0.1 -p 5335 -x 1.1.1.1
+systemctl status unbound
+```
+
+To turn it off: put `PTR_RESOLVER=` in `/etc/openipdata/worker.env` and restart the worker.
 
 ## Secrets
 

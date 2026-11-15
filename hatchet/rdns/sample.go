@@ -364,7 +364,7 @@ func (p *Pipeline) SampleNames(ctx context.Context) (SampleOutput, error) {
 
 	resolver := p.resolver
 	if resolver == nil {
-		resolver = newPTRResolver()
+		resolver = newPTRResolver(p.PTRResolver)
 	}
 	rctx, cancel := context.WithTimeout(ctx, sampleBudget)
 	defer cancel()

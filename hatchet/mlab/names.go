@@ -77,7 +77,7 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 	}
 	resolve := p.resolve
 	if resolve == nil {
-		r := rdns.NewNameResolver()
+		r := rdns.NewNameResolver(p.PTRResolver)
 		resolve = r.ResolveAll
 	}
 	budget := p.budget

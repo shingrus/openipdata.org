@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,7 +106,7 @@ func httpErrKind(err error) string {
 	return errKindOther
 }
 
-// ptrResolver looks up PTR names: the system resolver first, and Cloudflare's
+// ptrResolver looks up PTR names: the system resolver (or PTR_RESOLVER) first, and Cloudflare's
 // DNS-over-HTTPS JSON API when the system resolver fails (anything but "no such
 // name"). Errors are never passed on: they name the IP.
 type ptrResolver struct {
@@ -113,9 +114,59 @@ type ptrResolver struct {
 	doh    func(ctx context.Context, ip netip.Addr) ptrAnswer
 }
 
-func newPTRResolver() *ptrResolver {
+// newPTRResolver makes the production resolver. addr is the optional local recursive
+// resolver (PTR_RESOLVER, see CheckPTRResolver); empty means the system resolver.
+func newPTRResolver(addr string) *ptrResolver {
 	d := &dohClient{base: dohURL, http: newDoHHTTPClient()}
-	return &ptrResolver{system: net.DefaultResolver.LookupAddr, doh: d.lookup}
+	return &ptrResolver{system: systemLookup(addr), doh: d.lookup}
+}
+
+// defaultLookupAddr is the system resolver's reverse lookup; tests replace it so that no
+// real DNS query is made.
+var defaultLookupAddr = func(ctx context.Context, ip string) ([]string, error) {
+	return net.DefaultResolver.LookupAddr(ctx, ip)
+}
+
+// ptrDialTimeout is how long connecting to the local resolver may take.
+const ptrDialTimeout = time.Second
+
+// systemLookup is the first lookup of ptrResolver. With an empty addr it is the system
+// resolver; otherwise a Go resolver whose every connection (UDP or TCP, as Go asks) goes
+// to addr, whatever server the system configuration names.
+func systemLookup(addr string) func(ctx context.Context, ip string) ([]string, error) {
+	if addr == "" {
+		return func(ctx context.Context, ip string) ([]string, error) { return defaultLookupAddr(ctx, ip) }
+	}
+	r := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: ptrDialTimeout}
+			return d.DialContext(ctx, network, addr)
+		},
+	}
+	return r.LookupAddr
+}
+
+// CheckPTRResolver validates the PTR_RESOLVER setting: empty (system resolver), or
+// host:port with a loopback IP literal and a port from 1 to 65535. The value is not a
+// secret and may be shown in the error.
+func CheckPTRResolver(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("PTR_RESOLVER %q: want host:port, for example 127.0.0.1:5335", addr)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.IsLoopback() {
+		return fmt.Errorf("PTR_RESOLVER %q: the host must be a loopback IP address (127.0.0.0/8 or ::1)", addr)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+		return fmt.Errorf("PTR_RESOLVER %q: the port must be a number from 1 to 65535", addr)
+	}
+	return nil
 }
 
 // lookup answers for ip; viaDoH is true when the DoH fallback was used. Error kinds
@@ -344,7 +395,7 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 
 	resolver := p.resolver
 	if resolver == nil {
-		resolver = newPTRResolver()
+		resolver = newPTRResolver(p.PTRResolver)
 	}
 	if err := resolveStore(ctx, conn, resolver, todo, &out); err != nil {
 		return out, err
