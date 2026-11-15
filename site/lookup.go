@@ -4,7 +4,9 @@ package main
 // two MMDBs know about it, and how that is shown. Nothing here logs an address.
 
 import (
+	"html/template"
 	"log"
+	"math"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -19,6 +21,9 @@ import (
 const (
 	maxQueryLen = 100 // longest raw query that is looked at at all
 	maxInputLen = 64  // longest text put back into the lookup input (runes)
+	minTerm     = 2   // shortest name search term (after slugify)
+	maxTerm     = 64  // longest name search term (after slugify)
+	badMsg      = "Not an IP address, AS number or name"
 )
 
 // Ranges that are never public addresses, besides what netip already says
@@ -99,9 +104,11 @@ func clientAddr(r *http.Request, header string) (netip.Addr, bool) {
 
 // query is what the raw query string of "/" asks for.
 type query struct {
-	kind  string     // "visitor" (the home page), "lookup" (the canonical address), "redirect" (to "/" or to the canonical URL), "asn" (redirect to the page of an AS number) or "bad"
+	kind  string     // "visitor" (the home page), "lookup" (the canonical address), "redirect" (to "/" or to the canonical URL), "asn" (the page of an AS number), "search" (a name) or "bad"
 	addr  netip.Addr // lookup, and redirect to the canonical URL (invalid: redirect to "/")
-	asn   string     // asn: the number without leading zeros
+	asn   string     // asn: the number without leading zeros; empty when it is 0 or out of range
+	term  string     // search: the normalised term (see slugify)
+	canon bool       // search: the raw query is exactly the canonical URL "q=<term>"
 	input string     // bad: the text to put back into the input, already cut
 }
 
@@ -136,28 +143,62 @@ func parseQuery(raw string) query {
 	} else if t, err := url.PathUnescape(raw); err == nil {
 		text = t
 	}
-	if n, ok := asnInput(text); ok {
-		return query{kind: "asn", asn: n}
-	}
+	// Order: an IP address, "AS<number>", a bare number, then a name. Input
+	// that looks like an attempt at an address never becomes a name search.
 	if a, ok := parseAddr(text); ok {
 		if kind == "lookup" && raw != a.String() {
 			kind = "redirect" // another spelling of the address
 		}
 		return query{kind: kind, addr: a}
 	}
-	return query{kind: "bad", input: cut(text)}
+	if n, ok := asnInput(text); ok {
+		return query{kind: "asn", asn: n}
+	}
+	if looksLikeIP(text) {
+		return query{kind: "bad", input: cut(text)}
+	}
+	term := slugify(text)
+	if len(term) < minTerm {
+		return query{kind: "bad", input: cut(text)}
+	}
+	return query{kind: "search", term: term, canon: raw == "q="+term}
 }
 
-// asnInput reads "AS15169" or "as15169" (no space, any case, the number in
-// range 1 to 4294967295; a bare number is not an AS).
+// looksLikeIP reports input that is an attempt at an address, valid or not:
+// it has a colon, or it is only digits, dots and slashes with at least one dot
+// ("1.2.3", "1.1.1.1/24"). Such input is "bad", never a name.
+func looksLikeIP(s string) bool {
+	if strings.Contains(s, ":") {
+		return true
+	}
+	dot := false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '.':
+			dot = true
+		case c >= '0' && c <= '9', c == '/':
+		default:
+			return false
+		}
+	}
+	return dot
+}
+
+// asnInput reads "AS15169" or "as15169" (no space, any case) or a bare
+// number "15169": the number is 1 to 4294967295, leading zeros are ignored. It
+// returns the number without leading zeros, or "" with ok true for a number that
+// is 0 or too large.
 func asnInput(s string) (string, bool) {
 	s = strings.TrimSpace(s)
-	if len(s) < 3 || !strings.EqualFold(s[:2], "as") {
+	if len(s) >= 3 && strings.EqualFold(s[:2], "as") {
+		s = s[2:]
+	}
+	n, canon, ok := asNumber(s)
+	if !ok {
 		return "", false
 	}
-	n, canon, ok := asNumber(s[2:])
-	if !ok || n == 0 {
-		return "", false
+	if n == 0 {
+		return "", true
 	}
 	return canon, true
 }
@@ -254,6 +295,23 @@ type geoRecord struct {
 	CountryCode string `maxminddb:"country_code"`
 	CountryName string `maxminddb:"country_name"`
 	CityName    string `maxminddb:"city_name"`
+	// Where the city was placed (a double each); a record without a placed city
+	// has neither, so they are optional: (0, 0) is a real place, absent is not.
+	Latitude  *float64 `maxminddb:"latitude"`
+	Longitude *float64 `maxminddb:"longitude"`
+}
+
+// coords returns the place of the city when the record has both numbers and
+// they are on the globe.
+func (g *geoRecord) coords() (lat, lon float64, ok bool) {
+	if g.Latitude == nil || g.Longitude == nil {
+		return 0, 0, false
+	}
+	lat, lon = *g.Latitude, *g.Longitude
+	if math.IsNaN(lat) || math.IsNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+		return 0, 0, false
+	}
+	return lat, lon, true
 }
 
 type asnRecord struct {
@@ -277,7 +335,8 @@ type panel struct {
 	Addr  string
 	Big   string
 	Sub   string
-	None  bool // no location: Big is shown grey
+	None  bool          // no location: Big is shown grey
+	Map   template.HTML // the outline map behind the place (see worldmap.go), or empty
 	Rows  []row
 }
 
@@ -291,6 +350,26 @@ func isDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// placeMap is the map behind the place of a record: with a city that has
+// coordinates, with the city at the point of the frame and the aim; with a country and no city, that
+// country's outline in the accent colour, its label point at the point of the frame, no aim;
+// otherwise none (a city without coordinates has no map; neither does an
+// unknown country code).
+func (w *world) placeMap(g *geoRecord) template.HTML {
+	if g.CityName != "" {
+		if lat, lon, ok := g.coords(); ok {
+			m, _ := w.drawMap(lat, lon, "", true)
+			return m
+		}
+		return ""
+	}
+	if c := w.country(g.CountryCode); c != nil {
+		m, _ := w.drawMap(c.labelY, c.labelX, g.CountryCode, false)
+		return m
+	}
+	return ""
 }
 
 // panelFor builds the panel for a public or non-public address.
@@ -309,8 +388,10 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	switch {
 	case g.CityName != "":
 		p.Big, p.Sub = g.CityName, country
+		p.Map = s.world.placeMap(&g)
 	case country != "":
 		p.Big, p.Sub = country, "city unknown"
+		p.Map = s.world.placeMap(&g)
 	default:
 		p.Big, p.None = "Location unknown", true
 	}

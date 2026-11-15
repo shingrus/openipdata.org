@@ -248,8 +248,8 @@ func TestReload(t *testing.T) {
 func TestPageHygiene(t *testing.T) {
 	s := testServer(t, "testdata/stamped.mmdb")
 	body := get(s, "GET", "/").Body.String()
-	if len(body) >= 12<<10 {
-		t.Errorf("page is %d bytes", len(body))
+	if len(body) > pageMaxRaw || gzipped([]byte(body)) > pageMaxGz {
+		t.Errorf("page is %d bytes (limit %d), %d gzipped (limit %d)", len(body), pageMaxRaw, gzipped([]byte(body)), pageMaxGz)
 	}
 	// The only URL is the GitHub link (the SVG namespace of the data: favicon is no request).
 	clean := strings.ReplaceAll(body, "http://www.w3.org/2000/svg", "")

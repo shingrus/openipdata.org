@@ -71,6 +71,8 @@ type asnData struct {
 	topV4     []int32
 	topV6     []int32
 	topOrgs   []orgRow
+	orgs      []orgRow         // every organization (valid slug), most IPv4 addresses first, ties by slug; the name search walks it
+	byHandle  map[string]int32 // normalised handle (see slugify) -> index in orgs of the organization of the first network (by number) with that handle
 	countries []countryRow
 	pages     map[string]*cachedPage
 	loadedIn  time.Duration
@@ -219,9 +221,7 @@ func loadASN(ctx context.Context, db *sql.DB) (*asnData, error) {
 			}
 		}
 		o.n = hi - lo
-		if o.v4 > 0 {
-			orgs = append(orgs, o)
-		}
+		orgs = append(orgs, o)
 		lo = hi
 	}
 	slices.SortFunc(orgs, func(a, b orgRow) int {
@@ -233,7 +233,29 @@ func loadASN(ctx context.Context, db *sql.DB) (*asnData, error) {
 		}
 		return strings.Compare(a.slug, b.slug)
 	})
-	d.topOrgs = orgs[:min(topCount, len(orgs))]
+	d.orgs = slices.Clip(orgs)
+	nTop := 0 // the ranking only has organizations with addresses; they come first
+	for nTop < len(orgs) && orgs[nTop].v4 > 0 {
+		nTop++
+	}
+	d.topOrgs = orgs[:min(topCount, nTop)]
+
+	orgIdx := make(map[string]int32, len(orgs))
+	for i := range orgs {
+		orgIdx[orgs[i].slug] = int32(i)
+	}
+	d.byHandle = map[string]int32{}
+	for i := range d.nets { // by number, so the first network of a handle wins
+		n := &d.nets[i]
+		if n.slug == "" || n.handle == "" {
+			continue
+		}
+		if h := slugify(n.handle); h != "" {
+			if _, dup := d.byHandle[h]; !dup {
+				d.byHandle[h] = orgIdx[n.slug]
+			}
+		}
+	}
 
 	byCC := map[string]*countryRow{}
 	for i := range d.nets {

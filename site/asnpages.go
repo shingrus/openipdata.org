@@ -81,12 +81,13 @@ type tab struct {
 // asnView is the data of every ASN page; the template asn.html lays it out.
 type asnView struct {
 	pageBase
-	NoticeHead string // a page that only says one thing (not found, not loaded)
-	Notice     string
-	Place      *place
-	Tables     []table
-	Pfx        *pfxPanel
-	Tabs       []tab
+	NoticeHead  string // a page that only says one thing (not found, not loaded)
+	Notice      string
+	NoticeRight string // right side of the notice panel's head (the search term)
+	Place       *place
+	Tables      []table
+	Pfx         *pfxPanel
+	Tabs        []tab
 }
 
 func (s *server) asnBase(title string) pageBase {

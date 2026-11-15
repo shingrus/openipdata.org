@@ -80,6 +80,7 @@ type server struct {
 	v4, v6   string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
 	cspFill  string    // csp of a page that has the fill script
 	public   func(netip.Addr) bool
+	world    *world // country outlines for the map, decoded once at start
 }
 
 // useURLs sets V4_URL and V6_URL (already checked) and the policy of the pages
@@ -123,8 +124,13 @@ func newServer(geoPath, asnPath, realIP string) (*server, error) {
 	if err != nil {
 		return nil, err
 	}
+	w, err := parseWorld(worldBin)
+	if err != nil {
+		return nil, fmt.Errorf("map data: %w", err)
+	}
 	s := &server{
-		tmpl: tmpl, csp: csp(), fonts: map[string][]byte{},
+		world: w,
+		tmpl:  tmpl, csp: csp(), fonts: map[string][]byte{},
 		geo: &mmdbFile{path: geoPath}, asn: &mmdbFile{path: asnPath}, asnf: &asnFile{},
 		realIP: realIP, public: isPublic,
 	}
@@ -215,7 +221,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // serveHome answers "/": the visitor's own connection (no query), a lookup
 // (the raw query is one address), the redirect of the lookup form (q=<address>)
-// or "Not an IP address". Only a lookup page holds no visitor data, so only it
+// an AS number or a name search, or the "bad" answer. Only a lookup page holds no visitor data, so only it
 // may be cached.
 func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
@@ -239,13 +245,20 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusFound)
 		return
 	case "asn":
+		if q.asn == "" { // 0 or out of range: the not-found page of the /as route
+			s.serveNetwork(w, r, 0)
+			return
+		}
 		h.Set("Cache-Control", cache)
 		h.Set("Location", pagePath+q.asn)
 		w.WriteHeader(http.StatusFound)
 		return
+	case "search":
+		s.serveSearch(w, r, q)
+		return
 	case "bad":
 		code, input, cache = http.StatusBadRequest, q.input, "no-store"
-		p = panel{Title: "Lookup", Msg: "Not an IP address"}
+		p = panel{Title: "Lookup", Msg: badMsg}
 	case "lookup":
 		input = q.addr.String()
 		title = input + " · openipdata.org"

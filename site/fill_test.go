@@ -116,7 +116,7 @@ func TestFillScriptAndCSP(t *testing.T) {
 	// Pages without a row to fill: the CSP has no script hash and no connect-src.
 	for name, w := range map[string]*httptest.ResponseRecorder{
 		"lookup":  fromPeer(s, "/?203.0.113.9", "127.0.0.1:1"),
-		"bad":     fromPeer(s, "/?nope", "127.0.0.1:1"),
+		"bad":     fromPeer(s, "/?1.2.3", "127.0.0.1:1"),
 		"unknown": fromPeer(s, "/", "127.0.0.1:1"),
 		"private": fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "10.0.0.1"),
 	} {
@@ -252,10 +252,19 @@ func TestScriptTextRejectsEmpty(t *testing.T) {
 	}
 }
 
-// The page with the fill script (the biggest one) stays under the same size limit as TestPageHygiene.
+// The visitor page with the fill script, with a map (Lisbon fixture) and
+// without one (an address the geo fixture does not know), stays under the size
+// limits of TestMapSizes and TestPageHygiene. Measured 2026-11-15: 16.7 KB and
+// 6.4 KB gzipped with the Lisbon map, 12.6 KB and 4.7 KB without (before the map: 11.9 KB and 4.5 KB).
 func TestVisitorPageSize(t *testing.T) {
 	s := fillServer(t, u4, u6)
-	if n := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.Len(); n >= 12<<10 {
-		t.Errorf("visitor page is %d bytes", n)
+	for _, c := range []struct {
+		addr     string
+		max, gzm int
+	}{{"203.0.113.9", pageMapMaxRaw, pageMapMaxGz}, {"192.0.2.9", pageMaxRaw, pageMaxGz}} {
+		body := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", c.addr).Body.Bytes()
+		if len(body) > c.max || gzipped(body) > c.gzm {
+			t.Errorf("visitor page for %s is %d bytes (limit %d), %d gzipped (limit %d)", c.addr, len(body), c.max, gzipped(body), c.gzm)
+		}
 	}
 }

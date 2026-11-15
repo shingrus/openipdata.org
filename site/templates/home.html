@@ -2,7 +2,7 @@
 <div class="head"><h2>{{.Title}}</h2></div>
 {{if .Msg}}<p class="msg">{{if .Addr}}<span class="mono">{{.Addr}}</span>{{end}}{{.Msg}}</p>
 {{else}}<div class="conn">
-<div class="place{{if .None}} none{{end}}"><h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
+<div class="place{{if .None}} none{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h1>{{.Big}}</h1>{{if .Sub}}<p>{{.Sub}}</p>{{end}}</div>
 <dl>
 {{range .Rows}}<div><dt>{{.K}}</dt><dd{{if .Fam}} id="other" class="o{{.Fam}}" data-fam="{{.Fam}}" data-from="{{.From}}"{{end}}>{{.V}}{{if .A}}{{if .Href}}<a class="as" href="{{.Href}}">{{.A}}</a>{{else}}<span class="as">{{.A}}</span>{{end}}{{end}}</dd></div>
 {{end}}</dl>

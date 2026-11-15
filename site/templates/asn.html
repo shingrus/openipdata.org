@@ -1,6 +1,6 @@
 {{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
 {{template "top" .}}{{with .Notice}}<section class="panel">
-<div class="head"><h1>{{$.NoticeHead}}</h1></div>
+<div class="head"><h1>{{$.NoticeHead}}</h1>{{with $.NoticeRight}}<span class="r">{{.}}</span>{{end}}</div>
 <p class="msg">{{.}}</p>
 </section>
 {{end}}{{with .Place}}<section class="panel">

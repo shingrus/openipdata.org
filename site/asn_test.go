@@ -397,14 +397,27 @@ func TestASNLookupRedirectAndLink(t *testing.T) {
 		{"/?q=AS64500%20", "/as64500"},
 		{"/?AS64500", "/as64500"},
 		{"/?as15169", "/as15169"},
+		{"/?q=64500", "/as64500"},
+		{"/?q=0064500", "/as64500"},
+		{"/?q=+64500+", "/as64500"},
+		{"/?64500", "/as64500"},
+		{"/?15169", "/as15169"},
+		{"/?4294967295", "/as4294967295"},
 	} {
 		w := get(s, "GET", c.target)
 		if w.Code != 302 || w.Header().Get("Location") != c.loc || w.Header().Get("Cache-Control") != "public, max-age=300" {
 			t.Errorf("%s: status %d, Location %q, Cache-Control %q", c.target, w.Code, w.Header().Get("Location"), w.Header().Get("Cache-Control"))
 		}
 	}
-	// A bare number, AS0, a number out of range and AS with text are not an AS: the old answer.
-	for _, target := range []string{"/?q=64500", "/?q=AS0", "/?q=AS4294967296", "/?q=AS", "/?q=AS64500x", "/?q=AS%2064500", "/?q=ASN64500"} {
+	// 0 and a number out of range (bare or with AS): the not-found page of the /as route.
+	for _, target := range []string{"/?q=0", "/?q=AS0", "/?q=AS4294967296", "/?q=4294967296", "/?q=99999999999999999999", "/?0"} {
+		w := get(s, "GET", target)
+		if w.Code != 404 || !strings.Contains(w.Body.String(), "AS number out of range") || w.Header().Get("Cache-Control") != "public, max-age=300" {
+			t.Errorf("%s: status %d, cache %q", target, w.Code, w.Header().Get("Cache-Control"))
+		}
+	}
+	// AS with something else after the number is an attempt at an address, so not a name: 400.
+	for _, target := range []string{"/?q=AS64500:80", "/?q=1.2.3", "/?q=1.2.3.4.5"} {
 		if w := get(s, "GET", target); w.Code != 400 {
 			t.Errorf("%s: status %d, want 400", target, w.Code)
 		}
