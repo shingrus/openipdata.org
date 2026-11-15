@@ -38,12 +38,12 @@ body{
   padding-right:max(16px,env(safe-area-inset-right,0px));
 }
 .mono,.num{font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
-/* Links, as in the design: a link in the data (a value of a panel row, a table cell, a prefix list, a note,
-   a panel head) is orange and underlined on hover; every other link has the colour of its text and turns orange on hover. */
+/* Links: every link has the colour of its text and turns orange on hover, the values of the panel rows included.
+   Only a link in a table, a prefix list, a note or a panel head is orange, with an underline on hover. */
 a{color:inherit;text-decoration:none}
 a:hover{color:var(--accent)}
-dd a,.tbl a,.pf a,.note a,.head a{color:var(--accent)}
-dd a:hover,.tbl a:hover,.pf a:hover,.note a:hover,.head a:hover{text-decoration:underline}
+.tbl a,.pf a,.note a,.head a{color:var(--accent)}
+.tbl a:hover,.pf a:hover,.note a:hover,.head a:hover{text-decoration:underline}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .wrap{max-width:1000px;margin-inline:auto}
 

@@ -660,14 +660,14 @@ func TestLinkColourRule(t *testing.T) {
 	for _, x := range []string{
 		"a{color:inherit;text-decoration:none}",
 		"a:hover{color:var(--accent)}",
-		"dd a,.tbl a,.pf a,.note a,.head a{color:var(--accent)}",
-		"dd a:hover,.tbl a:hover,.pf a:hover,.note a:hover,.head a:hover{text-decoration:underline}",
+		".tbl a,.pf a,.note a,.head a{color:var(--accent)}",
+		".tbl a:hover,.pf a:hover,.note a:hover,.head a:hover{text-decoration:underline}",
 	} {
 		if !strings.Contains(styleCSS, x) {
 			t.Errorf("style.css lacks the link rule %s", x)
 		}
 	}
-	for _, old := range []string{".lnk", "a.as", "dd .as", "a.dn", ".foot a"} {
+	for _, old := range []string{".lnk", "a.as", "dd .as", "a.dn", ".foot a", "dd a"} {
 		if strings.Contains(styleCSS+liveCSS+accCSS+asnCSS, old) {
 			t.Errorf("per-class link rule left: %s", old)
 		}
