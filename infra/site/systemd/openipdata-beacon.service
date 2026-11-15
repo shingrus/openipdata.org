@@ -1,0 +1,44 @@
+[Unit]
+Description=openipdata beacon: DNS resolver address of the visitor (dnstap from Knot to Redis)
+After=network.target redis-server.service
+Wants=redis-server.service
+# The socket must exist before Knot starts (Knot then connects at once). Knot has a drop-in with Wants=
+# on this unit; if the binary is not installed yet, the condition skips this unit and Knot starts alone.
+Before=knot.service
+ConditionPathExists=/opt/openipdata-site/bin/openipdata-beacon
+
+[Service]
+Type=simple
+User=openipdata-beacon
+# Group knot: the runtime directory (and so the socket) belongs to this group, mode 0750, and the
+# program makes the socket 0660, so only this user and the knot user can reach it.
+Group=knot
+RuntimeDirectory=openipdata-beacon
+RuntimeDirectoryMode=0750
+Environment=DNSTAP_SOCKET=/run/openipdata-beacon/dnstap.sock
+Environment=BEACON_ZONE=r.openipdata.org
+Environment=REDIS_ADDR=127.0.0.1:6379
+Environment=BEACON_TTL=120
+ExecStart=/opt/openipdata-site/bin/openipdata-beacon
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_UNIX
+# Only Redis on this machine.
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallFilter=@system-service
+MemoryMax=128M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

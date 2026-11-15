@@ -1,0 +1,16 @@
+; Zone r.openipdata.org, the resolver beacon. Template of init-openipdata-site.sh, which fills in
+; the serial and the two public addresses of the VM (a line with no IPv6 address is removed) and
+; installs the result as /var/lib/knot/zones/r.openipdata.org.zone. The serial is the Unix time of the
+; run that changed the content; an unchanged zone keeps its file and serial.
+;
+; Every name <token>.r.openipdata.org is used once, so caching it gains nothing. The TTL is 0 (the answer
+; is for this one query only), so it never sits in a resolver cache, and a repeat visit with a new token
+; always reaches us. Some resolvers raise a TTL of 0 to a minimum; that does no harm either. The address is
+; always this VM: the page then opens https://<token>.r.openipdata.org/ and the web server answers.
+$ORIGIN r.openipdata.org.
+@   3600 IN SOA ns-r.openipdata.org. hostmaster.openipdata.org. __SERIAL__ 3600 600 1209600 60
+@   3600 IN NS  ns-r.openipdata.org.
+@   0    IN A    __PUBLIC_IPV4__
+@   0    IN AAAA __PUBLIC_IPV6__
+*   0    IN A    __PUBLIC_IPV4__
+*   0    IN AAAA __PUBLIC_IPV6__

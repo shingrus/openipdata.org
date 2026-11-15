@@ -332,7 +332,8 @@ type row struct {
 	VHref   string // V is a link to this page
 	Fam     string // "4" or "6": a row the page script fills in with the address of that family, found at From
 	From    string
-	Own     bool // the row of the address family that is looked up (addFill places the other family's row by it)
+	Zone    string // the DNS row: the page script fills it in with the network of the visitor's DNS resolver, using names under this zone
+	Own     bool   // the row of the address family that is looked up (addFill places the other family's row by it)
 }
 
 // panel is the "Your connection" / "Lookup" panel.
@@ -405,9 +406,10 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 
 	var n asnRecord
 	prefix, found := s.asn.lookup(a, &n)
-	network, as := firstNonEmpty(n.Org, n.Name), ""
-	if isDigits(n.ASN) {
-		as = "AS" + n.ASN
+	network, num := networkOf(n)
+	as := ""
+	if num != "" {
+		as = "AS" + num
 	}
 	switch {
 	case network == "" && as == "":
@@ -465,6 +467,27 @@ func (s *server) addFill(p *panel, a netip.Addr) bool {
 	}
 	p.Rows = slices.Insert(p.Rows, own, row{K: "IPv" + fam, V: dash, Fam: fam, From: from})
 	return true
+}
+
+// addDNS appends the DNS row to the visitor's panel p: a dash that the page
+// script fills in with the network of the visitor's DNS resolver. It reports
+// whether a row was added, which means the page needs resolver.js. Only a
+// panel of a public address (no message) with the feature on gets it.
+func (s *server) addDNS(p *panel) bool {
+	if s.zone == "" || p.Msg != "" {
+		return false
+	}
+	p.Rows = append(p.Rows, row{K: "DNS", V: dash, Zone: s.zone})
+	return true
+}
+
+// networkOf is the name (organisation, else name) and the AS number (digits
+// only) of a record of the ip2asn MMDB; each is empty when unknown.
+func networkOf(n asnRecord) (name, asn string) {
+	if isDigits(n.ASN) {
+		asn = n.ASN
+	}
+	return firstNonEmpty(n.Org, n.Name), asn
 }
 
 func firstNonEmpty(a, b string) string {

@@ -12,6 +12,9 @@
 # A build that fails its check is removed and remembered in state/bad.sha256; it is never tried again.
 # A failed "nginx -t" or reload restores the link and stops the idle instance, but does not mark the
 # build bad (nginx is the problem, not the build).
+# The DNS beacon binary (openipdata-beacon, asset openipdata-beacon-linux-amd64 of the same release) is
+# a separate small part, update_beacon, run first and never able to stop or change the site part: a
+# missing asset is nothing, a failure pings /fail (and then this run sends no success ping).
 # Pings: HC_PING_SITE on success, HC_PING_SITE/fail on failure (the URL is never printed).
 #
 # Overrides for tests only (a real run needs none): BASE_URL, INSTALL_DIR, STATE_DIR, LOCK_FILE,
@@ -35,14 +38,21 @@ SERVICE_RUNNER="${SERVICE_RUNNER-setpriv --reuid=openipdata-site --regid=openipd
 RELEASES="$INSTALL_DIR/releases"
 HEALTH_WAIT="${HEALTH_WAIT:-20}"
 DRAIN="${DRAIN:-10}"
+BEACON_ASSET=openipdata-beacon-linux-amd64
+BEACON_BIN="${BEACON_BIN:-$INSTALL_DIR/bin/openipdata-beacon}"
+BEACON_UNIT="${BEACON_UNIT:-openipdata-beacon.service}"
+BEACON_WAIT="${BEACON_WAIT:-3}"
 
 log() {
     printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
 
 # ping_hc [/fail]: a ping failure only logs, and never shows the URL.
+beacon_failed=0
 ping_hc() {
     [[ -n "${HC_PING_SITE:-}" ]] || return 0
+    # A failed beacon update must not be hidden by the site's success ping of the same run.
+    if [[ -z "${1:-}" && "$beacon_failed" == 1 ]]; then return 0; fi
     curl -fsS -m 10 --retry 3 -o /dev/null "${HC_PING_SITE}${1:-}" >/dev/null 2>&1 || log "warning: health ping failed"
     return 0
 }
@@ -103,6 +113,85 @@ fail_build() {
     exit 1
 }
 
+# update_beacon: install a new openipdata-beacon binary when the release has a different checksum.
+# Never exits and never fails the run: every problem is logged, the old binary stays (or comes back),
+# and a real failure pings /fail. No asset (not published yet, upload in progress, download failed or
+# not matching its checksum) is not a failure: try again later.
+update_beacon() {
+    local hex="" sum got ver installed="" bad="" new="$BEACON_BIN.new" old="$BEACON_BIN.old"
+    # The beacon is set up only when the init script ran with PUBLIC_IPV4 (it creates this user).
+    # Without it the unit could not start, and every run would report a failure.
+    id -u "${BEACON_USER:-openipdata-beacon}" >/dev/null 2>&1 || return 0
+    sum="$(mktemp)" || return 0
+    if curl -fsSL -m 30 -o "$sum" "$BASE_URL/$BEACON_ASSET.sha256" 2>/dev/null; then
+        read -r hex _ <"$sum" || true
+    fi
+    rm -f "$sum"
+    [[ "$hex" =~ ^[0-9a-f]{64}$ ]] || return 0
+    if [[ -f "$STATE_DIR/beacon-installed.sha256" ]]; then read -r installed <"$STATE_DIR/beacon-installed.sha256" || true; fi
+    [[ "$hex" == "$installed" && -x "$BEACON_BIN" ]] && return 0
+    if [[ -f "$STATE_DIR/beacon-bad.sha256" ]]; then read -r bad <"$STATE_DIR/beacon-bad.sha256" || true; fi
+    if [[ "$hex" == "$bad" ]]; then
+        log "beacon release ${hex:0:12} failed its check before, not trying it again"
+        beacon_failed=1
+        ping_hc /fail
+        return 0
+    fi
+
+    rm -f "$new" "$old"
+    if ! curl -fsSL -m 300 --retry 3 -o "$new" "$BASE_URL/$BEACON_ASSET" 2>/dev/null; then
+        rm -f "$new"
+        log "beacon download failed (upload in progress?), trying later"
+        return 0
+    fi
+    got="$(sha256_of "$new")" || got=""
+    if [[ "$got" != "$hex" ]]; then
+        rm -f "$new"
+        log "beacon binary does not match its checksum (upload in progress?), trying later"
+        return 0
+    fi
+    chmod 0755 "$new"
+    beacon_bad() {
+        beacon_failed=1
+        printf '%s\n' "$hex" >"$STATE_DIR/beacon-bad.sha256" || true
+        ping_hc /fail
+    }
+    # shellcheck disable=SC2086
+    if ! ver="$($TIMEOUT 10 $SERVICE_RUNNER "$new" -version 2>/dev/null)" || [[ -z "$ver" ]]; then
+        rm -f "$new"
+        log "error: the new beacon binary ${hex:0:12} cannot print its version (or took more than 10 s)"
+        beacon_bad
+        return 0
+    fi
+
+    if [[ -e "$BEACON_BIN" ]]; then cp -p "$BEACON_BIN" "$old" || true; fi
+    if ! mv -f "$new" "$BEACON_BIN"; then
+        rm -f "$new" "$old"
+        log "error: cannot install the beacon binary"
+        beacon_bad
+        return 0
+    fi
+    "$SYSTEMCTL" restart "$BEACON_UNIT" 2>/dev/null || true
+    sleep "$BEACON_WAIT"
+    if "$SYSTEMCTL" is-active --quiet "$BEACON_UNIT"; then
+        printf '%s\n' "$hex" >"$STATE_DIR/beacon-installed.sha256.tmp" &&
+            mv -f "$STATE_DIR/beacon-installed.sha256.tmp" "$STATE_DIR/beacon-installed.sha256" || true
+        rm -f "$STATE_DIR/beacon-bad.sha256" "$old"
+        log "beacon installed: ${hex:0:12} (version $ver)"
+        return 0
+    fi
+    log "error: $BEACON_UNIT is not active after the restart; putting the old binary back"
+    if [[ -e "$old" ]]; then
+        mv -f "$old" "$BEACON_BIN" || true
+        "$SYSTEMCTL" restart "$BEACON_UNIT" 2>/dev/null || true
+    else
+        rm -f "$BEACON_BIN"
+        "$SYSTEMCTL" stop "$BEACON_UNIT" 2>/dev/null || true
+    fi
+    beacon_bad
+    return 0
+}
+
 mkdir -p "$RELEASES" "$STATE_DIR"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -110,6 +199,9 @@ if ! flock -n 9; then
     handled=1
     exit 0
 fi
+
+# The beacon first; whatever happens there, the site part below runs as before.
+update_beacon || true
 
 # The live port comes only from the link.
 live_target="$(readlink "$LIVE_LINK" 2>/dev/null || true)"

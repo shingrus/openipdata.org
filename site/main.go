@@ -23,6 +23,12 @@
 //	          localhost) or empty: with the URL of that family empty the page
 //	          has no second row and no script.
 //
+//	BEACON_ZONE  zone of the one-time names the DNS row makes the browser look
+//	          up (<token>.<zone>, e.g. r.openipdata.org); empty (the default) = no DNS row,
+//	          no script, /resolver answers 404.
+//	REDIS_ADDR  loopback address of the Redis where our DNS server records the
+//	          resolver of each name (default 127.0.0.1:6379).
+//
 // Both MMDBs are opened again when their file changes; a missing file only
 // means unknown values on the page. The ASN SQLite file is loaded again when
 // it changes; without it the ASN pages answer 503 and the rest works.
@@ -79,6 +85,11 @@ type server struct {
 	realIP     string    // header that holds the visitor address, or ""
 	v4, v6     string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
 	cspFill    string    // csp of a page that has the fill script
+	cspRes     string    // csp of a page that has the DNS row script
+	cspBoth    string    // csp of a page that has both scripts
+	origins    []string  // origins of V4_URL and V6_URL
+	zone       string    // names of the DNS row are <token>.<zone>; empty = no DNS row
+	redis      *redisClient
 	public     func(netip.Addr) bool
 	world      *world // country outlines for the map, decoded once at start
 	placeLimit int    // most MMDB records read for the places of a prefix page
@@ -97,10 +108,35 @@ func (s *server) useURLs(v4, v6 string) {
 			}
 		}
 	}
-	s.cspFill = s.csp
-	if len(origins) > 0 {
-		s.cspFill = csp(origins...)
+	s.origins = origins
+	s.buildCSP()
+}
+
+// buildCSP sets the policies of the pages that have the fill script, the DNS
+// row script or both. Without any of them a page keeps s.csp.
+func (s *server) buildCSP() {
+	s.cspFill, s.cspRes, s.cspBoth = s.csp, s.csp, s.csp
+	if len(s.origins) > 0 {
+		s.cspFill = csp(s.origins...)
+		s.cspBoth = s.cspFill
 	}
+	if s.zone != "" {
+		s.cspRes = cspWith(nil, s.zone)
+		s.cspBoth = cspWith(s.origins, s.zone)
+	}
+}
+
+// pageCSP is the policy of a page with the fill script and/or the DNS row script.
+func (s *server) pageCSP(fill, res bool) string {
+	switch {
+	case fill && res:
+		return s.cspBoth
+	case fill:
+		return s.cspFill
+	case res:
+		return s.cspRes
+	}
+	return s.csp
 }
 
 // checkURL accepts an empty value or an absolute https URL (http only for
@@ -196,6 +232,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveHome(w, r)
 	case p == "/ip":
 		s.serveIP(w, r)
+	case p == "/resolver":
+		s.serveResolver(w, r)
 	case s.serveASN(w, r):
 	case p == "/healthz":
 		w.Header().Set("Cache-Control", "no-store")
@@ -234,7 +272,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	code, input, cache := http.StatusOK, "", "public, max-age=300"
 	title := "openipdata.org"
 	var p panel
-	fill := false
+	fill, res := false, false
 	switch q.kind {
 	case "redirect":
 		h.Set("Cache-Control", cache)
@@ -275,15 +313,16 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 			input = a.String()
 			p = s.panelFor("Your connection", a)
 			fill = s.addFill(&p, a)
+			res = s.addDNS(&p)
 		} else {
 			p = panel{Title: "Your connection", Msg: "Address unknown"}
 		}
 	}
 	v := makeView(*s.scores.Load())
-	v.Panel, v.Input, v.Title, v.Fill = &p, input, title, fill
+	v.Panel, v.Input, v.Title, v.Fill, v.Res = &p, input, title, fill, res
 	v.NoIndex = q.kind == "bad" || q.kind == "lookup"
-	if fill {
-		h.Set("Content-Security-Policy", s.cspFill)
+	if fill || res {
+		h.Set("Content-Security-Policy", s.pageCSP(fill, res))
 	}
 	body, err := render(s.tmpl, "home.html", v)
 	if err != nil {
@@ -401,11 +440,24 @@ func main() {
 		}
 	}
 
+	zone := os.Getenv("BEACON_ZONE") // off unless set: the row needs the DNS server and its certificate
+	if err := checkZone(zone); zone != "" && err != nil {
+		fatal("BEACON_ZONE", err)
+	}
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "127.0.0.1:6379"
+	}
+	if err := checkRedisAddr(redisAddr); err != nil {
+		fatal("REDIS_ADDR", err)
+	}
+
 	s, err := newServer(mmdb, asnDB, realIP)
 	if err != nil {
 		fatal("start", err)
 	}
 	s.useURLs(urls["V4_URL"], urls["V6_URL"])
+	s.useBeacon(zone, redisAddr)
 	s.useASN(asnSQLite)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

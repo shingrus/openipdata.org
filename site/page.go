@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"html/template"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +17,9 @@ import (
 var styleCSS string
 
 // The only scripts of the page: static/head.js (saved theme), static/theme.js
-// (theme button) and static/fill.js (fills the row of the other address family,
-// see home.html; it sits at the end of the body). They are put into the page
+// (theme button), static/fill.js (fills the row of the other address family,
+// see home.html; it sits at the end of the body) and static/resolver.js (fills
+// the DNS row, after fill.js). They are put into the page
 // inline, and their sha256 goes into the CSP, so both use the very same string
 // from scriptText(): the file without its first comment line and without
 // surrounding white space. Never built from request data.
@@ -34,7 +36,10 @@ var themeSrc string
 //go:embed static/fill.js
 var fillSrc string
 
-var headJS, themeJS, fillJS = scriptText("head.js", headSrc), scriptText("theme.js", themeSrc), scriptText("fill.js", fillSrc)
+//go:embed static/resolver.js
+var resolverSrc string
+
+var headJS, themeJS, fillJS, resolverJS = scriptText("head.js", headSrc), scriptText("theme.js", themeSrc), scriptText("fill.js", fillSrc), scriptText("resolver.js", resolverSrc)
 
 // scriptText returns the text that goes between <script> and </script>. An empty
 // file (or one with only a comment) stops the program at start.
@@ -60,6 +65,8 @@ type pageBase struct {
 	HeadJS, ThemeJS template.JS
 	Fill            bool // the page has a row for fillJS to fill
 	FillJS          template.JS
+	Res             bool // the page has the DNS row for resolverJS to fill
+	ResJS           template.JS
 	CSS             template.CSS
 	Title           string // the page title
 	Input           string // lookup bar value
@@ -105,7 +112,7 @@ func makeCard(label string, v float64) card {
 
 func makeView(s scores) view {
 	v := view{
-		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), CSS: template.CSS(styleCSS)},
+		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), ResJS: template.JS(resolverJS), CSS: template.CSS(styleCSS)},
 		Cards: []card{
 			makeCard("right country", s.Country),
 			makeCard("right city", s.City),
@@ -140,19 +147,29 @@ func scriptHash(js string) string {
 // csp is the policy of every page. With origins (the origins of V4_URL and
 // V6_URL) it is the policy of a page that has the fill script: that script's
 // hash and connect-src for exactly those origins. Without, nothing is added.
-func csp(origins ...string) string {
+func csp(origins ...string) string { return cspWith(origins, "") }
+
+// cspWith is csp for a page that may also have the DNS row: with a zone the
+// hash of resolver.js and connect-src for the names under the zone.
+func cspWith(origins []string, zone string) string {
 	script := scriptHash(headJS) + " " + scriptHash(themeJS)
+	connect := slices.Clone(origins)
+	if len(origins) > 0 {
+		script += " " + scriptHash(fillJS)
+	}
+	if zone != "" {
+		script += " " + scriptHash(resolverJS)
+		connect = append(connect, "https://*."+zone)
+	}
 	d := []string{
 		"default-src 'none'",
 		"style-src 'unsafe-inline'",
 		"font-src 'self'",
 		"img-src data:",
+		"script-src " + script,
 	}
-	if len(origins) > 0 {
-		script += " " + scriptHash(fillJS)
-		d = append(d, "script-src "+script, "connect-src "+strings.Join(origins, " "))
-	} else {
-		d = append(d, "script-src "+script)
+	if len(connect) > 0 {
+		d = append(d, "connect-src "+strings.Join(connect, " "))
 	}
 	return strings.Join(append(d, "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'"), "; ")
 }

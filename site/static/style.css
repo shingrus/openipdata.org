@@ -103,7 +103,7 @@ dl div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;
 dl div:last-child{border-bottom:0}
 dt{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 dd{min-width:0;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
-dd.o6{display:flex;align-items:center;min-height:2lh} /* room for a long IPv6 address that arrives later: no layout shift */
+dd.o6,dd.od{display:flex;align-items:center;min-height:2lh} /* room for a long IPv6 address that arrives later: no layout shift */
 dd .as{margin-left:10px;color:var(--accent)}
 dd a.lnk{color:var(--accent)}
 .msg{padding:20px;font-size:16px;color:var(--muted);overflow-wrap:anywhere}
@@ -121,7 +121,7 @@ dd a.lnk{color:var(--accent)}
 .note span{color:var(--text)}
 
 /* 39 characters wrap to 3 lines on a 320px phone and in the narrowest two-column layout */
-@media (max-width:400px),(min-width:701px) and (max-width:760px){dd.o6{min-height:3lh}}
+@media (max-width:400px),(min-width:701px) and (max-width:760px){dd.o6,dd.od{min-height:3lh}}
 @media (max-width:700px){
   .lookup{margin-top:18px;height:54px;padding-left:14px;gap:8px}
   .lookup input,.lookup b{font-size:17px}

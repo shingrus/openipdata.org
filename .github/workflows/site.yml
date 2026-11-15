@@ -58,11 +58,27 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: site/go.mod
-          cache-dependency-path: site/go.sum
+          cache-dependency-path: |
+            site/go.sum
+            beacon/go.sum
 
       - name: Check and test
         shell: bash
         working-directory: site
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed for:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+          go vet ./...
+          go test -race ./...
+
+      - name: Check and test beacon
+        shell: bash
+        working-directory: beacon
         run: |
           set -euo pipefail
           unformatted="$(gofmt -l .)"
@@ -88,6 +104,19 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${version}" -o ../dist/openipdata-site-linux-amd64 .
           cd ../dist
           sha256sum openipdata-site-linux-amd64 > openipdata-site-linux-amd64.sha256
+
+      - name: Build beacon
+        shell: bash
+        working-directory: beacon
+        run: |
+          set -euo pipefail
+          version="$GITHUB_SHA"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}@${GITHUB_SHA}"
+          fi
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${version}" -o ../dist/openipdata-beacon-linux-amd64 .
+          cd ../dist
+          sha256sum openipdata-beacon-linux-amd64 > openipdata-beacon-linux-amd64.sha256
 
       - name: Publish release
         if: steps.gate.outputs.publish == 'true'
@@ -119,4 +148,9 @@ jobs:
           # mismatch as "try again later", never as a failed release.
           gh release upload site dist/openipdata-site-linux-amd64 --clobber
           gh release upload site dist/openipdata-site-linux-amd64.sha256 --clobber
+          # The beacon binary after the site's two files, so a problem here never holds back the
+          # site; same order (binary, then checksum). The updater treats a missing or half-uploaded
+          # beacon asset as "try later" and handles it apart from the site.
+          gh release upload site dist/openipdata-beacon-linux-amd64 --clobber
+          gh release upload site dist/openipdata-beacon-linux-amd64.sha256 --clobber
           gh release edit site --latest=false --notes "$notes"

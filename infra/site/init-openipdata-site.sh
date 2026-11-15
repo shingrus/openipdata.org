@@ -6,6 +6,8 @@
 # Idempotent: rerun after `git pull` to update scripts, units and the nginx file; never overwrites an
 # existing env file. It never obtains the TLS certificate (certbot, Cloudflare DNS challenge, by hand):
 # without it everything else is installed, the nginx site stays disabled and the command is printed.
+# The DNS beacon (Knot DNS, Redis, openipdata-beacon, the zone r.openipdata.org) is set up only when
+# the VM's public IPv4 is known (found from v4.openipdata.org, or PUBLIC_IPV4 in the env file); see beacon_prepare and beacon_start below.
 set -euo pipefail
 
 RUN_AS=openipdata-site
@@ -32,11 +34,25 @@ OLD_UNIT=/etc/systemd/system/openipdata-site.service
 SCRIPTS=(openipdata-site-update openipdata-mmdb-pull openipdata-cf-ips)
 UNITS=(
     openipdata-site@.service
+    openipdata-beacon.service
     openipdata-site-update.service openipdata-site-update.timer
     openipdata-mmdb-pull.service openipdata-mmdb-pull.timer
     openipdata-cf-ips.service openipdata-cf-ips.timer
 )
 TIMERS=(openipdata-site-update.timer openipdata-mmdb-pull.timer openipdata-cf-ips.timer)
+
+# The DNS beacon.
+BEACON_ZONE=r.openipdata.org
+R_CERT_DIR=/etc/letsencrypt/live/$BEACON_ZONE
+NGINX_R=/etc/nginx/sites-available/$BEACON_ZONE.conf
+NGINX_R_LINK=/etc/nginx/sites-enabled/$BEACON_ZONE.conf
+KNOT_CONF=/etc/knot/knot.conf
+KNOT_KEY=/etc/knot/openipdata-acme-key.conf
+KNOT_ZONE=/var/lib/knot/zones/$BEACON_ZONE.zone
+ACME_INI=/etc/letsencrypt/openipdata-r-rfc2136.ini
+REDIS_CONF=/etc/redis/redis.conf
+SITE_DROPIN_DIR=/etc/systemd/system/openipdata-site@.service.d
+BEACON_RUN_AS=openipdata-beacon
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -105,10 +121,251 @@ fail() {
     exit 1
 }
 
+
+# env_value NAME: the last NAME=value line of the env file, without quotes and spaces.
+env_value() {
+    sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | tr -d ' \t\r"'"'"
+}
+
+beacon=0          # 1 when the public IPv4 is known: the beacon is installed
+beacon_changed=0  # 1 when Knot's files changed and Knot must be restarted
+PUBLIC_IPV4=""
+PUBLIC_IPV6=""
+
+# own_addr 4|6: the address of v4.$DOMAIN or v6.$DOMAIN when it is a global address of an interface
+# of this machine; nothing otherwise (a VM behind NAT needs the setting in the env file).
+own_addr() {
+    local a
+    for a in $(getent "ahostsv$1" "v$1.$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u); do
+        if ip -o "-$1" addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$a"; then
+            printf '%s\n' "$a"
+            return 0
+        fi
+    done
+    return 0
+}
+
+# render_zone SERIAL: the zone file from the template (a line with an empty address is dropped).
+render_zone() {
+    local f="$SCRIPT_DIR/knot/$BEACON_ZONE.zone"
+    sed -e "s/__SERIAL__/$1/" -e "s/__PUBLIC_IPV4__/$PUBLIC_IPV4/g" "$f" |
+        if [[ -n "$PUBLIC_IPV6" ]]; then sed "s/__PUBLIC_IPV6__/$PUBLIC_IPV6/g"; else grep -v '__PUBLIC_IPV6__'; fi
+}
+
+# install_if_changed SRC DEST MODE OWNER:GROUP: copy only when the content differs; sets beacon_changed.
+install_if_changed() {
+    if [[ -f "$2" ]] && cmp -s "$1" "$2"; then
+        chmod "$3" "$2"
+        chown "$4" "$2"
+        return 0
+    fi
+    install -m "$3" -o "${4%%:*}" -g "${4##*:}" "$1" "$2"
+    beacon_changed=1
+}
+
+# Everything for the beacon that does not need its binary: packages, Redis, user, TSIG key, Knot
+# configuration and zone, firewall, the nginx site for the one-time names.
+beacon_prepare() {
+    PUBLIC_IPV4="$(env_value PUBLIC_IPV4)"
+    PUBLIC_IPV6="$(env_value PUBLIC_IPV6)"
+    # Not set in the env file: the names v4.$DOMAIN and v6.$DOMAIN point straight at this VM, so their
+    # addresses are used when they are really addresses of this machine.
+    [[ -n "$PUBLIC_IPV4" ]] || PUBLIC_IPV4="$(own_addr 4)"
+    [[ -n "$PUBLIC_IPV6" ]] || PUBLIC_IPV6="$(own_addr 6)"
+    if [[ -z "$PUBLIC_IPV4" ]]; then
+        log "DNS beacon skipped: v4.$DOMAIN does not resolve to an address of this machine (set PUBLIC_IPV4, and PUBLIC_IPV6 if the VM has one, in $ENV_FILE, then rerun)"
+        return 0
+    fi
+    log "DNS beacon addresses: $PUBLIC_IPV4 ${PUBLIC_IPV6:-(no IPv6)}"
+    [[ "$PUBLIC_IPV4" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail "PUBLIC_IPV4 in $ENV_FILE is not an IPv4 address"
+    if [[ -n "$PUBLIC_IPV6" ]]; then
+        [[ "$PUBLIC_IPV6" =~ ^[0-9a-fA-F:]+$ && "$PUBLIC_IPV6" == *:* ]] || fail "PUBLIC_IPV6 in $ENV_FILE is not an IPv6 address"
+    fi
+    beacon=1
+    log "DNS beacon: installing knot, redis, the zone $BEACON_ZONE"
+    apt-get install -y -qq knot redis-server python3-certbot-dns-rfc2136 openssl >/dev/null
+
+    # Redis: loopback only, nothing kept on disk, a hard memory limit that drops the oldest keys, so a
+    # flood of random names cannot fill the memory. A marked block at the end of the file (the last
+    # setting wins); rewritten on every run.
+    local tmp
+    tmp="$(mktemp)"
+    sed '/^# BEGIN openipdata-beacon$/,/^# END openipdata-beacon$/d' "$REDIS_CONF" >"$tmp"
+    cat >>"$tmp" <<'REDIS'
+# BEGIN openipdata-beacon
+bind 127.0.0.1
+port 6379
+protected-mode yes
+save ""
+appendonly no
+maxmemory 64mb
+maxmemory-policy allkeys-lru
+# END openipdata-beacon
+REDIS
+    if ! cmp -s "$tmp" "$REDIS_CONF"; then
+        cat "$tmp" >"$REDIS_CONF"
+        systemctl restart redis-server
+        log "redis: settings written (loopback only, no persistence, 64mb allkeys-lru)"
+    fi
+    rm -f "$tmp"
+    systemctl enable --now redis-server >/dev/null 2>&1 || log "warning: could not enable redis-server"
+
+    if ! id -u "$BEACON_RUN_AS" >/dev/null 2>&1; then
+        log "creating user: $BEACON_RUN_AS"
+        useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$BEACON_RUN_AS"
+    fi
+
+    # The TSIG key for the certbot DNS challenge: made once, never printed, never overwritten. If one of
+    # the two files is lost, both are made again (the new key is then used by both).
+    if [[ ! -s "$KNOT_KEY" || ! -s "$ACME_INI" ]]; then
+        local secret
+        secret="$(openssl rand -base64 32)"
+        (
+            umask 077
+            printf 'key:\n  - id: acme\n    algorithm: hmac-sha256\n    secret: %s\n' "$secret" >"$KNOT_KEY.tmp"
+            printf 'dns_rfc2136_server = 127.0.0.1\ndns_rfc2136_port = 53\ndns_rfc2136_name = acme\ndns_rfc2136_secret = %s\ndns_rfc2136_algorithm = HMAC-SHA256\n' "$secret" >"$ACME_INI.tmp"
+        )
+        chown root:knot "$KNOT_KEY.tmp"
+        chmod 0640 "$KNOT_KEY.tmp"
+        chown root:root "$ACME_INI.tmp"
+        chmod 0600 "$ACME_INI.tmp"
+        mv -f "$KNOT_KEY.tmp" "$KNOT_KEY"
+        mv -f "$ACME_INI.tmp" "$ACME_INI"
+        beacon_changed=1
+        log "created the TSIG key for the certificate challenge ($KNOT_KEY, $ACME_INI; not shown)"
+    fi
+
+    # Knot configuration.
+    sed -e "s/__PUBLIC_IPV4__/$PUBLIC_IPV4/" "$SCRIPT_DIR/knot/knot.conf" |
+        if [[ -n "$PUBLIC_IPV6" ]]; then sed "s/__PUBLIC_IPV6__/$PUBLIC_IPV6/"; else grep -v '__PUBLIC_IPV6__'; fi >"$tmp.knot"
+    install_if_changed "$tmp.knot" "$KNOT_CONF" 0640 root:knot
+
+    # The zone: the serial changes only when the content (serial aside) changes.
+    install -d -m 0750 -o knot -g knot /var/lib/knot/zones
+    local norm='s/ [0-9]+ (3600 600 1209600 60)$/ 0 \1/'
+    render_zone 0 >"$tmp.zone0"
+    if [[ -f "$KNOT_ZONE" ]] && cmp -s "$tmp.zone0" <(sed -E "$norm" "$KNOT_ZONE"); then
+        log "zone $BEACON_ZONE unchanged"
+    else
+        render_zone "$(date -u +%s)" >"$tmp.zone"
+        if command -v kzonecheck >/dev/null 2>&1; then
+            kzonecheck -o "$BEACON_ZONE" "$tmp.zone" >/dev/null || fail "kzonecheck rejected the generated zone (see above)"
+        fi
+        install -m 0640 -o root -g knot "$tmp.zone" "$KNOT_ZONE"
+        beacon_changed=1
+        log "zone $BEACON_ZONE written"
+    fi
+    rm -f "$tmp.knot" "$tmp.zone0" "$tmp.zone"
+    if command -v knotc >/dev/null 2>&1; then
+        knotc -c "$KNOT_CONF" conf-check >/dev/null || fail "knotc conf-check failed for $KNOT_CONF (run it by hand to see why)"
+    fi
+
+    # Knot may read the dnstap socket only if AppArmor lets it (Ubuntu ships a profile for knotd).
+    if [[ -d /etc/apparmor.d/local ]] && [[ -f /etc/apparmor.d/usr.sbin.knotd ]]; then
+        local aa=/etc/apparmor.d/local/usr.sbin.knotd rule='/run/openipdata-beacon/dnstap.sock rw,'
+        if ! grep -qxF "$rule" "$aa" 2>/dev/null; then
+            printf '%s\n' "$rule" >>"$aa"
+            apparmor_parser -r /etc/apparmor.d/usr.sbin.knotd >/dev/null 2>&1 || log "warning: could not reload the AppArmor profile of knotd"
+            beacon_changed=1
+        fi
+    fi
+
+    # Knot wants the beacon (and starts after it: Before= in the beacon unit). A missing beacon binary
+    # only skips the beacon unit; Knot starts anyway.
+    install -d -m 0755 /etc/systemd/system/knot.service.d
+    printf '[Unit]\nWants=openipdata-beacon.service\n' >/etc/systemd/system/knot.service.d/openipdata-beacon.conf
+    systemctl daemon-reload
+    systemctl enable openipdata-beacon.service >/dev/null 2>&1 || log "warning: could not enable openipdata-beacon"
+
+    ufw allow 53/udp >/dev/null
+    ufw allow 53/tcp >/dev/null
+    log "ufw: 53/udp and 53/tcp allowed"
+
+    # The nginx site for <token>.r.openipdata.org: only with its own certificate.
+    install -m 0644 -o root -g root "$SCRIPT_DIR/nginx/$BEACON_ZONE.conf" "$NGINX_R"
+    if [[ -e "$R_CERT_DIR/fullchain.pem" && -e "$R_CERT_DIR/privkey.pem" ]]; then
+        ln -sfn "$NGINX_R" "$NGINX_R_LINK"
+        nginx_apply || fail "nginx -t failed with $NGINX_R; see: nginx -t"
+        log "nginx site $BEACON_ZONE enabled"
+    else
+        rm -f "$NGINX_R_LINK"
+        nginx_apply || true
+        log "no certificate in $R_CERT_DIR yet: the nginx site $BEACON_ZONE stays disabled"
+    fi
+}
+
+# After the binaries are installed: start Knot, switch the site's DNS row on or off, print the checks.
+beacon_start() {
+    ((beacon)) || return 0
+    systemctl enable knot >/dev/null 2>&1 || log "warning: could not enable knot"
+    if ((beacon_changed)) || ! systemctl is-active --quiet knot; then
+        systemctl restart knot || log "warning: knot did not start: journalctl -u knot"
+    fi
+    if [[ -x "$BIN_DIR/openipdata-beacon" ]]; then
+        systemctl start openipdata-beacon.service || log "warning: openipdata-beacon did not start: journalctl -u openipdata-beacon"
+    else
+        log "the beacon binary is not installed yet (release asset openipdata-beacon-linux-amd64; the updater installs it within 2 minutes after the workflow ran)"
+    fi
+
+    # The site's DNS row is off by default (BEACON_ZONE empty in the binary). It is switched on by this
+    # drop-in only when the whole chain exists: the nginx site of the one-time names is enabled. The live
+    # instance is restarted only when the drop-in changed.
+    local want=0 changed=0 drop="$SITE_DROPIN_DIR/beacon.conf"
+    [[ -L "$NGINX_R_LINK" ]] && want=1
+    if ((want)); then
+        install -d -m 0755 "$SITE_DROPIN_DIR"
+        printf '[Service]\nEnvironment=BEACON_ZONE=%s\nEnvironment=REDIS_ADDR=127.0.0.1:6379\n' "$BEACON_ZONE" >"$drop.tmp"
+        if ! cmp -s "$drop.tmp" "$drop" 2>/dev/null; then mv -f "$drop.tmp" "$drop"; changed=1; else rm -f "$drop.tmp"; fi
+    elif [[ -e "$drop" ]]; then
+        rm -f "$drop"
+        changed=1
+    fi
+    if ((changed)); then
+        systemctl daemon-reload
+        if [[ -n "${live_port:-}" ]] && systemctl is-active --quiet "openipdata-site@$live_port"; then
+            systemctl restart "openipdata-site@$live_port" || log "warning: could not restart openipdata-site@$live_port"
+        fi
+        log "site DNS row: $( ((want)) && echo on || echo off ) (drop-in $drop)"
+    fi
+
+    printf 'beacon services (active):\n'
+    for u in redis-server knot openipdata-beacon; do
+        printf '  %s: %s\n' "$u" "$(systemctl is-active "$u" 2>&1 || true)"
+    done
+    cat <<MSG
+
+DNS beacon: add these records in the openipdata.org zone at Cloudflare (DNS only, grey cloud):
+
+    r         NS    ns-r.openipdata.org
+    ns-r      A     $PUBLIC_IPV4$( [[ -n "$PUBLIC_IPV6" ]] && printf '\n    ns-r      AAAA  %s' "$PUBLIC_IPV6" )
+
+Test the zone (use any 32 hex characters), then the stored address:
+
+    dig @$PUBLIC_IPV4 0123456789abcdef0123456789abcdef.r.$DOMAIN
+    redis-cli hgetall beacon:0123456789abcdef0123456789abcdef
+
+MSG
+    if [[ -L "$NGINX_R_LINK" ]]; then
+        echo "With the certificate in place, this answers JSON: curl https://0123456789abcdef0123456789abcdef.r.$DOMAIN/"
+    else
+        cat <<MSG
+The certificate for *.r.$DOMAIN is missing, so its nginx site is not enabled. After the DNS records above
+resolve (dig NS r.$DOMAIN), get it once (Knot answers the DNS challenge, nothing else to set up):
+
+    sudo certbot certonly --cert-name $BEACON_ZONE --dns-rfc2136 --dns-rfc2136-credentials $ACME_INI --dns-rfc2136-propagation-seconds 5 -d '*.$BEACON_ZONE'
+
+(add --dry-run to try it first), then rerun this script. Renewal is automatic (certbot timer); the
+existing renewal hook reloads nginx. A rerun of this script while a challenge is in flight is safe
+for the files, but a restart of Knot drops the challenge record: that renewal attempt fails and the
+next one works.
+MSG
+    fi
+}
+
 [[ "${EUID}" -eq 0 ]] || fail "run this script as root"
 command -v systemctl >/dev/null 2>&1 || fail "systemd not found"
 command -v apt-get >/dev/null 2>&1 || fail "apt-get not found (Ubuntu or Debian only)"
-for f in "${SCRIPTS[@]}" "${UNITS[@]/#/systemd/}" nginx/openipdata.org.conf nginx/v46.openipdata.org.conf nginx/default-deny.conf nginx/upstream-8080.conf nginx/upstream-8081.conf openipdata-site.env.example; do
+for f in "${SCRIPTS[@]}" "${UNITS[@]/#/systemd/}" nginx/openipdata.org.conf nginx/v46.openipdata.org.conf nginx/r.openipdata.org.conf knot/knot.conf knot/r.openipdata.org.zone nginx/default-deny.conf nginx/upstream-8080.conf nginx/upstream-8081.conf openipdata-site.env.example; do
     [[ -f "$SCRIPT_DIR/$f" ]] || fail "missing $SCRIPT_DIR/$f (run from a full git clone)"
 done
 
@@ -229,6 +486,8 @@ else
     log "no certificate in $CERT_DIR yet: the nginx site stays disabled (default-deny is active)"
 fi
 
+beacon_prepare
+
 # The migration must not interleave with a timer run of the updater: same lock.
 exec 9>/run/openipdata-site-update.lock
 if ! flock -w 300 9; then
@@ -250,6 +509,7 @@ if [[ ! -e "$OPT_DIR/slot-${live_port:-8080}/openipdata-site" ]]; then
 fi
 
 systemctl enable --now "${TIMERS[@]}" >/dev/null
+beacon_start
 
 # Status.
 log "status"
