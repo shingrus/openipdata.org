@@ -595,7 +595,9 @@ func syncBGPWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	}, taskRetry(hatchet.WithExecutionTimeout(2*time.Hour))...)
 	extract := wf.NewTask("extract", func(ctx hatchet.Context, _ SyncBGPInput) (bgp.ExtractOutput, error) {
 		out, err := newBGPPipeline(taskLog(ctx)).Extract(ctx, "")
-		if errors.Is(err, bgp.ErrTooFewPrefixes) {
+		// A retry of this task alone cannot help: a small table stays small, and a damaged
+		// dump was deleted (the next run downloads a new one).
+		if errors.Is(err, bgp.ErrTooFewPrefixes) || errors.Is(err, bgp.ErrDamaged) {
 			err = hatchet.NewNonRetryableError(err)
 		}
 		return out, err

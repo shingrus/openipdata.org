@@ -319,7 +319,7 @@ the optional layer `25-bgp`. This workflow reads no database and publishes nothi
 
 | Task | Runs after | Does |
 |---|---|---|
-| `download` | | checks the R2 settings (unless `skip_upload`), then downloads the newest full table of the RIPE RIS collector rrc00 (`https://data.ris.ripe.net/rrc00/latest-bview.gz`, about 430 MB, public data) to `/var/lib/openipdata/bgp/latest-bview.gz`, replacing the old one (only one is kept). It uses the shared conditional download and does not ask again within 6 hours of the last check; a plain HTTP client with timeouts and a 2 GB size cap |
+| `download` | | checks the R2 settings (unless `skip_upload`), then downloads the newest full table of the RIPE RIS collector rrc00 (`https://data.ris.ripe.net/rrc00/latest-bview.gz`, about 430 MB, public data) to `/var/lib/openipdata/bgp/latest-bview.gz`, replacing the old one (only one is kept). It uses the shared conditional download and does not ask again within 6 hours of the last check; a plain HTTP client with timeouts and a 2 GB size cap. A newly downloaded file is read through once (gzip checksum); a damaged one is deleted and downloaded a second time, and after two damaged files the task fails with no dump left |
 | `extract` | `download` | streams the file (gzip, MRT TABLE_DUMP_V2, IPv4 unicast RIB records) in two passes and writes `/var/lib/openipdata/bgp/bgp-communities.csv.gz` through a `.tmp` file |
 | `upload` | `extract` | puts the file at the fixed key `internal/bgp/communities.csv.gz` in the private R2 bucket (sha256 in the object's metadata; an identical object is not sent again, its upload time is renewed; `force_upload` always sends), then pings `HC_PING_BGP` if set |
 
@@ -331,6 +331,9 @@ the optional layer `25-bgp`. This workflow reads no database and publishes nothi
   83,690 values of which 332 are common and 26,760 rare, 30.8 million (prefix, value) pairs, 27.7 MB gzipped, 30 seconds,
   55 MB of memory (nothing but the value counts is kept in memory).
 - The reader checks every length of the MRT data: a damaged or truncated file is an error (`damaged MRT data`), never a panic.
+  When `extract` finds the downloaded dump damaged (a broken gzip stream or a broken table) it deletes the dump with its
+  ETag and its checked stamp and fails without retries (reading the same file again cannot work); the next run, or a
+  run started by hand, downloads a new one whatever the 6 hour gate says. A file given with `-mrt` is never deleted.
   A table with fewer than 500,000 prefixes is refused and not retried.
 - `run-bgp` runs the three tasks once locally; `-skip-upload` writes the file only, `-force-upload` always sends the
   bytes, and `-mrt <file>` reads a local dump instead of downloading one and uploads nothing (no `R2` needed).

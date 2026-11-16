@@ -2,10 +2,12 @@ package bgp
 
 import (
 	"bufio"
+	"compress/flate"
 	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"slices"
@@ -78,10 +80,47 @@ func scanFile(ctx context.Context, s *Scanner, path string, fn func(netip.Prefix
 		}
 		return fn(p, ids)
 	})
-	if errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader) {
-		err = fmt.Errorf("%w: %v", ErrDamaged, err)
+	return st, asDamaged(err)
+}
+
+// asDamaged wraps the errors of a broken gzip stream (bad header or checksum, corrupt
+// deflate data, a file that ends early) in ErrDamaged; other errors pass as they are.
+func asDamaged(err error) error {
+	var corrupt flate.CorruptInputError
+	if err == nil || errors.Is(err, ErrDamaged) {
+		return err
 	}
-	return st, err
+	if errors.Is(err, gzip.ErrChecksum) || errors.Is(err, gzip.ErrHeader) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &corrupt) {
+		return fmt.Errorf("%w: %v", ErrDamaged, err)
+	}
+	return err
+}
+
+// checkGzip reads the whole gzip file once (nothing is kept) and returns an error
+// wrapping ErrDamaged when the stream is broken: the checksum at its end covers every
+// byte, so a file that passes is the file the server sent.
+func checkGzip(ctx context.Context, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(bufio.NewReaderSize(f, 1<<20))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDamaged, err) // no gzip header, or an empty file
+	}
+	defer gz.Close()
+	buf := make([]byte, 1<<20)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := gz.Read(buf); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return asDamaged(err)
+		}
+	}
 }
 
 // ExtractFile reads the gzipped MRT dump at in (two passes, streaming) and writes the

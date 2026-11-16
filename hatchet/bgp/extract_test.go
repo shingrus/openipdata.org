@@ -140,8 +140,8 @@ func TestExtractErrors(t *testing.T) {
 	gzipTo(t, in, dump(10, func(int) []uint32 { return nil }))
 	data, _ := os.ReadFile(in)
 	os.WriteFile(in, data[:len(data)-12], 0o640)
-	if _, err := ExtractFile(context.Background(), in, out, 0); err == nil {
-		t.Error("truncated gzip accepted")
+	if _, err := ExtractFile(context.Background(), in, out, 0); !errors.Is(err, ErrDamaged) {
+		t.Errorf("truncated gzip: %v", err)
 	}
 	os.WriteFile(in, []byte("<html>not a dump</html>"), 0o640)
 	if _, err := ExtractFile(context.Background(), in, out, 0); !errors.Is(err, ErrDamaged) {

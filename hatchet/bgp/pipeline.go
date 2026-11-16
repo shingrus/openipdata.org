@@ -87,6 +87,9 @@ func (p *Pipeline) OutPath() string { return filepath.Join(p.dir(), OutFile) }
 // Download fetches the latest dump into the workflow's own directory with the shared
 // conditional download. A run less than downloadGate after the last successful check
 // asks nobody. The file is replaced through a temporary file, so there is only ever one.
+// A newly downloaded dump is read through once (checkGzip): a damaged one is deleted and
+// fetched a second time, and when that one is damaged too the task fails with no dump
+// left, so the next run starts clean.
 func (p *Pipeline) Download(ctx context.Context) (DownloadOutput, error) {
 	started := time.Now()
 	var out DownloadOutput
@@ -110,7 +113,7 @@ func (p *Pipeline) Download(ctx context.Context) (DownloadOutput, error) {
 	if client == nil {
 		client = newHTTPClient()
 	}
-	status, err := download.File(ctx, client, url, path)
+	status, err := p.fetch(ctx, client, url, path)
 	if err != nil {
 		return out, fmt.Errorf("download %s: %w", mrtFile, err)
 	}
@@ -129,9 +132,47 @@ func (p *Pipeline) Download(ctx context.Context) (DownloadOutput, error) {
 	return out, nil
 }
 
+// fetchTries is how often Download fetches a dump that arrives damaged.
+const fetchTries = 2
+
+// fetch is the conditional download plus the check of a new file. A file the server did
+// not send again (cached) was checked when it came.
+func (p *Pipeline) fetch(ctx context.Context, client *http.Client, url, path string) (string, error) {
+	for try := 1; ; try++ {
+		status, err := download.File(ctx, client, url, path)
+		if err != nil || status != download.Downloaded {
+			return status, err
+		}
+		if err = checkGzip(ctx, path); err == nil {
+			return status, nil
+		}
+		if !errors.Is(err, ErrDamaged) {
+			return "", err // cancelled, or the disk could not be read: the file stays
+		}
+		p.removeDump()
+		if try == fetchTries {
+			return "", err
+		}
+		p.log("download: %s arrived damaged, fetching it again", mrtFile)
+	}
+}
+
+// removeDump deletes Download's dump with its ETag and its checked stamp, so the next
+// Download asks the server for the whole file whatever the age gate says.
+func (p *Pipeline) removeDump() {
+	path := p.MRTPath()
+	for _, name := range []string{path, path + ".etag", path + checkedSuffix} {
+		os.Remove(name)
+	}
+}
+
 // Extract reads the dump at mrtPath (Download's file when empty) and writes OutPath.
+// When Download's own dump turns out damaged it is deleted (removeDump): reading it again
+// cannot work, and the next run then downloads a new one. A file named by the caller is
+// never deleted.
 func (p *Pipeline) Extract(ctx context.Context, mrtPath string) (ExtractOutput, error) {
-	if mrtPath == "" {
+	own := mrtPath == ""
+	if own {
 		mrtPath = p.MRTPath()
 	}
 	if err := os.MkdirAll(p.dir(), 0o750); err != nil {
@@ -143,6 +184,10 @@ func (p *Pipeline) Extract(ctx context.Context, mrtPath string) (ExtractOutput, 
 	}
 	out, err := ExtractFile(ctx, mrtPath, p.OutPath(), min)
 	if err != nil {
+		if own && errors.Is(err, ErrDamaged) {
+			p.removeDump()
+			p.log("extract: %s is damaged and was deleted; the next run downloads it again", mrtFile)
+		}
 		return out, err
 	}
 	p.log("extract: %d prefixes from %d peers, %d of %d values kept (%d common, %d rare), %d pairs, %d bytes",
