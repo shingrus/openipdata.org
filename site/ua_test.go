@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"html"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -163,39 +166,98 @@ func TestBrowserRowOnlyOnTheVisitorPage(t *testing.T) {
 	}
 }
 
-func TestAPIHint(t *testing.T) {
+func apiPre(t *testing.T, b string) map[string]any {
+	t.Helper()
+	i := strings.Index(b, `<pre class="mono">`)
+	if i < 0 {
+		t.Fatal("no API pre")
+	}
+	rest := b[i+len(`<pre class="mono">`):]
+	raw := rest[:strings.Index(rest, "</pre>")]
+	raw = strings.NewReplacer("<i>", "", "</i>", "").Replace(raw)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(html.UnescapeString(raw)), &m); err != nil {
+		t.Fatalf("pre is not JSON: %v\n%s", err, raw)
+	}
+	return m
+}
+
+func TestAPIPanel(t *testing.T) {
 	s, _ := shareServer(t)
+	want := `<p class="api"><b class="mono" aria-hidden="true">&rsaquo;</b><a class="mono v" href="/json">curl https://openipdata.org/json</a><button class="cp" type="button" hidden aria-label="Copy">`
 	b := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "203.0.113.9").Body.String()
-	want := `<p class="hint">API: <a href="/json">curl openipdata.org/json</a></p>`
-	if !strings.Contains(b, want) {
-		t.Errorf("visitor hint missing")
+	i := strings.Index(b, want)
+	if i < 0 {
+		t.Fatal("visitor panel missing")
 	}
-	if i, j, k := strings.Index(b, want), strings.Index(b, "</section>"), strings.Index(b, "<h2>Accuracy"); !(j < i && i < k) {
-		t.Error("the hint is not between the panels")
+	if j, k := strings.Index(b, "</section>"), strings.Index(b, "<h2>Accuracy"); !(j < i && i < k) {
+		t.Error("the panel is not between the panels")
 	}
-	if strings.Contains(b, "/json/203.0.113.9") {
-		t.Error("visitor address in the hint")
+	if !strings.Contains(b, `<h2>API</h2><a class="r" href="/download">Download &rarr;</a>`) || !strings.Contains(b, `id="i-cp"`) || !strings.Contains(b, `id="i-ck"`) {
+		t.Error("panel head or copy symbols missing")
 	}
-	for target, hint := range map[string]string{
-		"/?203.0.113.9": `<a href="/json/203.0.113.9">curl openipdata.org/json/203.0.113.9</a>`,
+	check := func(target, ip, remoteIP string) {
+		r := fromPeer(s, target, "127.0.0.1:5000", "X-Real-IP", remoteIP)
+		got := apiPre(t, r.Body.String())
+		api := fromPeer(s, "/json/"+ip, "127.0.0.1:5000", "X-Real-IP", remoteIP)
+		var wantJ map[string]any
+		if err := json.Unmarshal(api.Body.Bytes(), &wantJ); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, wantJ) {
+			t.Errorf("%s: pre %v differs from API %v", target, got, wantJ)
+		}
+	}
+	check("/", "203.0.113.9", "203.0.113.9")
+	for target, cmd := range map[string]string{
+		"/?203.0.113.9": `<a class="mono v" href="/json/203.0.113.9">curl https://openipdata.org/json/203.0.113.9</a>`,
 	} {
 		b := fromPeer(s, target, "127.0.0.1:5000", "X-Real-IP", "198.51.100.7").Body.String()
-		if !strings.Contains(b, `<p class="hint">API: `+hint+`</p>`) {
-			t.Errorf("%s: hint missing", target)
+		if !strings.Contains(b, cmd) {
+			t.Errorf("%s: command missing", target)
 		}
 		if strings.Contains(b, `"/json"`) || strings.Contains(b, "198.51.100.7") {
-			t.Errorf("%s: wrong address in the hint", target)
+			t.Errorf("%s: the visitor's address or path on a lookup page", target)
 		}
 	}
-	for _, target := range []string{"/?1.2.3", "/?10.1.2.3", "/as64500", "/download", "/top-asn-by-ip-address"} {
-		if b := fromPeer(s, target, "127.0.0.1:5000", "X-Real-IP", "203.0.113.9").Body.String(); strings.Contains(b, `class="hint"`) {
-			t.Errorf("%s has the hint", target)
+	check("/?203.0.113.9", "203.0.113.9", "198.51.100.7")
+	for _, target := range []string{"/?1.2.3", "/?10.1.2.3", "/as64500", "/download", "/top-asn-by-ip-address", "/?zzzzqq"} {
+		if b := fromPeer(s, target, "127.0.0.1:5000", "X-Real-IP", "203.0.113.9").Body.String(); strings.Contains(b, `class="apip"`) {
+			t.Errorf("%s has the API panel", target)
 		}
 	}
-	if b := fromPeer(s, "/", "127.0.0.1:5000").Body.String(); strings.Contains(b, `class="hint"`) { // address unknown
-		t.Error("unknown address has the hint")
+	if b := fromPeer(s, "/", "127.0.0.1:5000").Body.String(); strings.Contains(b, `class="apip"`) { // address unknown
+		t.Error("unknown address has the panel")
 	}
-	if b := fromPeer(s, "/?2001:db8::1", "127.0.0.1:5000").Body.String(); !strings.Contains(b, `href="/json/2001:db8::1"`) && !strings.Contains(b, `class="msg"`) {
-		t.Error("IPv6 lookup hint")
+}
+
+func TestAPIPanelReport(t *testing.T) {
+	s, _ := shareServer(t)
+	id := strings.TrimSuffix(strings.TrimPrefix(postShare(s, "203.0.113.9", "").Body.String(), `{"url":"https://openipdata.org/report/`), `"}`)
+	if i := strings.Index(id, `"`); i > 0 {
+		id = id[:i]
+	}
+	if b := fromPeer(s, "/report/"+id, "127.0.0.1:5000").Body.String(); strings.Contains(b, `class="apip"`) {
+		t.Error("the report page has the API panel")
+	}
+}
+
+func TestAPIBodyEscapes(t *testing.T) {
+	v := ipJSON{IP: "203.0.113.9", Org: `A <b>&"x"</b>`}
+	body, ok := apiBody(v)
+	if !ok {
+		t.Fatal("no body")
+	}
+	h := string(body)
+	if strings.Contains(h, "<b>") || strings.Contains(h, `&"`) || !strings.Contains(h, "A &lt;b&gt;&amp;") {
+		t.Errorf("not escaped: %s", h)
+	}
+	if !strings.Contains(h, "<i>\"org\"</i>:") {
+		t.Errorf("key not wrapped: %s", h)
+	}
+	raw := strings.NewReplacer("<i>", "", "</i>", "").Replace(h)
+	var back ipJSON
+	if err := json.Unmarshal([]byte(html.UnescapeString(raw)), &back); err != nil || back.Org != v.Org {
+		t.Errorf("round trip: %v %q", err, back.Org)
 	}
 }

@@ -24,7 +24,7 @@
     var b = e.target.closest ? e.target.closest(".cp") : null;
     if (!b) return;
     var v = b.parentNode.querySelector(".v,pre"), t = v ? v.textContent : "";
-    if (!v || v.tagName != "PRE") {
+    if (!v || (v.tagName != "PRE" && v.tagName != "A")) {
       t = t.trim();
       if (!/^[0-9a-fA-F:.]{2,45}$/.test(t)) return;
     }

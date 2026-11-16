@@ -562,11 +562,11 @@ func drawCase(w *world, c struct {
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 41472, 13824   // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), the API hint, a long Network panel (41148 and 13745 now, CA; 29696 and 10752 before the Browser row)
-	pageMaxRaw, pageMaxGz       = 14848, 5 << 10 // 14632 and 5023 now (with the Network panel CSS in acc.css)
+	pageMapMaxRaw, pageMapMaxGz = 43008, 14336   // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42391 and 14038 now, CA; 41148 and 13745 with the one-line API hint before; 29696 and 10752 before the Browser row)
+	pageMaxRaw, pageMaxGz       = 15360, 5 << 10 // 15110 and 5093 now (with the API panel CSS in live.css; 14632 and 5023 before)
 	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
-	visitorMapMaxRaw, visitorMapMaxGz = 20480, 7168 // 18667 and 6730 now
-	visitorMaxRaw, visitorMaxGz       = 18432, 6272 // 18265 and 6160 with the Network panel CSS (acc.css); 16730 and 5808 now (comments and indentation left out of the scripts, Share code in share.js), 19052 before
+	visitorMapMaxRaw, visitorMapMaxGz = 22016, 7424 // 21434 and 7326 now with the API panel
+	visitorMaxRaw, visitorMaxGz       = 19456, 6400 // 19208 and 6299 now with the API panel; 18265 and 6160 with the Network panel CSS (acc.css); 16730 and 5808 now (comments and indentation left out of the scripts, Share code in share.js), 19052 before
 )
 
 func TestMapSizes(t *testing.T) {
@@ -585,10 +585,10 @@ func TestMapSizes(t *testing.T) {
 				{K: "DNS resolver", V: "—", Zone: "r.openipdata.org"},
 				{K: "Network", Parts: []part{{Text: "EXAMPLE-NET", Href: "/as64500"}, {Text: "ISP"}, {Text: "example.net"}}}},
 			Hdr: template.JS(strings.Repeat("x", 600)), Br: browserRowFor("Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0", "")} // the biggest icons: Firefox and Linux
-		v.Hint, v.HintHost = "/json", "openipdata.org"
 		v.Net = &netPanel{ASN: "AS2856", Href: "/as2856", Org: "British Telecommunications Limited", OrgHref: "/asn-british-telecommunications-limited",
 			Type: "Education research", Country: "United Kingdom", CountryHref: "/united-kingdom-asn-list", Role: "Access provider",
 			N4: "1,234", N6: "123", Addr: "12.4M", AddrTitle: "12,402,688", Domain: "example-network-domain.net"} // a long Network panel
+		v.API = s.apiPanelFor("/json", netip.MustParseAddr("203.0.113.9"))
 		page, err := render(s.tmpl, "home.html", v)
 		if err != nil {
 			t.Fatal(err)

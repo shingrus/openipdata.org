@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"html/template"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -96,4 +97,55 @@ func (s *server) serveIPJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeIPJSON(w, r, http.StatusOK, asnCache, s.ipJSONFor(a))
+}
+
+// apiPanel is the "API" panel of the home and lookup pages: the curl command
+// and the real answer of that URL.
+type apiPanel struct {
+	Href string        // "/json" or "/json/<ip>"
+	Cmd  string        // curl <origin><href>, with the scheme
+	Body template.HTML // the pretty-printed answer, keys in <i>; every piece escaped here
+}
+
+var htmlText = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+// apiPanelFor builds the panel for the public address a from the same answer
+// the API gives: one indented encoding, split into lines.
+func (s *server) apiPanelFor(href string, a netip.Addr) *apiPanel {
+	if !a.IsValid() {
+		return nil
+	}
+	body, ok := apiBody(s.ipJSONFor(a))
+	if !ok {
+		return nil
+	}
+	return &apiPanel{Href: href, Cmd: "curl " + s.origin + href, Body: body}
+}
+
+// apiBody is the answer as the page shows it: indented, keys in <i>, the rest
+// escaped (values come from data files).
+func apiBody(v ipJSON) (template.HTML, bool) {
+	var buf bytes.Buffer
+	e := json.NewEncoder(&buf)
+	e.SetEscapeHTML(false)
+	e.SetIndent("", "  ")
+	if e.Encode(v) != nil {
+		return "", false
+	}
+	var b strings.Builder
+	for i, l := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		trim := strings.TrimLeft(l, " ")
+		pre := l[:len(l)-len(trim)]
+		if strings.HasPrefix(trim, `"`) {
+			if j := strings.Index(trim, `": `); j > 0 { // the keys are fixed names with no escapes
+				b.WriteString(pre + "<i>" + htmlText.Replace(trim[:j+1]) + "</i>" + htmlText.Replace(trim[j+1:]))
+				continue
+			}
+		}
+		b.WriteString(htmlText.Replace(l))
+	}
+	return template.HTML(b.String()), true
 }

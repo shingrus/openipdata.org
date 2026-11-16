@@ -144,8 +144,7 @@ type view struct {
 	UpdatedText string
 	Panel       *panel
 	Net         *netPanel // the Network panel (visitor and lookup pages with the network in the ASN data)
-	Hint        string    // the JSON API line under the panel: "/json" or "/json/<ip>"; empty = no line
-	HintHost    string    // host of SITE_ORIGIN
+	API         *apiPanel // the API panel below the Network panel; nil = none
 }
 
 // fmtPct returns the number with one decimal, or false when v is missing,

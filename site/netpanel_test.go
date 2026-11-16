@@ -71,10 +71,10 @@ func TestNetworkPanelLookup(t *testing.T) {
 	if !strings.Contains(b, want) {
 		t.Errorf("no Network panel:\n%s", b)
 	}
-	// After the connection panel and the API hint, before Accuracy.
-	i, j, k := strings.Index(b, `class="hint"`), strings.Index(b, `class="cells"`), strings.Index(b, "<h2>Accuracy</h2>")
+	// After the connection panel, before the API panel and Accuracy.
+	i, j, k := strings.Index(b, `class="cells"`), strings.Index(b, `class="apip"`), strings.Index(b, "<h2>Accuracy</h2>")
 	if !(0 < i && i < j && j < k) {
-		t.Errorf("panel order: hint %d, network %d, accuracy %d", i, j, k)
+		t.Errorf("panel order: network %d, api %d, accuracy %d", i, j, k)
 	}
 	// The visitor's own page has it too.
 	v := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()

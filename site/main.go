@@ -353,6 +353,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	title, desc, canon := "openipdata.org", "", ""
 	var p panel
 	fill, res := false, false
+	var visitor netip.Addr
 	switch q.kind {
 	case "redirect":
 		h.Set("Cache-Control", cache)
@@ -391,6 +392,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		cache = "private, no-store"
 		title, desc, canon = homeTitle, homeDesc, s.canon("/")
 		if a, ok := clientAddr(r, s.realIP); ok {
+			visitor = a
 			input = a.String()
 			p = s.panelFor("Your connection", a)
 			fill = s.addFill(&p, a)
@@ -413,12 +415,11 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if p.Msg == "" {
-		v.HintHost = strings.TrimPrefix(strings.TrimPrefix(s.origin, "https://"), "http://")
 		switch q.kind {
 		case "lookup":
-			v.Hint = "/json/" + q.addr.String()
+			v.API = s.apiPanelFor("/json/"+q.addr.String(), q.addr)
 		case "visitor":
-			v.Hint = "/json"
+			v.API = s.apiPanelFor("/json", visitor)
 		}
 	}
 	share := p.Share

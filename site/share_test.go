@@ -722,8 +722,8 @@ func TestStatusShareRow(t *testing.T) {
 func TestCopyButtonsHiddenWithoutScript(t *testing.T) {
 	s := fillServer(t, u4, u6)
 	b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()
-	if n := strings.Count(b, `<button class="cp" type="button" hidden aria-label="Copy">`); n != 2 {
-		t.Errorf("%d hidden copy buttons on the visitor page, want 2 (IPv4, IPv6)", n)
+	if n := strings.Count(b, `<button class="cp" type="button" hidden aria-label="Copy">`); n != 3 {
+		t.Errorf("%d hidden copy buttons on the visitor page, want 3 (IPv4, IPv6, API command)", n)
 	}
 	if strings.Contains(b, `<button class="cp" type="button" aria-label`) {
 		t.Error("a copy button is not hidden")
@@ -732,8 +732,8 @@ func TestCopyButtonsHiddenWithoutScript(t *testing.T) {
 		t.Error("the CSS does not keep hidden buttons hidden")
 	}
 	l := get(s, "GET", "/?203.0.113.9").Body.String()
-	if n := strings.Count(l, `<button class="cp" type="button" hidden`); n != 1 {
-		t.Errorf("%d copy buttons on a lookup page, want 1", n)
+	if n := strings.Count(l, `<button class="cp" type="button" hidden`); n != 2 {
+		t.Errorf("%d copy buttons on a lookup page, want 2 (address, API command)", n)
 	}
 	for _, target := range []string{"/?10.1.2.3", "/?1.2.3", "/as64500"} {
 		if strings.Contains(get(s, "GET", target).Body.String(), `class="cp"`) {

@@ -1,5 +1,4 @@
-{{template "top" .}}{{with .Panel}}{{template "panel" .}}{{end}}{{if .Hint}}<p class="hint">API: <a href="{{.Hint}}">curl {{.HintHost}}{{.Hint}}</a></p>
-{{end}}{{with .Net}}<section class="panel">
+{{template "top" .}}{{with .Panel}}{{template "panel" .}}{{end}}{{with .Net}}<section class="panel">
 <div class="head"><h2>Network</h2><a class="r" href="{{.Href}}">{{.ASN}} &rarr;</a></div>
 <div class="cells">
 <div><span>Organisation</span><b>{{if .OrgHref}}<a href="{{.OrgHref}}">{{.Org}}</a>{{else}}{{.Org}}{{end}}</b></div>
@@ -10,6 +9,13 @@
 <div><span>IPv6 prefixes</span><b>{{.N6}}</b></div>
 <div><span>Addresses</span><b{{if .AddrTitle}} title="{{.AddrTitle}}"{{end}}>{{.Addr}}</b></div>
 <div><span>Domain</span><b>{{.Domain}}</b></div>
+</div>
+</section>
+{{end}}{{with .API}}<section class="panel">
+<div class="head"><h2>API</h2><a class="r" href="/download">Download &rarr;</a></div>
+<div class="apip">
+<p class="api"><b class="mono" aria-hidden="true">&rsaquo;</b><a class="mono v" href="{{.Href}}">{{.Cmd}}</a><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button></p>
+<pre class="mono">{{.Body}}</pre>
 </div>
 </section>
 {{end}}<section class="panel">
