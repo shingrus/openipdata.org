@@ -19,6 +19,7 @@
 # Never touched: scamper, the unit, the env file, unbound. No secret is read: the env file is only
 # searched (quietly) for the presence of the token line.
 # Pings: HC_PING_WORKER_UPDATE on success, HC_PING_WORKER_UPDATE/fail on failure (the URL is never printed).
+# Notification: one ntfy.sh push to NTFY_URL after an install (empty: none; never printed).
 #
 # Overrides for tests only (a real run needs none): BASE_URL, BIN_DIR, STATE_DIR, DATA_DIR,
 # LOCK_FILE, ENV_FILE, SYSTEMCTL, TIMEOUT, SERVICE_RUNNER (command prefix that runs a new binary
@@ -51,6 +52,15 @@ log() {
 ping_hc() {
     [[ -n "${HC_PING_WORKER_UPDATE:-}" ]] || return 0
     curl -fsS -m 10 --retry 3 -o /dev/null "${HC_PING_WORKER_UPDATE}${1:-}" >/dev/null 2>&1 || log "warning: health ping failed"
+    return 0
+}
+
+# notify <message>: one ntfy.sh push to NTFY_URL (empty: nothing). A failure only logs, and never
+# shows the URL (the topic name is the secret).
+notify() {
+    [[ -n "${NTFY_URL:-}" ]] || return 0
+    curl -fsS -m 10 --retry 3 -o /dev/null -H "Title: openipdata.org worker" -H "Tags: gear" \
+        --data-binary "$1" "$NTFY_URL" >/dev/null 2>&1 || log "warning: notification failed"
     return 0
 }
 
@@ -279,5 +289,10 @@ phase=finished
 rm -f "${STATE_DIR:?}/bad.sha256" "${STATE_DIR:?}/waiting-since"
 ping_hc
 log "installed: version $version"
+if ((service_up)); then
+    notify "worker deployed: $version"
+else
+    notify "worker installed, not started: $version"
+fi
 handled=1
 exit 0

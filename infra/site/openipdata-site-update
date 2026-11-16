@@ -16,6 +16,7 @@
 # a separate small part, update_beacon, run first and never able to stop or change the site part: a
 # missing asset is nothing, a failure pings /fail (and then this run sends no success ping).
 # Pings: HC_PING_SITE on success, HC_PING_SITE/fail on failure (the URL is never printed).
+# Notification: one ntfy.sh push to NTFY_URL when a new build went live (empty: none; never printed).
 #
 # Overrides for tests only (a real run needs none): BASE_URL, INSTALL_DIR, STATE_DIR, LOCK_FILE,
 # SYSTEMCTL, SERVICE_RUNNER (command prefix that runs the new binary unprivileged), HEALTH_WAIT,
@@ -54,6 +55,15 @@ ping_hc() {
     # A failed beacon update must not be hidden by the site's success ping of the same run.
     if [[ -z "${1:-}" && "$beacon_failed" == 1 ]]; then return 0; fi
     curl -fsS -m 10 --retry 3 -o /dev/null "${HC_PING_SITE}${1:-}" >/dev/null 2>&1 || log "warning: health ping failed"
+    return 0
+}
+
+# notify <message>: one ntfy.sh push to NTFY_URL (empty: nothing). A failure only logs, and never
+# shows the URL (the topic name is the secret).
+notify() {
+    [[ -n "${NTFY_URL:-}" ]] || return 0
+    curl -fsS -m 10 --retry 3 -o /dev/null -H "Title: openipdata.org site" -H "Tags: rocket" \
+        --data-binary "$1" "$NTFY_URL" >/dev/null 2>&1 || log "warning: notification failed"
     return 0
 }
 
@@ -380,6 +390,7 @@ while IFS= read -r d; do
 done < <(ls -1t "$RELEASES")
 ping_hc
 log "live: $idle (version $expected)"
+notify "site deployed: $expected"
 phase=finished
 handled=1
 exit 0

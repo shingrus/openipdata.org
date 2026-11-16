@@ -227,8 +227,9 @@ How it behaves:
 - Firewall: ufw allows the ports sshd really listens on (`sshd -T`; with none found it falls back to the OpenSSH profile or 22/tcp and warns), 80/tcp and 443/tcp, denies the rest of incoming.
 - nginx default-deny: `default-deny.conf` (catch-all servers: 444 on port 80, rejected TLS handshake on 443) needs no certificate and is always enabled, so the origin is closed even before the certificate exists.
 - Pings: set `HC_PING_SITE` and `HC_PING_MMDB` (healthchecks.io URLs) in the env file. A normal run pings the URL, a failure pings `<url>/fail`, an empty value does nothing. The URLs are never logged.
+- Notification: set `NTFY_URL` (`https://ntfy.sh/<long random topic>`, subscribe to the topic in the ntfy app) and the updater sends one push `site deployed: <version>` when a new build goes live. Nothing else sends; empty does nothing; a failed push only logs. The topic name is the secret and is never logged. The init script never overwrites the env file, so on an existing VM add the `NTFY_URL=` line by hand.
 
-Settings (`/etc/openipdata-site/openipdata-site.env`): `GITHUB_REPO` (default `shingrus/openipdata.org`), `HC_PING_SITE`, `HC_PING_MMDB`. The site itself is configured in its unit (`LISTEN=127.0.0.1:<port>`, `GEO_MMDB`, `ASN_MMDB`, `ASN_SQLITE`, `REAL_IP_HEADER=X-Real-IP`, `V4_URL`, `V6_URL`).
+Settings (`/etc/openipdata-site/openipdata-site.env`): `GITHUB_REPO` (default `shingrus/openipdata.org`), `HC_PING_SITE`, `HC_PING_MMDB`, `NTFY_URL`. The site itself is configured in its unit (`LISTEN=127.0.0.1:<port>`, `GEO_MMDB`, `ASN_MMDB`, `ASN_SQLITE`, `REAL_IP_HEADER=X-Real-IP`, `V4_URL`, `V6_URL`).
 
 Which side is live: `readlink /etc/nginx/conf.d/openipdata-site-live.conf` (the port is in the name).
 

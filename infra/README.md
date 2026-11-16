@@ -59,7 +59,7 @@ together (a locked updater run exits quietly).
 |---|---|
 | `/opt/openipdata/bin/openipdata-worker-update` | the updater (root `0755`), installed by the init script |
 | `/etc/systemd/system/openipdata-worker-update.{service,timer}` | oneshot unit and the 2 minute timer |
-| `/etc/openipdata/worker-update.env` | optional (root `0600`, created from `openipdata-worker-update.env.example` only if absent): `GITHUB_REPO`, `HC_PING_WORKER_UPDATE` |
+| `/etc/openipdata/worker-update.env` | optional (root `0600`, created from `openipdata-worker-update.env.example` only if absent): `GITHUB_REPO`, `HC_PING_WORKER_UPDATE`, `NTFY_URL` (ntfy.sh topic URL: one push `worker deployed: <version>` after each install, or `worker installed, not started` when the service is off; on an existing VM add the line by hand, the file is never overwritten) |
 | `/var/lib/openipdata-update/` | state (root `0700`): `bad.sha256`, `waiting-since` |
 
 Log: `journalctl -u openipdata-worker-update` (one line per decision; URLs and secrets are never logged).
