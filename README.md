@@ -410,6 +410,23 @@ Measured on RIPE Atlas it is right 48% of the time (520 of 1,083 gap probes) and
 `mmdbbuilder gaps` and `mmdbbuilder lookup -in` ignore these cities, so guesses never feed the rDNS pipeline.
 `city_pct`, `atlas_city_*` and the holdout city score count the guessed cities like any other (`layer_80_asn_main_*` show the fill alone), so the first build with the fill moves those scores; the publish gate checks only country scores, and the fill never changes a country.
 
+`mmdbbuilder geo -fallback` (every `build-mmdb` and the holdout build pass it) adds three more guesses for the addresses
+that still have a country and no city after `80-asn-main`. Each address gets the first guess that applies, in this order:
+`82-asn-likely` (the ASN's main city in that country when it holds at least 70% of the addresses with a city, with no
+minimum number of addresses), `84-asn-near` (the nearest city of the same ASN and country, only when it lies in the same
+/20; decided per /24 of the cityless part, by the middle address of the /24, the nearer of the piece before and the piece
+after wins, on equal distance the bigger piece) and `86-country-main` (the country's main city over all addresses with a
+city, with or without an ASN, when it holds at least 30% of them; it also fills addresses that belong to no ASN).
+Countries where no city holds 30% are left without a guess (there the country's main city was right for 14 of 273 probes).
+All the evidence comes from one snapshot of the merged result taken before the first guess is written, so a guess never
+counts as evidence for another guess; with GeoNames only cities it places count, as for `80-asn-main`. Like `80-asn-main`
+they only fill, never replace a city or change a country, are IPv4 only, and are ignored by `gaps` and `lookup -in`.
+Without the ASN prefixes only `86-country-main` runs. Each guess prints its own `layer <name>: ...` line (so it is in `prefixes`
+of the task output) and a note line (`asn-likely: G groups qualified of T, A addresses filled`, `asn-near: A addresses filled`,
+`country-main: C countries qualified of T, A addresses filled`). Measured on RIPE Atlas (build of 2026-11-16, within 50 km):
+`82-asn-likely` right for 161 of 367 probes (44%), `84-asn-near` 134 of 396 (34%), `86-country-main` 587 of 1,331 (44%);
+together +882 right and +1,212 wrong probes (right city of all probes 48.1% to 54.3%, precision of all answers 59.0% to 56.4%).
+
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,
@@ -424,7 +441,7 @@ layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab` and `38-asn-geofeed` `-
 | Task | Runs after | Does |
 |---|---|---|
 | `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2 |
-| `build-mmdb` | `download` | makes the GeoNames copy available, runs `mmdbbuilder geo` on all the layer files (with `-geonames` when the copy is there, and `-asn-main` when `download` saved the ASN prefixes) → `ip2geo-openipdata-<date>.mmdb`; the output says `coordinates: on` or `skipped: <reason>`, with the counts of placed and unplaced cities, and `asn_main`: `on`, `skipped: no ASN prefixes` or `skipped: ASN prefixes unreadable` (a bad file never fails the build) |
+| `build-mmdb` | `download` | makes the GeoNames copy available, runs `mmdbbuilder geo` on all the layer files (with `-geonames` when the copy is there, `-asn-main` when `download` saved the ASN prefixes, and always `-fallback`) → `ip2geo-openipdata-<date>.mmdb`; the output says `coordinates: on` or `skipped: <reason>`, with the counts of placed and unplaced cities, `asn_main`: `on`, `skipped: no ASN prefixes` or `skipped: ASN prefixes unreadable` (a bad file never fails the build), and `fallback`: `on` (the guesses `82-asn-likely`, `84-asn-near` and `86-country-main`; without the ASN prefixes only the last one runs) |
 | `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2) against RIPE Atlas (country and city) and our MMDB against a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
 
@@ -675,8 +692,7 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
-`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp` or `36-mlab` as no city too (like the `80-asn-main`
-guess), so customer names keep being sampled there.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp` or `36-mlab` as no city too (like the four guesses `80-asn-main`, `82-asn-likely`, `84-asn-near` and `86-country-main`), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
 smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
 hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the
@@ -726,14 +742,14 @@ openipdata-worker run-rdns-rules       # learn candidate rules once locally
 openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule, without learning
 openipdata-worker run-rdns-rules -codes [-domains a.net,b.net] [-force] # only the LLM task propose-codes (needs OPENROUTER_API_KEY)
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
-mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] <layer.csv.gz>...
+mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] <layer.csv.gz>...
 mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
-mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from 80-asn-main, 25-bgp or 36-mlab counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the four guesses 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main, or from 25-bgp or 36-mlab counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 

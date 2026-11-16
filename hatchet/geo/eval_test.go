@@ -140,13 +140,13 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 	args, _ := os.ReadFile(argsFile)
 	kept := filepath.Join(eval, "holdout", FeedsLayer)
 	want := strings.Join([]string{"geo", "-out", filepath.Join(eval, "holdout.mmdb"),
-		"-names", filepath.Join(layers, NamesFile), "-first-country", HostingLayer, "-same-country", PDBLayer, "-within-first", WhoisLayer + "," + FeedsLayer,
+		"-names", filepath.Join(layers, NamesFile), "-fallback", "-first-country", HostingLayer, "-same-country", PDBLayer, "-within-first", WhoisLayer + "," + FeedsLayer,
 		filepath.Join(layers, RIRLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, HostingLayer), filepath.Join(layers, IXLayer), filepath.Join(layers, WhoisLayer), kept}, " ")
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
 	}
-	if strings.Contains(string(args), "-asn-main") {
-		t.Errorf("-asn-main without saved ASN prefixes: %s", args)
+	if strings.Contains(string(args), "-asn-main") || !strings.Contains(string(args), " -fallback ") {
+		t.Errorf("-asn-main without saved ASN prefixes, -fallback always: %s", args)
 	}
 	if mmdb != filepath.Join(eval, "holdout.mmdb") || truth != filepath.Join(eval, "holdout-truth.csv") ||
 		status != "1 of 2 feeds held out, 1 of 2 rows, 1 scored" {

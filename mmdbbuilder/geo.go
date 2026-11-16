@@ -97,6 +97,14 @@ type place struct{ code, city, source string }
 // addresses that have a country and no city; see asnmain.go. It is a guess,
 // not a layer file, and it only fills.
 func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string) ([]geoLayerStats, error) {
+	return buildGeoGuesses(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, asnMain, false)
+}
+
+// buildGeoGuesses is buildGeo with the fallback switch: with fallback, three more guesses
+// follow the ASN main city fill (82-asn-likely, 84-asn-near, 86-country-main; see
+// fallback.go), and with fallback and no asnMain only the country one runs. Without it
+// the output is exactly buildGeo's.
+func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string, fallback bool) ([]geoLayerStats, error) {
 	names, err := loadNames(namesPath)
 	if err != nil {
 		return nil, err
@@ -232,12 +240,12 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 		}
 		stats = append(stats, s)
 	}
-	if asnMain != "" {
-		s, err := fillASNMain(writer, asnMain, index, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
+	if asnMain != "" || fallback {
+		guesses, err := fillGuesses(writer, asnMain, fallback, index, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
+		stats = append(stats, guesses...)
 		if err != nil {
 			return stats, err
 		}
-		stats = append(stats, s)
 	}
 	return stats, writeAtomic(writer, outPath)
 }

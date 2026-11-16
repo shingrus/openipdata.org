@@ -169,7 +169,7 @@ func TestBuildMMDBArgs(t *testing.T) {
 	layers := filepath.Join(dir, "geo", "layers")
 	// Every layer file, by name, and no more; names.tsv is not a layer.
 	want := strings.Join([]string{"geo", "-out", filepath.Join(dir, "out", "geo", "20261109", "ip2geo-openipdata-20261109.mmdb"),
-		"-names", filepath.Join(layers, NamesFile), "-same-country", PDBLayer, "-within-first", FeedsLayer,
+		"-names", filepath.Join(layers, NamesFile), "-fallback", "-same-country", PDBLayer, "-within-first", FeedsLayer,
 		filepath.Join(layers, RIRLayer), filepath.Join(layers, PDBLayer), filepath.Join(layers, IXLayer), filepath.Join(layers, FeedsLayer)}, " ")
 	if strings.TrimSpace(string(args)) != want {
 		t.Errorf("args = %s\nwant   %s", args, want)
@@ -200,6 +200,12 @@ func TestBuildMMDBASNMain(t *testing.T) {
 		"echo 'layer 10-rir.csv.gz: 10 rows, 9 prefixes, 0 skipped'\n"+
 		"echo 'layer 80-asn-main: 3 rows, 4 prefixes, 0 skipped'\n"+
 		"echo 'asn-main: 1 groups qualified of 2, 768 addresses filled'\n"+
+		"echo 'layer 82-asn-likely: 2 rows, 5 prefixes, 0 skipped'\n"+
+		"echo 'asn-likely: 1 groups qualified of 2, 512 addresses filled'\n"+
+		"echo 'layer 84-asn-near: 1 rows, 6 prefixes, 0 skipped'\n"+
+		"echo 'asn-near: 256 addresses filled'\n"+
+		"echo 'layer 86-country-main: 4 rows, 7 prefixes, 0 skipped'\n"+
+		"echo 'country-main: 1 countries qualified of 3, 1024 addresses filled'\n"+
 		"echo 'wrote x (2 layers, 13 prefixes)'\n"), 0o755)
 	archive := zipBytes(t, geoNamesSample)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(archive) }))
@@ -217,6 +223,10 @@ func TestBuildMMDBASNMain(t *testing.T) {
 	if strings.Contains(string(args), "-asn-main") || out.ASNMain != "skipped: no ASN prefixes" {
 		t.Errorf("no file: args %s, asn_main %q", args, out.ASNMain)
 	}
+	// The fallback guesses are asked for without the ASN prefixes too (then only the country one runs).
+	if !strings.Contains(string(args), " -fallback ") || out.Fallback != "on" {
+		t.Errorf("no file: args %s, fallback %q", args, out.Fallback)
+	}
 
 	writeAnnouncedFile(prefixes, []asnPrefix{{1, netip.MustParsePrefix("10.0.0.0/20")}})
 	os.Remove(argsFile)
@@ -225,9 +235,15 @@ func TestBuildMMDBASNMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ = os.ReadFile(argsFile)
-	want := "-names " + filepath.Join(p.layersDir(), NamesFile) + " -geonames " + geonames + " -asn-main " + prefixes + " " + filepath.Join(p.layersDir(), RIRLayer)
-	if !strings.Contains(string(args), want) || out.ASNMain != "on" || out.Prefixes[ASNMainSource] != 4 {
+	want := "-names " + filepath.Join(p.layersDir(), NamesFile) + " -geonames " + geonames + " -asn-main " + prefixes + " -fallback " + filepath.Join(p.layersDir(), RIRLayer)
+	if !strings.Contains(string(args), want) || out.ASNMain != "on" || out.Fallback != "on" || out.Prefixes[ASNMainSource] != 4 {
 		t.Errorf("args %s\nwant them to contain %s\nout = %+v", args, want, out)
+	}
+	// The guesses are in the prefixes of the output like any layer.
+	for name, n := range map[string]int{"82-asn-likely": 5, "84-asn-near": 6, "86-country-main": 7} {
+		if out.Prefixes[name] != n {
+			t.Errorf("prefixes[%s] = %d, want %d (%v)", name, out.Prefixes[name], n, out.Prefixes)
+		}
 	}
 
 	// A garbage file: no flag, and the build still succeeds.
@@ -235,7 +251,7 @@ func TestBuildMMDBASNMain(t *testing.T) {
 	os.Remove(argsFile)
 	out, err = p.BuildMMDB(context.Background(), Source{DateTag: "20261109"})
 	args, _ = os.ReadFile(argsFile)
-	if err != nil || strings.Contains(string(args), "-asn-main") || out.ASNMain != "skipped: ASN prefixes unreadable" {
+	if err != nil || strings.Contains(string(args), "-asn-main") || !strings.Contains(string(args), " -fallback ") || out.ASNMain != "skipped: ASN prefixes unreadable" || out.Fallback != "on" {
 		t.Errorf("garbage file: %v, args %s, asn_main %q", err, args, out.ASNMain)
 	}
 	writeAnnouncedFile(prefixes, []asnPrefix{{1, netip.MustParsePrefix("10.0.0.0/20")}})
@@ -250,7 +266,8 @@ func TestBuildMMDBASNMain(t *testing.T) {
 	args, _ = os.ReadFile(argsFile)
 	if lines := strings.Split(strings.TrimSpace(string(args)), "\n"); len(lines) != 2 ||
 		!strings.Contains(lines[0], "-geonames") || strings.Contains(lines[1], "-geonames") ||
-		!strings.Contains(lines[0], "-asn-main") || !strings.Contains(lines[1], "-asn-main") || out.ASNMain != "on" {
+		!strings.Contains(lines[0], "-asn-main") || !strings.Contains(lines[1], "-asn-main") || out.ASNMain != "on" ||
+		!strings.Contains(lines[0], " -fallback ") || !strings.Contains(lines[1], " -fallback ") {
 		t.Errorf("args = %s", args)
 	}
 }
@@ -669,7 +686,7 @@ func TestBuildMMDBGeoNames(t *testing.T) {
 	txt := filepath.Join(p.evalDir(), "cities1000.txt")
 	args, _ := os.ReadFile(argsFile)
 	names := filepath.Join(p.layersDir(), NamesFile)
-	if want := "-names " + names + " -geonames " + txt + " " + filepath.Join(p.layersDir(), RIRLayer); !strings.Contains(string(args), want) {
+	if want := "-names " + names + " -geonames " + txt + " -fallback " + filepath.Join(p.layersDir(), RIRLayer); !strings.Contains(string(args), want) {
 		t.Errorf("args = %s\nwant them to contain %s", args, want)
 	}
 	if out.Coordinates != "on" || out.CoordinatesPlaced != 7 || out.CoordinatesUnplaced != 2 {

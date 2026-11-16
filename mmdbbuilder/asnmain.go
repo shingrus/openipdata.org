@@ -2,7 +2,7 @@ package main
 
 // The ASN main city fill (mmdbbuilder geo -asn-main): a guess that gives the
 // cityless addresses of an ASN the one city where the rest of its addresses in
-// that country are.
+// that country are. With -fallback three more guesses follow it (fallback.go).
 //
 // It is the one derived fill done inside the builder, because it needs the
 // merged result of all layers. It is not a layer file.
@@ -40,17 +40,22 @@ const (
 	asnMainMinAddrs = 256
 )
 
+// guessSources are the city_sources of the guessed cities, the one list: the ASN main
+// city (80-asn-main) and the three -fallback guesses (82-asn-likely, 84-asn-near,
+// 86-country-main; see fallback.go).
+var guessSources = []string{asnMainSource, asnLikelySource, asnNearSource, countryMainSource}
+
 // isGuessSource reports whether a city_source names a guessed city. Guesses
 // must not count as evidence for anything we build from our own MMDB (the router
 // hop votes of lookup -in).
-func isGuessSource(source string) bool { return source == asnMainSource }
+func isGuessSource(source string) bool { return slices.Contains(guessSources, source) }
 
 // noSampleSources are the city_sources whose city is weak evidence: a /24 whose city comes
 // from one of them still counts as having no city in the gap list (mmdbbuilder gaps), so
 // sample-names keeps sampling customer PTR names there (a customer name is far more precise).
-// They are the guess (80-asn-main), the BGP community layer (25-bgp) and the M-Lab hop
-// layer (36-mlab). lookup -in keeps only the guess out (isGuessSource).
-var noSampleSources = []string{asnMainSource, "25-bgp", "36-mlab"}
+// They are the four guesses (guessSources), the BGP community layer (25-bgp) and the M-Lab
+// hop layer (36-mlab). lookup -in keeps only the guesses out (isGuessSource).
+var noSampleSources = slices.Concat(guessSources, []string{"25-bgp", "36-mlab"})
 
 // isWeakCitySource reports whether a city_source is one of noSampleSources.
 func isWeakCitySource(source string) bool { return slices.Contains(noSampleSources, source) }
@@ -260,9 +265,24 @@ func treeLeaves(tree *mmdbwriter.Tree) ([]leaf, []cityPair) {
 type asnGroup struct {
 	total  uint64
 	cities map[string]*cityCount // by normalised city
-	// set when the group qualifies
-	main string // city to write (the spelling with most addresses)
+	// set by choose when the group qualifies
+	main string // 80-asn-main: the city to write
 	ok   bool
+	// 82-asn-likely: the same, at a lower share and with no minimum of addresses
+	likely   string
+	likelyOK bool
+}
+
+// add counts n addresses of a city (normalised name norm, written as spell).
+func (g *asnGroup) add(norm, spell string, n uint64) {
+	g.total += n
+	c := g.cities[norm]
+	if c == nil {
+		c = &cityCount{spells: map[string]uint64{}}
+		g.cities[norm] = c
+	}
+	c.n += n
+	c.spells[spell] += n
 }
 
 type cityCount struct {
@@ -275,9 +295,11 @@ type groupKey struct {
 	code string
 }
 
-// choose finds the main city and whether the group qualifies. Ties are broken
-// by name, so the result does not depend on the order of the addresses.
-func (g *asnGroup) choose() {
+// choose finds the main city of the group and whether it qualifies: the group needs at
+// least minAddrs addresses with a city and its main city at least minShare of them. Ties
+// are broken by name, so the result does not depend on the order of the addresses. The
+// city is the spelling with most addresses (ties: the smallest spelling).
+func (g *asnGroup) choose(minShare float64, minAddrs uint64) (main string, ok bool) {
 	var best *cityCount
 	var bestName string
 	for name, c := range g.cities {
@@ -285,131 +307,22 @@ func (g *asnGroup) choose() {
 			best, bestName = c, name
 		}
 	}
-	if best == nil || g.total < asnMainMinAddrs || float64(best.n)/float64(g.total) < asnMainMinShare {
-		return
+	if best == nil || g.total < minAddrs || float64(best.n)/float64(g.total) < minShare {
+		return "", false
 	}
+	return best.spelling(), true
+}
+
+// spelling is the most common spelling of the city, ties by the smallest spelling.
+func (c *cityCount) spelling() string {
 	var spell string
 	var spellN uint64
-	for s, n := range best.spells {
+	for s, n := range c.spells {
 		if n > spellN || n == spellN && s < spell {
 			spell, spellN = s, n
 		}
 	}
-	g.main, g.ok = spell, true
-}
-
-// fillASNMain gives the main city of each qualifying (ASN, country) group to
-// the addresses of that ASN in that country that have no city, in the tree. A
-// group qualifies when it has at least asnMainMinAddrs addresses with a city
-// and one city holds at least asnMainMinShare of them. It only fills: an
-// address that has a city, or another country, is never touched. recordFor
-// makes the shared record of a place. The result is deterministic.
-//
-// With a GeoNames index (nil: none) a city counts toward a group's total and its
-// per-city sums only when the index places it, as in the measurement behind the
-// fill; cities it cannot place are ignored for the count (and still never
-// overwritten). Without an index every city counts.
-func fillASNMain(tree *mmdbwriter.Tree, path string, index geoNames, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) (geoLayerStats, error) {
-	s := geoLayerStats{name: asnMainSource}
-	segs, err := readASNPrefixes(path)
-	if err != nil {
-		return s, fmt.Errorf("%s: %w", path, err)
-	}
-	leaves, pairs := treeLeaves(tree)
-
-	// With a GeoNames index only the cities it places count (the measured definition);
-	// the answer is cached per (country, city) pair, 0 unknown, 1 placed, 2 not placed.
-	placedState := make([]uint8, len(pairs))
-	counts := func(rec uint32) bool {
-		if index == nil {
-			return true
-		}
-		if placedState[rec] == 0 {
-			placedState[rec] = 2
-			if _, ok := index.place(pairs[rec].code, pairs[rec].city); ok {
-				placedState[rec] = 1
-			}
-		}
-		return placedState[rec] == 1
-	}
-	groups := map[groupKey]*asnGroup{}
-	for _, l := range leaves {
-		p := pairs[l.rec]
-		if normCity(p.city) == "" || !counts(l.rec) {
-			continue
-		}
-		overlaps(segs, l.lo, l.hi, func(seg asnSeg, a, b uint32) {
-			key := groupKey{seg.asn, p.code}
-			g := groups[key]
-			if g == nil {
-				g = &asnGroup{cities: map[string]*cityCount{}}
-				groups[key] = g
-			}
-			n := uint64(b) - uint64(a) + 1
-			g.total += n
-			norm := normCity(p.city)
-			c := g.cities[norm]
-			if c == nil {
-				c = &cityCount{spells: map[string]uint64{}}
-				g.cities[norm] = c
-			}
-			c.n += n
-			c.spells[p.city] += n
-		})
-	}
-	qualified := 0
-	for _, g := range groups {
-		if g.choose(); g.ok {
-			qualified++
-		}
-	}
-
-	// The ranges to fill, in address order; neighbours of one group are one range.
-	type fill struct {
-		lo, hi uint32
-		code   string
-		city   string
-	}
-	var fills []fill
-	var addrs uint64
-	for _, l := range leaves {
-		p := pairs[l.rec]
-		if normCity(p.city) != "" {
-			continue
-		}
-		overlaps(segs, l.lo, l.hi, func(seg asnSeg, a, b uint32) {
-			g := groups[groupKey{seg.asn, p.code}]
-			if g == nil || !g.ok {
-				return
-			}
-			addrs += uint64(b) - uint64(a) + 1
-			if k := len(fills); k > 0 && fills[k-1].code == p.code && fills[k-1].city == g.main && uint64(fills[k-1].hi)+1 == uint64(a) {
-				fills[k-1].hi = b
-				return
-			}
-			fills = append(fills, fill{a, b, p.code, g.main})
-		})
-	}
-	for _, f := range fills {
-		idx := recordFor(place{f.code, f.city, asnMainSource}, &s)
-		record := records(idx)
-		for _, cidr := range rangePrefixes(f.lo, f.hi) {
-			rec := record
-			if debug {
-				rec = mmdbtype.Map{"network": mmdbtype.String(cidr.String())}
-				for k, v := range record {
-					rec[k] = v
-				}
-			}
-			if err := tree.InsertFunc(ipNet(cidr), whereCountryNoCity(rec, record["country_code"])); err != nil {
-				return s, fmt.Errorf("insert %s (%s): %w", cidr, asnMainSource, err)
-			}
-			s.prefixes++
-		}
-		s.rows++
-	}
-	s.note = fmt.Sprintf("asn-main: %d groups qualified of %d, %d addresses filled", qualified, len(groups), addrs)
-	return s, nil
+	return spell
 }
 
 // rangePrefixes splits the IPv4 range lo..hi into the fewest CIDR prefixes.

@@ -299,7 +299,9 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 	// The ASN main city fill is recomputed by the builder from this build's own merged
 	// result, so the held-out feeds never reach it.
 	asnMainArgs, _ := p.asnMainArgs()
-	args, err := p.geoArgs(mmdbPath, replace, asnMainArgs...)
+	// The fallback guesses are recomputed the same way (the country guess even without the
+	// ASN prefixes).
+	args, err := p.geoArgs(mmdbPath, replace, append(slices.Clone(asnMainArgs), fallbackFlag)...)
 	if err != nil {
 		return "", "", "", err
 	}
