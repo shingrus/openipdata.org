@@ -277,7 +277,7 @@ func (s *server) reportPanel(sn *snapshot, created time.Time) panel {
 			}
 		}
 	}
-	p.Rows = append(p.Rows, dns, row{K: "Network", Parts: sn.Network.parts()})
+	p.Rows = append(p.Rows, row{K: "Network", Parts: sn.Network.parts()}, dns)
 	return p
 }
 

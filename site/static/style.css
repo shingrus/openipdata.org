@@ -105,8 +105,8 @@ a:hover{color:var(--accent)}
 dl{min-width:0;display:grid;grid-auto-rows:1fr} /* equal rows beside the place block; phone width resets it */
 dl div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
 dl div:last-child{border-bottom:0}
-dt{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
-dd{min-width:0;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+dt,.cells span{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+dd,.cells b{min-width:0;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
 .msg{padding:20px;font-size:16px;color:var(--muted);overflow-wrap:anywhere}
 .msg .mono{display:block;margin-bottom:6px;font-size:20px;font-weight:500;color:var(--text)}
 

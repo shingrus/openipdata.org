@@ -579,13 +579,16 @@ func TestReportPage(t *testing.T) {
 	for _, x := range []string{
 		"<title>Shared report · openipdata.org</title>", `<meta name="robots" content="noindex">`, "<h2>Shared report</h2>", `<span class="r">Shared 15 Nov 2026 16:50 UTC · expires 15 Dec 2026</span>`,
 		`<dt>IPv4</dt><dd class="c"><span class="w"><span class="v">203.0.113.9</span><button class="cp"`, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::9</span><button class="cp"`,
-		`<dt>DNS resolver</dt><dd class="od"><a href="/?203.0.113.50">203.0.113.50</a><a class="dn" href="/asn-example-net">EXAMPLE-NET</a></dd>`,
+		`<dt>DNS resolver</dt><dd class="od"><a href="/?203.0.113.50">203.0.113.50</a><small><a href="/asn-example-net">EXAMPLE-NET</a></small></dd>`,
 		`<dt>Network</dt><dd><a href="/asn-example-net">EXAMPLE-NET</a> · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
 		"<h1>Lisbon</h1>", `<p><a href="/portugal-asn-list">Portugal</a></p>`, `class="place mapped"`, `<svg class="map"`,
 	} {
 		if !strings.Contains(b, x) {
 			t.Errorf("report lacks %q", x)
 		}
+	}
+	if i, j := strings.Index(b, "<dt>Network</dt>"), strings.Index(b, "<dt>DNS resolver</dt>"); i < 0 || j < i {
+		t.Error("report: the Network row is not before the DNS resolver row")
 	}
 	for _, bad := range []string{resolverJS, fillJS, `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>", "<dt>Prefix"} {
 		if strings.Contains(b, bad) {

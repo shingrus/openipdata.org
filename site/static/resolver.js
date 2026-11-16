@@ -24,10 +24,15 @@
     l.href = "/?" + p; l.textContent = p;
     d.appendChild(l);
     if (typeof n != "string" || !n || n.length > 120) return;
-    var e = document.createElement(typeof o == "string" && /^\/as(n-[a-z0-9-]{1,255}|[0-9]{1,10})$/.test(o) ? "a" : "span");
-    e.className = "dn"; e.textContent = n;
-    if (e.tagName == "A") e.href = o;
-    d.appendChild(e);
+    var s = document.createElement("small");
+    var e = s;
+    if (typeof o == "string" && /^\/as(n-[a-z0-9-]{1,255}|[0-9]{1,10})$/.test(o)) {
+      e = document.createElement("a");
+      e.href = o;
+      s.appendChild(e);
+    }
+    e.textContent = n;
+    d.appendChild(s);
   }
   // Gave up: the waiting dots end, the dash shows.
   function stop() { d.classList.add("x"); }

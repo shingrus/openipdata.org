@@ -28,7 +28,7 @@ type fixtureRow struct {
 	v6                       float64
 	json                     string
 	domain                   string
-	country, category        string
+	country, category, role  string
 	v4Prefixes, v6Prefixes   []string
 	rawJSON                  bool // json is used as given
 	noMetadata, noPrefixKeys bool
@@ -49,6 +49,9 @@ func (r fixtureRow) jsonText() string {
 		}
 		if r.category != "" {
 			md["category"] = r.category
+		}
+		if r.role != "" {
+			md["networkRole"] = r.role
 		}
 		if r.handle != nil {
 			md["handle"] = r.handle

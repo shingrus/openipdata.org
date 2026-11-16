@@ -66,8 +66,8 @@ func TestNetworkRowVariants(t *testing.T) {
 	}
 }
 
-// Rows as rendered: the visitor's page has IPv4, IPv6, DNS resolver, Network
-// (no Prefix row, no AS number); a lookup page has the address and Network.
+// Rows as rendered: the visitor's page has IPv4, IPv6, Network, DNS resolver, Browser
+// (no Prefix row, no AS number in the rows); a lookup page has the address and Network.
 func TestPanelRowOrder(t *testing.T) {
 	keys := func(body string) []string {
 		var out []string
@@ -85,10 +85,10 @@ func TestPanelRowOrder(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	b := w.Body.String()
-	if got := strings.Join(keys(b), ","); got != "IPv4,IPv6,DNS resolver,Network,Browser" {
+	if got := strings.Join(keys(b), ","); got != "IPv4,IPv6,Network,DNS resolver,Browser" {
 		t.Errorf("visitor rows: %s", got)
 	}
-	if strings.Contains(b, "AS64500") || strings.Contains(b, "<dt>Prefix") {
+	if dl := b[strings.Index(b, "<dl>"):strings.Index(b, "</dl>")]; strings.Contains(dl, "AS64500") || strings.Contains(b, "<dt>Prefix") {
 		t.Error("the visitor page has an AS number or a Prefix row")
 	}
 	if i, j := strings.Index(b, "<dl>"), strings.Index(b, `<div class="place`); j < 0 || i < j {

@@ -542,7 +542,7 @@ func (s *server) addFill(p *panel, a netip.Addr) bool {
 	return true
 }
 
-// addDNS puts the DNS row (before the Network row) into the visitor's panel p: a dash that the page
+// addDNS puts the DNS row (right after the Network row) into the visitor's panel p: a dash that the page
 // script fills in with the address and company of the visitor's DNS resolver. It reports
 // whether a row was added, which means the page needs resolver.js. Only a
 // panel of a public address (no message) with the feature on gets it.
@@ -550,8 +550,8 @@ func (s *server) addDNS(p *panel) bool {
 	if s.zone == "" || p.Msg != "" {
 		return false
 	}
-	i := slices.IndexFunc(p.Rows, func(r row) bool { return r.K == "Network" }) // before the Network row
-	if i < 0 {
+	i := slices.IndexFunc(p.Rows, func(r row) bool { return r.K == "Network" }) + 1 // after the Network row
+	if i == 0 {
 		i = len(p.Rows)
 	}
 	p.Rows = slices.Insert(p.Rows, i, row{K: "DNS resolver", V: dash, Zone: s.zone})

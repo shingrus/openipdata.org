@@ -1,4 +1,17 @@
 {{template "top" .}}{{with .Panel}}{{template "panel" .}}{{end}}{{if .Hint}}<p class="hint">API: <a href="{{.Hint}}">curl {{.HintHost}}{{.Hint}}</a></p>
+{{end}}{{with .Net}}<section class="panel">
+<div class="head"><h2>Network</h2><a class="r" href="{{.Href}}">{{.ASN}} &rarr;</a></div>
+<div class="cells">
+<div><span>Organisation</span><b>{{if .OrgHref}}<a href="{{.OrgHref}}">{{.Org}}</a>{{else}}{{.Org}}{{end}}</b></div>
+<div><span>Type</span><b>{{.Type}}</b></div>
+<div><span>Country</span><b>{{if .CountryHref}}<a href="{{.CountryHref}}">{{.Country}}</a>{{else}}{{.Country}}{{end}}</b></div>
+<div><span>Role</span><b>{{.Role}}</b></div>
+<div><span>IPv4 prefixes</span><b>{{.N4}}</b></div>
+<div><span>IPv6 prefixes</span><b>{{.N6}}</b></div>
+<div><span>Addresses</span><b{{if .AddrTitle}} title="{{.AddrTitle}}"{{end}}>{{.Addr}}</b></div>
+<div><span>Domain</span><b>{{.Domain}}</b></div>
+</div>
+</section>
 {{end}}<section class="panel">
 <div class="head"><h2>Accuracy</h2>{{if .Updated}} <span class="r">Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time></span>{{end}}</div>
 <div class="acc">

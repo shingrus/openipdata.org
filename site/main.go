@@ -407,6 +407,11 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	v := makeView(*s.scores.Load())
 	v.Panel, v.Input, v.Title, v.Fill, v.Res = &p, input, title, fill, res
 	v.Pnl = p.Copy
+	if p.Msg == "" && (q.kind == "lookup" || q.kind == "visitor") {
+		if na, ok := netAddr(q, r, s.realIP); ok {
+			v.Net = s.netPanelFor(r.Context(), na)
+		}
+	}
 	if p.Msg == "" {
 		v.HintHost = strings.TrimPrefix(strings.TrimPrefix(s.origin, "https://"), "http://")
 		switch q.kind {
