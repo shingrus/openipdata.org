@@ -429,6 +429,7 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	if fill || res || v.Pnl {
 		h.Set("Content-Security-Policy", s.pageCSP(fill, res, v.Pnl, share))
 	}
+	v.CSS = v.homeCSS()
 	body, err := render(s.tmpl, "home.html", v)
 	if err != nil {
 		plain(w, http.StatusInternalServerError, "error\n")

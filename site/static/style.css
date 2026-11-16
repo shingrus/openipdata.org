@@ -90,17 +90,8 @@ a:hover{color:var(--accent)}
     linear-gradient(var(--grid) 1px,transparent 1px) 0 0/24px 24px,
     linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/24px 24px;
 }
-.place.mapped{background:radial-gradient(420px 260px at 78% 30%,var(--glow),transparent 70%)} /* a map replaces the grid */
 .place h1{position:relative;font-size:clamp(40px,7vw,72px);font-weight:600;line-height:1;letter-spacing:-.035em;overflow-wrap:anywhere}
 .place p{position:relative;margin-top:10px;font-size:20px;color:var(--muted);overflow-wrap:anywhere}
-.place svg.map{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;
-  -webkit-mask:linear-gradient(#000 55%,transparent);mask:linear-gradient(#000 55%,transparent)} /* decorative; the fade keeps the name readable */
-.place svg.map path,.place svg.map circle{vector-effect:non-scaling-stroke}
-.place svg.map .land{fill:var(--raised);stroke:var(--line-2);stroke-width:1px;stroke-linejoin:round}
-.place svg.map .here{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.2px;stroke-linejoin:round}
-.place svg.map .aim{fill:none;stroke:var(--accent);stroke-width:1px;stroke-dasharray:3 5;opacity:.6}
-.place svg.map .halo{fill:var(--accent);opacity:.2}
-.place svg.map .pin{fill:var(--accent)}
 .place.none h1{color:var(--faint);font-size:clamp(30px,5vw,48px)}
 dl{min-width:0;display:grid;grid-auto-rows:1fr} /* equal rows beside the place block; phone width resets it */
 dl div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}

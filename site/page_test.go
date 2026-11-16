@@ -99,3 +99,50 @@ func TestLightBlocksIdentical(t *testing.T) {
 		t.Errorf("light blocks differ:\n%s\n%s", a[1], b[1])
 	}
 }
+
+// Each page carries the style of a part exactly when it has that part: the
+// split of the style files (homeCSS, renderASN, the report page) must neither
+// drop a rule a page needs nor send one it does not use.
+func TestStylePartsFollowThePage(t *testing.T) {
+	s := fixtureServer(t)
+	parts := []struct{ mark, rule string }{
+		{`<svg class="map"`, ".place svg.map{"},
+		{`class="cp"`, ".cp{"},
+		{`<dd class="br"`, "dd.br{"},
+		{`class="acc"`, ".acc{"},
+		{`class="cells"`, ".cells{"},
+		{`class="apip"`, ".apip{"},
+	}
+	pages := map[string]string{
+		"visitor":      fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(),
+		"unknown":      get(s, "GET", "/").Body.String(),
+		"lookup":       get(s, "GET", "/?203.0.113.9").Body.String(),
+		"lookup, none": get(s, "GET", "/?198.51.100.200").Body.String(),
+		"bad query":    get(s, "GET", "/?1.2.3").Body.String(),
+		"network":      get(s, "GET", "/as64500").Body.String(),
+		"prefix":       get(s, "GET", "/prefix/203.0.113.0/24").Body.String(),
+		"download":     get(s, "GET", "/download").Body.String(),
+	}
+	seen := map[string]bool{}
+	for name, b := range pages {
+		i, j := strings.Index(b, "<style>"), strings.Index(b, "</style>")
+		if i < 0 || j < i {
+			t.Fatalf("%s: no style", name)
+		}
+		css, body := b[i:j], b[j:]
+		for _, p := range parts {
+			has, styled := strings.Contains(body, p.mark), strings.Contains(css, p.rule)
+			if has {
+				seen[p.mark] = true
+			}
+			if has != styled {
+				t.Errorf("%s: %s in the page: %v, %s in the style: %v", name, p.mark, has, p.rule, styled)
+			}
+		}
+	}
+	for _, p := range parts {
+		if !seen[p.mark] && p.rule != ".cells{" { // the fixture of this test has no Network panel (see netpanel_test.go)
+			t.Errorf("no test page has %s", p.mark)
+		}
+	}
+}

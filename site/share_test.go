@@ -742,7 +742,7 @@ func TestCopyButtonsHiddenWithoutScript(t *testing.T) {
 	}
 }
 
-func CSSForTest() string { return styleCSS + liveCSS }
+func CSSForTest() string { return styleCSS + mapCSS + liveCSS + visitorCSS }
 
 func TestPanelScriptShape(t *testing.T) {
 	// panel.js is only the copy buttons: no Share code, no textarea fallback.
@@ -833,7 +833,7 @@ func TestLinkColourRule(t *testing.T) {
 		}
 	}
 	for _, old := range []string{".lnk", "a.as", "dd .as", "a.dn", ".foot a", "dd a"} {
-		if strings.Contains(styleCSS+liveCSS+accCSS+asnCSS, old) {
+		if strings.Contains(styleCSS+mapCSS+liveCSS+visitorCSS+accCSS+netCSS+apiCSS+asnCSS, old) {
 			t.Errorf("per-class link rule left: %s", old)
 		}
 	}

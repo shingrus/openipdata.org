@@ -163,7 +163,7 @@ func TestFillNoneState(t *testing.T) {
 			t.Errorf("fillJS lacks %s", x)
 		}
 	}
-	if !strings.Contains(liveCSS, "dd.none{color:var(--faint)}") {
+	if !strings.Contains(visitorCSS, "dd.none{color:var(--faint)}") {
 		t.Error("no faint style for the none state")
 	}
 	// The row's reserved height rules do not depend on the text.

@@ -1,0 +1,24 @@
+/* Only the visitor's own page: the Share and Headers buttons, the Browser row,
+   the other-family row and the waiting dots of the DNS row. */
+.head.hs{min-height:48px} /* room for the Share button, which the script shows later */
+.sh,.hd{height:26px;min-width:92px;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer;
+  font:500 12px/1 Geist,system-ui,sans-serif;letter-spacing:0;text-transform:none;white-space:nowrap}
+.sh:hover,.hd:hover{color:var(--text)}
+.sh{display:inline-flex;align-items:center;justify-content:center;gap:6px}
+.sh svg{width:13px;height:13px}
+/* the Browser row: logos, name, and the Headers button at the right end */
+.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+dd.br{display:flex;align-items:center;gap:5px;white-space:nowrap;flex-wrap:wrap}
+dd.br .os{display:inline-flex}
+dd.br .sep{color:var(--faint)}
+dd.br .hd{margin-left:auto;height:22px;min-width:0;padding:0 7px;font-size:11px}
+.sh[hidden],.hd[hidden]{display:none}
+dd.none{color:var(--faint)} /* the other address family does not exist (the script gave up) */
+/* waiting for the resolver: dots instead of the dash, CSS only, for about 80 s at most */
+#dns{position:relative}
+#dns:not(:has(*)){color:#0000;animation:dash 0s 82s forwards}
+#dns:not(:has(*))::before{content:"•••";position:absolute;color:var(--muted);letter-spacing:3px;clip-path:inset(0 100% 0 0);animation:dots 1s steps(4,jump-none) 82}
+#dns.x{color:var(--text);animation:none}#dns.x::before{content:none}
+@keyframes dots{to{clip-path:inset(0 -1ch 0 0)}}
+@keyframes dash{to{color:var(--text)}}
+@media (prefers-reduced-motion:reduce){#dns:not(:has(*)){animation-delay:0s}#dns::before{content:none!important}} /* room for a long IPv6 address that arrives later: no layout shift */

@@ -1,28 +1,6 @@
-/* The parts of the connection panel that only the home, lookup and shared report pages have:
-   the copy and Share buttons, the rows a script fills in, the waiting dots. */
-.head.hs{min-height:48px} /* room for the Share button, which the script shows later */
-.sh,.hd{height:26px;min-width:92px;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer;
-  font:500 12px/1 Geist,system-ui,sans-serif;letter-spacing:0;text-transform:none;white-space:nowrap}
-.sh:hover,.hd:hover{color:var(--text)}
-.sh{display:inline-flex;align-items:center;justify-content:center;gap:6px}
-.sh svg{width:13px;height:13px}
-/* the Browser row: logos, name, and the Headers button at the right end */
-.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
-dd.br{display:flex;align-items:center;gap:5px;white-space:nowrap;flex-wrap:wrap}
-dd.br .os{display:inline-flex}
-dd.br .sep{color:var(--faint)}
-dd.br .hd{margin-left:auto;height:22px;min-width:0;padding:0 7px;font-size:11px}
-.apip{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line)}
-.apip>*{background:var(--panel)}
-.api{display:flex;align-items:center;gap:10px;padding:20px;font-size:15px}
-.api b{color:var(--accent);font-weight:500}
-.api a{min-width:0;overflow-wrap:anywhere}
-.api .cp{margin-left:auto;flex:none}
-.apip pre{margin:0;padding:16px 20px;font-size:13px;line-height:1.55;overflow-x:auto}
-.apip pre i{font-style:normal;color:var(--muted)}
-@media (max-width:700px){.apip{grid-template-columns:minmax(0,1fr)}.api{padding:16px}.apip pre{padding:14px 16px}}
-.sh[hidden],.hd[hidden],.cp[hidden]{display:none}
-dd.none{color:var(--faint)} /* the other address family does not exist (the script gave up) */
+/* The copy buttons and the rows with links: every page with a connection panel
+   that has an address (home, lookup, shared report). */
+.cp[hidden]{display:none}
 dd.c,dd.o6,dd.od{display:flex;align-items:center}
 dd.o6,dd.od{min-height:2lh}
 dd .w{min-width:0;overflow-wrap:anywhere} /* the address, and the copy button inline after it: the button takes room only at the end of the last line */
@@ -37,13 +15,5 @@ dd .w{min-width:0;overflow-wrap:anywhere} /* the address, and the copy button in
 dd.od{flex-wrap:wrap;column-gap:8px}
 dd small{font:400 13px Geist,system-ui,sans-serif;color:var(--muted)} /* the DNS name; the 8px gap is the column-gap of dd.od */
 dd.od>*{min-width:0}
-/* waiting for the resolver: dots instead of the dash, CSS only, for about 80 s at most */
-#dns{position:relative}
-#dns:not(:has(*)){color:#0000;animation:dash 0s 82s forwards}
-#dns:not(:has(*))::before{content:"•••";position:absolute;color:var(--muted);letter-spacing:3px;clip-path:inset(0 100% 0 0);animation:dots 1s steps(4,jump-none) 82}
-#dns.x{color:var(--text);animation:none}#dns.x::before{content:none}
-@keyframes dots{to{clip-path:inset(0 -1ch 0 0)}}
-@keyframes dash{to{color:var(--text)}}
-@media (prefers-reduced-motion:reduce){#dns:not(:has(*)){animation-delay:0s}#dns::before{content:none!important}} /* room for a long IPv6 address that arrives later: no layout shift */
 /* 39 characters wrap to 3 lines on a 320px phone and in the narrowest two-column layout */
 @media (max-width:400px),(min-width:701px) and (max-width:760px){dd.o6,dd.od{min-height:3lh}}

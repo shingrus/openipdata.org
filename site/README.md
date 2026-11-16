@@ -268,6 +268,8 @@ Builds on push to `master`, `iplistener` on this VM (the access log it would tai
 
 These override the text above where it differs. The place block with the map comes first again (left on desktop, on top on a phone), the rows second. The Network row is `BT-UK-AS · bt.net`: the handle links to `/as<n>`, the domain links to `https://<domain>/?utm_source=openipdata.org`; no category. Links follow the design: every link has the colour of its text and turns orange on hover, and a link in the data (panel values, tables, prefix lists, notes, panel heads) is orange with an underline on hover. The CSS is split into `style.css`, `live.css`, `acc.css` and `asn.css`; each page inlines only the parts it uses, without comments and line breaks.
 
+Styles are split by part, and a page inlines only the parts it shows: `style.css` (every page), `map.css` (a page with a map), `live.css` (copy buttons and rows with links), `visitor.css` (the visitor's own page: Share, Headers, Browser, other-family and DNS rows), `acc.css` (Accuracy), `net.css` (Network panel), `api.css` (API panel), `asn.css`, `download.css`. `view.homeCSS()` in `page.go` picks them for the home and lookup pages; a new panel gets its own file.
+
 The Network row changed once more: it is `BT-UK-AS · 109.180.0.0/14`, the handle as a link to the organisation page (`/asn-<slug>`, or `/as<n>` without a slug) and the announced prefix as a link to its prefix page. No domain or category in the row, and no separate Prefix row.
 
 ## Browser row and API panel

@@ -14,9 +14,12 @@ import (
 )
 
 // The styles, inlined into every page. Each page carries only the parts it
-// uses: style.css (all pages), live.css (the copy and Share buttons, the rows a
-// script fills in: home, lookup and shared report pages), acc.css (the Accuracy
-// panel: home and lookup pages) and asn.css (tables and lists: ASN, prefix,
+// uses: style.css (all pages), map.css (a page with a map), live.css (the copy
+// buttons and the rows with links: a home, lookup or shared report page whose
+// panel has an address), visitor.css (the Share and Headers buttons, the
+// Browser, other-family and DNS rows: the visitor's own page), acc.css (the
+// Accuracy panel: home and lookup pages), net.css and api.css (the Network and
+// API panels, where they are) and asn.css (tables and lists: ASN, prefix,
 // search and status pages). cssText drops comments and line breaks once at start.
 //
 //go:embed static/style.css
@@ -28,12 +31,53 @@ var liveSrc string
 //go:embed static/acc.css
 var accSrc string
 
+//go:embed static/map.css
+var mapSrc string
+
+//go:embed static/visitor.css
+var visitorSrc string
+
+//go:embed static/net.css
+var netSrc string
+
+//go:embed static/api.css
+var apiSrc string
+
 var (
-	styleCSS = cssText(styleSrc)
-	liveCSS  = cssText(liveSrc)
-	accCSS   = cssText(accSrc)
-	asnCSS   = cssText(asnSrc)
+	styleCSS   = cssText(styleSrc)
+	liveCSS    = cssText(liveSrc)
+	accCSS     = cssText(accSrc)
+	asnCSS     = cssText(asnSrc)
+	mapCSS     = cssText(mapSrc)
+	visitorCSS = cssText(visitorSrc)
+	netCSS     = cssText(netSrc)
+	apiCSS     = cssText(apiSrc)
 )
+
+// homeCSS is the style of a home or lookup page: only the parts this view
+// shows. Call it when the view is complete.
+func (v *view) homeCSS() template.CSS {
+	css := styleCSS
+	if p := v.Panel; p != nil {
+		if p.Map != "" {
+			css += mapCSS
+		}
+		if p.Copy {
+			css += liveCSS
+		}
+		if p.Share || p.Br != nil || v.Fill || v.Res {
+			css += visitorCSS
+		}
+	}
+	css += accCSS
+	if v.Net != nil {
+		css += netCSS
+	}
+	if v.API != nil {
+		css += apiCSS
+	}
+	return template.CSS(css)
+}
 
 var cssComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
 
@@ -176,7 +220,7 @@ func makeCard(label string, v float64) card {
 
 func makeView(s scores) view {
 	v := view{
-		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), ResJS: template.JS(resolverJS), PnlJS: template.JS(panelJS), ShareJS: template.JS(shareJS), CSS: template.CSS(styleCSS + liveCSS + accCSS)},
+		pageBase: pageBase{HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), FillJS: template.JS(fillJS), ResJS: template.JS(resolverJS), PnlJS: template.JS(panelJS), ShareJS: template.JS(shareJS)},
 		Cards: []card{
 			makeCard("right country", s.Country),
 			makeCard("right city", s.City),

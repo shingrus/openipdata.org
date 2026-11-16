@@ -319,7 +319,11 @@ func (s *server) serveReport(w http.ResponseWriter, r *http.Request) {
 	}
 	p := s.reportPanel(&sn, created)
 	base := s.asnBase("Shared report · openipdata.org", true)
-	base.CSS = template.CSS(styleCSS + liveCSS)
+	css := styleCSS
+	if p.Map != "" {
+		css += mapCSS
+	}
+	base.CSS = template.CSS(css + liveCSS)
 	base.Pnl, base.PnlJS = p.Copy, template.JS(panelJS)
 	body, err := render(s.tmpl, "report.html", &reportView{pageBase: base, Panel: &p})
 	if err != nil {

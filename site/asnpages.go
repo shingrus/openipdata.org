@@ -109,6 +109,9 @@ func (s *server) asnBase(title string, noindex bool) pageBase {
 }
 
 func (s *server) renderASN(v *asnView) ([]byte, error) {
+	if v.Place != nil && v.Place.Map != "" {
+		v.CSS += template.CSS(mapCSS) // only a page with a map (a prefix page)
+	}
 	return render(s.tmpl, "asn.html", v)
 }
 

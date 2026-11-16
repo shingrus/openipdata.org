@@ -491,7 +491,7 @@ func TestMapLayoutStable(t *testing.T) {
 	if re.FindString(with) != `<div class="place mapped">` || re.FindString(without) != `<div class="place none">` {
 		t.Errorf("place classes: %q %q", re.FindString(with), re.FindString(without))
 	}
-	css := styleCSS
+	css := styleCSS + mapCSS
 	for _, x := range []string{".place svg.map{position:absolute;", "width:100%;height:100%", "pointer-events:none", "mask:linear-gradient", "vector-effect:non-scaling-stroke"} {
 		if !strings.Contains(css, x) {
 			t.Errorf("style.css lacks %q", x)
@@ -562,11 +562,11 @@ func drawCase(w *world, c struct {
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 43008, 14336 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42391 and 14038 now, CA; 41148 and 13745 with the one-line API hint before; 29696 and 10752 before the Browser row)
-	pageMaxRaw, pageMaxGz       = 15360, 5248  // 15271 and 5154 now (the Nodes favicon; 15110 and 5093 with the API panel CSS in live.css; 14632 and 5023 before)
+	pageMapMaxRaw, pageMapMaxGz = 43008, 14336 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42595 and 14100 now, CA; it has every part, so the split of the style files saves nothing here; 41148 and 13745 with the one-line API hint before)
+	pageMaxRaw, pageMaxGz       = 12288, 4608  // 11494 and 4221 now: it gets only the styles of its parts (homeCSS); 15271 and 5154 before the split
 	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
-	visitorMapMaxRaw, visitorMapMaxGz = 22016, 7424 // 21434 and 7326 now with the API panel
-	visitorMaxRaw, visitorMaxGz       = 19456, 6400 // 19208 and 6299 now with the API panel; 18265 and 6160 with the Network panel CSS (acc.css); 16730 and 5808 now (comments and indentation left out of the scripts, Share code in share.js), 19052 before
+	visitorMapMaxRaw, visitorMapMaxGz = 21504, 7424 // 21270 and 7335 now with the API panel
+	visitorMaxRaw, visitorMaxGz       = 18432, 6272 // 18296 and 6114 now with the API panel (the limit of before the panel again)
 )
 
 func TestMapSizes(t *testing.T) {
@@ -589,6 +589,7 @@ func TestMapSizes(t *testing.T) {
 			Type: "Education research", Country: "United Kingdom", CountryHref: "/united-kingdom-asn-list", Role: "Access provider",
 			N4: "1,234", N6: "123", Addr: "12.4M", AddrTitle: "12,402,688", Domain: "example-network-domain.net"} // a long Network panel
 		v.API = s.apiPanelFor("/json", netip.MustParseAddr("203.0.113.9"))
+		v.CSS = v.homeCSS()
 		page, err := render(s.tmpl, "home.html", v)
 		if err != nil {
 			t.Fatal(err)
