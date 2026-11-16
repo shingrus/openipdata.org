@@ -252,7 +252,7 @@ func TestBeaconOff(t *testing.T) {
 
 func TestResolverScriptShape(t *testing.T) {
 	for _, x := range []string{"AbortController", "3000", "textContent", "createElement", "DOMContentLoaded", `credentials: "omit"`,
-		"crypto.getRandomValues", "n = 30", "i ? 2000 : 2200", "0-9a-fA-F:.", "45", "120"} {
+		"crypto.getRandomValues", "k ? 30 : 8", "k++ ? stop() : go()", "i ? 2000 : 2200", "0-9a-fA-F:.", "45", "120"} {
 		if !strings.Contains(resolverJS, x) {
 			t.Errorf("resolverJS lacks %s", x)
 		}
@@ -269,7 +269,7 @@ func TestResolverScriptShape(t *testing.T) {
 		t.Error("resolverJS must read the answer of its own name only")
 	}
 	// One no-cors request: the trigger that only causes the DNS lookup (its answer is not read).
-	if strings.Count(resolverJS, "no-cors") != 1 || !strings.Contains(resolverJS, `u + "t"`) {
+	if strings.Count(resolverJS, "no-cors") != 1 || !strings.Contains(resolverJS, `get("t", { mode: "no-cors" })`) {
 		t.Error("resolverJS must send exactly one trigger request to <name>/t")
 	}
 }

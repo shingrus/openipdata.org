@@ -2,11 +2,20 @@
 (function () {
   var d = document.getElementById("dns");
   if (!d || !window.crypto || !crypto.getRandomValues) return;
-  var t = "", n = 30;
-  crypto.getRandomValues(new Uint8Array(16)).forEach(function (x) { t += (x < 16 ? "0" : "") + x.toString(16); });
-  // share.js sends it with Share, so the report can name the resolver.
-  d.dataset.t = t;
-  var u = "https://" + t + "." + d.dataset.zone + "/";
+  var t, u, k = 0;
+  // A new one-time name: the resolver looks it up, and the request only causes that lookup (nginx answers it, the site is not asked).
+  // share.js sends the token with Share, so the report can name the resolver.
+  function get(p, m) { return fetch(u + p, Object.assign(m, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })); }
+  function go() {
+    t = "";
+    crypto.getRandomValues(new Uint8Array(16)).forEach(function (x) { t += (x < 16 ? "0" : "") + x.toString(16); });
+    d.dataset.t = t;
+    u = "https://" + t + "." + d.dataset.zone + "/";
+    get("t", { mode: "no-cors" }).catch(function () {});
+    step(0);
+  }
+  // The first name failed or stayed empty (a lost lookup, a wrong answer kept by the browser): one second name, then the dash.
+  function next() { k++ ? stop() : go(); }
   function show(j) {
     var p = j && j.ip, n = j && j.name, o = j && j.org;
     if (typeof p != "string" || p.length > 45 || !/^[0-9a-fA-F:.]+$/.test(p)) return stop();
@@ -23,26 +32,18 @@
   // Gave up: the waiting dots end, the dash shows.
   function stop() { d.classList.add("x"); }
   function step(i) {
-    // 30 tries: the first 2.2 s after the lookup, then every 2 s, about a minute in all.
+    // Our DNS server reports lookups in batches, up to two seconds late: the first try is 2.2 s after the lookup, then every 2 s.
+    // 8 tries on the first name (16 s: a lookup that arrived shows up within that), 30 on the second (a minute).
     setTimeout(function () {
       var c = new AbortController();
       setTimeout(function () { c.abort(); }, 3000);
-      fetch(u, { signal: c.signal, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
+      get("", { signal: c.signal })
         .then(function (r) {
-          if (r.status == 404 && i + 1 < n) return step(i + 1);
           if (r.status == 200) return r.json().then(show);
-          stop();
+          r.status == 404 && i + 1 < (k ? 30 : 8) ? step(i + 1) : next();
         })
-        .catch(stop);
+        .catch(next);
     }, i ? 2000 : 2200);
-  }
-  // The first request only makes the resolver look the name up (nginx answers it, the site is not asked).
-  // Our DNS server reports lookups in batches, up to two seconds late, so the answer is asked for after that.
-  function go() {
-    try {
-      fetch(u + "t", { mode: "no-cors", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" }).catch(function () {});
-      step(0);
-    } catch (e) {}
   }
   document.readyState == "loading" ? document.addEventListener("DOMContentLoaded", go) : go();
 })();

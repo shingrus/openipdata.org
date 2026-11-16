@@ -28,10 +28,10 @@ dd .w{min-width:0;overflow-wrap:anywhere} /* the address, and the copy button in
 .cp.ok .u2{display:inline}
 dd.od{flex-wrap:wrap;column-gap:10px}
 dd.od>*{min-width:0}
-/* waiting for the resolver: dots instead of the dash, CSS only, for about a minute at most */
+/* waiting for the resolver: dots instead of the dash, CSS only, for about 80 s at most */
 #dns{position:relative}
-#dns:not(:has(*)){color:#0000;animation:dash 0s 64s forwards}
-#dns:not(:has(*))::before{content:"•••";position:absolute;color:var(--muted);letter-spacing:3px;clip-path:inset(0 100% 0 0);animation:dots 1s steps(4,jump-none) 64}
+#dns:not(:has(*)){color:#0000;animation:dash 0s 82s forwards}
+#dns:not(:has(*))::before{content:"•••";position:absolute;color:var(--muted);letter-spacing:3px;clip-path:inset(0 100% 0 0);animation:dots 1s steps(4,jump-none) 82}
 #dns.x{color:var(--text);animation:none}#dns.x::before{content:none}
 @keyframes dots{to{clip-path:inset(0 -1ch 0 0)}}
 @keyframes dash{to{color:var(--text)}}
