@@ -23,6 +23,8 @@ func TestThemeColorTags(t *testing.T) {
 			`<meta name="theme-color" content="` + dark + `" media="(prefers-color-scheme: dark)">`,
 			`<meta name="theme-color" content="` + light + `" media="(prefers-color-scheme: light)">`,
 			`<link rel="apple-touch-icon" href="/apple-touch-icon.png">`,
+			`<link rel="icon" href="data:image/svg+xml,`, // the favicon: three connected nodes, inline, no request
+			`d='M8 4.2h.01M4 11.2h.01M12 11.2h.01'`,
 		} {
 			if !strings.Contains(b, x) {
 				t.Errorf("%s lacks %s", target, x)
@@ -57,11 +59,15 @@ func TestTouchIcon(t *testing.T) {
 		if w.Body.Len() > 2048 {
 			t.Errorf("%s is %d bytes", p, w.Body.Len())
 		}
-		// The corner is the page background, the middle the accent.
+		// The corner is the page background, the top node the accent, the middle
+		// of the triangle the background again.
 		if r, g, b, _ := img.At(2, 2).RGBA(); r>>8 != 0x0a || g>>8 != 0x0c || b>>8 != 0x0f {
 			t.Errorf("%s: corner colour %x %x %x", p, r>>8, g>>8, b>>8)
 		}
-		if r, g, b, _ := img.At(90, 90).RGBA(); r>>8 != 0xff || g>>8 != 0x7d || b>>8 != 0x1f {
+		if r, g, b, _ := img.At(90, 59).RGBA(); r>>8 != 0xff || g>>8 != 0x7d || b>>8 != 0x1f {
+			t.Errorf("%s: top node colour %x %x %x", p, r>>8, g>>8, b>>8)
+		}
+		if r, g, b, _ := img.At(90, 100).RGBA(); r>>8 != 0x0a || g>>8 != 0x0c || b>>8 != 0x0f {
 			t.Errorf("%s: centre colour %x %x %x", p, r>>8, g>>8, b>>8)
 		}
 	}

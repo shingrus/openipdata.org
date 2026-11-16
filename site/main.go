@@ -71,8 +71,8 @@ var templateFiles embed.FS
 //go:embed static/fonts/*.woff2
 var fontFiles embed.FS
 
-// The home-screen icon (180x180, the orange dot of the favicon on the dark
-// background), asked for as /apple-touch-icon.png and, by iOS, as the
+// The home-screen icon (180x180, the three connected nodes of the favicon in
+// the accent colour on the dark background), asked for as /apple-touch-icon.png and, by iOS, as the
 // -precomposed name.
 //
 //go:embed static/apple-touch-icon.png

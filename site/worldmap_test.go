@@ -562,8 +562,8 @@ func drawCase(w *world, c struct {
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 43008, 14336   // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42391 and 14038 now, CA; 41148 and 13745 with the one-line API hint before; 29696 and 10752 before the Browser row)
-	pageMaxRaw, pageMaxGz       = 15360, 5 << 10 // 15110 and 5093 now (with the API panel CSS in live.css; 14632 and 5023 before)
+	pageMapMaxRaw, pageMapMaxGz = 43008, 14336 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42391 and 14038 now, CA; 41148 and 13745 with the one-line API hint before; 29696 and 10752 before the Browser row)
+	pageMaxRaw, pageMaxGz       = 15360, 5248  // 15271 and 5154 now (the Nodes favicon; 15110 and 5093 with the API panel CSS in live.css; 14632 and 5023 before)
 	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
 	visitorMapMaxRaw, visitorMapMaxGz = 22016, 7424 // 21434 and 7326 now with the API panel
 	visitorMaxRaw, visitorMaxGz       = 19456, 6400 // 19208 and 6299 now with the API panel; 18265 and 6160 with the Network panel CSS (acc.css); 16730 and 5808 now (comments and indentation left out of the scripts, Share code in share.js), 19052 before
