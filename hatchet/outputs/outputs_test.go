@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestPrune(t *testing.T) {
@@ -38,5 +39,19 @@ func TestFileSize(t *testing.T) {
 	os.WriteFile(path, []byte("abc"), 0o640)
 	if FileSize(path) != 3 || FileSize(path+"x") != 0 {
 		t.Error("wrong size")
+	}
+}
+
+func TestPace(t *testing.T) {
+	p := Pace{Every: 20 * time.Millisecond}
+	if p.Due() || p.Due() {
+		t.Fatal("due at the start")
+	}
+	time.Sleep(30 * time.Millisecond)
+	if !p.Due() {
+		t.Fatal("not due after the interval")
+	}
+	if p.Due() {
+		t.Fatal("due twice in one interval")
 	}
 }

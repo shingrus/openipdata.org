@@ -81,7 +81,7 @@ func TestResolveNamesSkipsFreshRetriesErrorsAndPrunes(t *testing.T) {
 		old:   []uint32{ipv("1.1.1.2"), ipv("9.9.9.9"), ipv("9.9.9.8")},    // 1.1.1.2 is still a hop: kept
 	}
 	var asked []string
-	out, err := resolveNames(context.Background(), st, fakeResolver(&asked), hops, time.Hour, 2)
+	out, err := resolveNames(context.Background(), st, fakeResolver(&asked), hops, time.Hour, 2, nolog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestResolveNamesStopsOnBudgetAndKeepsBatches(t *testing.T) {
 		}
 		return out, 0
 	}
-	out, err := resolveNames(context.Background(), st, resolve, hops, 50*time.Millisecond, 3)
+	out, err := resolveNames(context.Background(), st, resolve, hops, 50*time.Millisecond, 3, nolog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestResolveNamesStopsOnBudgetAndKeepsBatches(t *testing.T) {
 		st.fresh[u32Of(netip.MustParseAddr(ip))] = struct{}{}
 	}
 	var asked []string
-	out, err = resolveNames(context.Background(), st, fakeResolver(&asked), hops, time.Hour, 3)
+	out, err = resolveNames(context.Background(), st, fakeResolver(&asked), hops, time.Hour, 3, nolog)
 	if err != nil || out.Fresh != 6 || out.Queried != 4 || out.Left != 0 || out.Stopped != "" {
 		t.Errorf("second run %+v %v", out, err)
 	}
@@ -148,12 +148,12 @@ func TestResolveNamesCancelledAndDBErrors(t *testing.T) {
 		return make([]rdns.NameAnswer, len(ips)), 0
 	}
 	st := &fakeStore{}
-	if _, err := resolveNames(ctx, st, resolve, hops, time.Hour, 1); !errors.Is(err, context.Canceled) || len(st.saved) != 0 {
+	if _, err := resolveNames(ctx, st, resolve, hops, time.Hour, 1, nolog); !errors.Is(err, context.Canceled) || len(st.saved) != 0 {
 		t.Errorf("cancelled: %v saved %v", err, st.saved)
 	}
 	var asked []string
 	st = &fakeStore{saveErr: errors.New("db down")}
-	if _, err := resolveNames(context.Background(), st, fakeResolver(&asked), hops, time.Hour, 1); err == nil {
+	if _, err := resolveNames(context.Background(), st, fakeResolver(&asked), hops, time.Hour, 1, nolog); err == nil {
 		t.Error("a database error did not fail the task")
 	}
 }
@@ -302,4 +302,20 @@ func TestIntegrationResolveNamesTask(t *testing.T) {
 
 func sortPairs(p []pair) {
 	sort.Slice(p, func(i, j int) bool { return cmpPair(p[i], p[j]) < 0 })
+}
+
+func nolog(string, ...any) {}
+
+// The first progress line says what there is to do, in counts only.
+func TestResolveNamesProgressLine(t *testing.T) {
+	hops := []uint32{ipv("1.1.1.1"), ipv("1.1.1.3"), ipv("1.1.1.5")}
+	st := &fakeStore{fresh: map[uint32]struct{}{ipv("1.1.1.1"): {}}}
+	var asked, lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	if _, err := resolveNames(context.Background(), st, fakeResolver(&asked), hops, time.Hour, 2, logf); err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != "resolve-names: 3 hops, 1 fresh, 2 to look up" {
+		t.Errorf("lines %q", lines)
+	}
 }

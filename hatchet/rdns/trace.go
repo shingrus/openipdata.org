@@ -258,6 +258,41 @@ func (p *Pipeline) Trace(ctx context.Context) (TraceOutput, error) {
 	return out, nil
 }
 
+// watchScamper logs every interval, while scamper runs, how long it has run and how many traces
+// it has written so far (counts only). stop ends it and waits, so no line comes after it.
+func (p *Pipeline) watchScamper(outFile string, targets int, every time.Duration) (stop func()) {
+	quit, ended := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(ended)
+		tick := time.NewTicker(every)
+		defer tick.Stop()
+		started := time.Now()
+		for {
+			select {
+			case <-quit:
+				return
+			case <-tick.C:
+				p.log("trace: scamper running for %s, %d of %d traces written",
+					time.Since(started).Round(time.Second), countTraces(outFile), targets)
+			}
+		}
+	}()
+	return func() {
+		close(quit)
+		<-ended
+	}
+}
+
+// countTraces counts the trace objects in scamper's output so far; a file that is not there yet
+// or cannot be read counts as none.
+func countTraces(outFile string) int {
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		return 0
+	}
+	return bytes.Count(data, []byte(`"type":"trace"`))
+}
+
 // traceBatch picks the targets, runs scamper and turns its output into rows.
 func (p *Pipeline) traceBatch(ctx context.Context, batch []batchTarget, out TraceOutput) ([]traceRow, TraceOutput, error) {
 	out.Networks = len(batch)
@@ -294,7 +329,11 @@ func (p *Pipeline) traceBatch(ctx context.Context, batch []batchTarget, out Trac
 			return runScamper(ctx, p.Scamper, targets, outFile, pps)
 		}
 	}
-	if err := run(ctx, targetsPath, resultPath, scamperPPS); err != nil {
+	p.log("trace: %d /24s, %d targets, scamper started", len(batch), len(targets))
+	stop := p.watchScamper(resultPath, len(targets), outputs.ProgressEvery)
+	err := run(ctx, targetsPath, resultPath, scamperPPS)
+	stop()
+	if err != nil {
 		return nil, out, err
 	}
 	f, err := os.Open(resultPath)

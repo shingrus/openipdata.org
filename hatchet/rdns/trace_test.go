@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // scamperFixture is what "scamper -O json" writes for three targets: a trace
@@ -271,5 +274,39 @@ func TestTraceStatementsUseCandidates(t *testing.T) {
 	}
 	if !strings.Contains(backfillSQL, "t.candidates IS NULL") || !strings.Contains(backfillQuery, "WHERE candidates IS NULL") {
 		t.Error("the backfill must touch only rows without candidates")
+	}
+}
+
+// While scamper runs, a line with the elapsed time and the traces written so far (counts only).
+func TestWatchScamper(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "scamper.jsonl")
+	if countTraces(out) != 0 {
+		t.Fatal("a missing file has traces")
+	}
+	if err := os.WriteFile(out, []byte(scamperFixture), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Count(scamperFixture, `"type":"trace"`)
+	if want == 0 || countTraces(out) != want {
+		t.Fatalf("countTraces = %d, want %d", countTraces(out), want)
+	}
+	var mu sync.Mutex
+	var lines []string
+	p := &Pipeline{Progress: func(s string) { mu.Lock(); lines = append(lines, s); mu.Unlock() }}
+	stop := p.watchScamper(out, 9, 5*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	stop()
+	got := append([]string(nil), lines...) // stop waited for the watcher: no more writers
+	if len(got) == 0 {
+		t.Fatal("no progress line")
+	}
+	for _, l := range got {
+		if !strings.HasPrefix(l, "trace: scamper running for ") || !strings.HasSuffix(l, fmt.Sprintf(", %d of 9 traces written", want)) {
+			t.Errorf("line %q", l)
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if len(lines) != len(got) {
+		t.Error("a line came after stop")
 	}
 }

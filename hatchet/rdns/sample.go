@@ -366,6 +366,8 @@ func (p *Pipeline) SampleNames(ctx context.Context) (SampleOutput, error) {
 	if resolver == nil {
 		resolver = newPTRResolver(p.PTRResolver)
 	}
+	p.log("sample-names: %d gap /24s to look up", len(picked))
+	pace := outputs.Pace{Every: outputs.ProgressEvery}
 	rctx, cancel := context.WithTimeout(ctx, sampleBudget)
 	defer cancel()
 	done := true
@@ -384,6 +386,10 @@ func (p *Pipeline) SampleNames(ctx context.Context) (SampleOutput, error) {
 			break
 		}
 		save(batch[len(batch)-1].Pos + 1) // moves only past /24s that are recorded
+		if pace.Due() {
+			p.log("sample-names: %d of %d /24s done, %d with a name; %d hosts looked up: %d names, %d not found, %d errors, %d through DoH",
+				out.Networks, len(picked), out.NamedNetworks, out.Queried, out.OK, out.NotFound, out.Errors, out.DoH)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return out, err

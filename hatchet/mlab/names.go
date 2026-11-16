@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"openipdata.org/hatchet/outputs"
 	"openipdata.org/hatchet/rdns"
 	"openipdata.org/hatchet/schema"
 )
@@ -88,7 +89,7 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 	if batch == 0 {
 		batch = resolveBatch
 	}
-	out, err := resolveNames(ctx, &pgNames{conn: conn}, resolve, hops, budget, batch)
+	out, err := resolveNames(ctx, &pgNames{conn: conn}, resolve, hops, budget, batch, p.log)
 	if err != nil {
 		return out, err
 	}
@@ -97,8 +98,9 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 	return out, nil
 }
 
-// resolveNames is ResolveNames without the database connection and files.
-func resolveNames(ctx context.Context, st nameStore, resolve resolveFunc, hops []uint32, budget time.Duration, batch int) (NamesOutput, error) {
+// resolveNames is ResolveNames without the database connection and files. logf gets the progress
+// lines (counts only): what there is to do, then at most one line a minute.
+func resolveNames(ctx context.Context, st nameStore, resolve resolveFunc, hops []uint32, budget time.Duration, batch int, logf func(string, ...any)) (NamesOutput, error) {
 	out := NamesOutput{Hops: len(hops)}
 	fresh, err := st.Fresh(ctx)
 	if err != nil {
@@ -112,6 +114,8 @@ func resolveNames(ctx context.Context, st nameStore, resolve resolveFunc, hops [
 			todo = append(todo, h)
 		}
 	}
+	logf("resolve-names: %d hops, %d fresh, %d to look up", out.Hops, out.Fresh, len(todo))
+	pace := outputs.Pace{Every: outputs.ProgressEvery}
 	rctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	done := 0
@@ -147,6 +151,10 @@ func resolveNames(ctx context.Context, st nameStore, resolve resolveFunc, hops [
 			}
 		}
 		done += len(chunk)
+		if pace.Due() {
+			logf("resolve-names: %d of %d looked up: %d names, %d not found, %d errors, %d through DoH",
+				done, len(todo), out.OK, out.NotFound, out.Errors, out.DoH)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return out, err

@@ -1,5 +1,5 @@
 // Package outputs holds the small helpers the workflows share for their
-// output directories and the mmdbbuilder output.
+// output directories, the mmdbbuilder output and the progress lines of long tasks.
 package outputs
 
 import (
@@ -7,7 +7,32 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
+
+// ProgressEvery is how often a long loop logs a progress line.
+const ProgressEvery = time.Minute
+
+// Pace spaces the progress lines of a long loop: Due is true at most once per Every, the first
+// time Every after its first call, so a loop that ends sooner logs nothing extra.
+type Pace struct {
+	Every time.Duration
+	next  time.Time
+}
+
+// Due reports whether a progress line is due now.
+func (p *Pace) Due() bool {
+	now := time.Now()
+	if p.next.IsZero() {
+		p.next = now.Add(p.Every)
+		return false
+	}
+	if now.Before(p.next) {
+		return false
+	}
+	p.next = now.Add(p.Every)
+	return true
+}
 
 // Prune keeps the newest keep dated directories under root (names sort by
 // date) and removes the rest.

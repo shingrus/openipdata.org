@@ -19,6 +19,7 @@ import (
 
 	"openipdata.org/hatchet/download"
 	"openipdata.org/hatchet/ipdata"
+	"openipdata.org/hatchet/outputs"
 )
 
 // PTR answers and how long they are trusted. An error is never trusted, but the IP is
@@ -397,7 +398,16 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 	if resolver == nil {
 		resolver = newPTRResolver(p.PTRResolver)
 	}
-	if err := resolveStore(ctx, conn, resolver, todo, &out); err != nil {
+	// Progress (counts only): what there is to do, then at most one line a minute.
+	p.log("resolve-names: %d traces, %d IPs, %d to look up", out.Traces, out.IPs, len(todo))
+	pace := outputs.Pace{Every: outputs.ProgressEvery}
+	progress := func() {
+		if pace.Due() {
+			p.log("resolve-names: %d looked up so far: %d names, %d not found, %d errors, %d through DoH",
+				out.Resolved, out.OK, out.NotFound, out.Errors, out.DoH)
+		}
+	}
+	if err := resolveStore(ctx, conn, resolver, todo, &out, progress); err != nil {
 		return out, err
 	}
 
@@ -418,7 +428,7 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 		}
 	}
 	out.Refreshed = len(refresh)
-	if err := resolveStore(ctx, conn, resolver, refresh, &out); err != nil {
+	if err := resolveStore(ctx, conn, resolver, refresh, &out, progress); err != nil {
 		return out, err
 	}
 
@@ -431,7 +441,7 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 		return out, err
 	}
 	out.Retried = len(due)
-	if err := resolveStore(ctx, conn, resolver, due, &out); err != nil {
+	if err := resolveStore(ctx, conn, resolver, due, &out, progress); err != nil {
 		return out, err
 	}
 
@@ -446,8 +456,9 @@ func (p *Pipeline) ResolveNames(ctx context.Context) (NamesOutput, error) {
 }
 
 // resolveStore looks up ips, resolveChunk at a time, stores the answers as they come
-// (see storeNamesSQL: an error never replaces a name) and adds to the counts of out.
-func resolveStore(ctx context.Context, conn *pgx.Conn, resolver *ptrResolver, ips []netip.Addr, out *NamesOutput) error {
+// (see storeNamesSQL: an error never replaces a name) and adds to the counts of out. progress is
+// called after each stored chunk.
+func resolveStore(ctx context.Context, conn *pgx.Conn, resolver *ptrResolver, ips []netip.Addr, out *NamesOutput, progress func()) error {
 	for start := 0; start < len(ips); start += resolveChunk {
 		chunk := ips[start:min(start+resolveChunk, len(ips))]
 		answers, doh := resolveAll(ctx, resolver, chunk, resolveWorkers)
@@ -477,6 +488,7 @@ func resolveStore(ctx context.Context, conn *pgx.Conn, resolver *ptrResolver, ip
 		if err := storeNames(ctx, conn, chunk, answers); err != nil {
 			return err
 		}
+		progress()
 	}
 	return nil
 }
