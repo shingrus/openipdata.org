@@ -27,7 +27,7 @@
 //	              where the earlier layers give the same country; skipped while the object is
 //	              missing or older than 45 days (the health check ping is still sent)
 //	37-whois-text sync-geofeeds (private R2): the city that the descr and netname lines of a
-//	              RIPE inetnum name (a GeoNames place of the object's country); applied only
+//	              RIPE or AFRINIC inetnum name (a GeoNames place of the object's country); applied only
 //	              where the earlier layers give the same country; skipped while the object is
 //	              missing or older than 14 days (the health check ping is still sent)
 //	38-asn-geofeed  the dominant geofeed city of an ASN (Postgres announced prefixes, the

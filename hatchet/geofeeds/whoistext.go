@@ -40,9 +40,11 @@ const (
 )
 
 // whoisTextDumps are the whois dumps whose inetnum objects are read for text (by
-// dump name). Only RIPE is measured; APNIC and AFRINIC are not yet, so they are
-// not switched on. Adding a name here is all it takes to read another registry.
-var whoisTextDumps = map[string]bool{"ripe-inetnum": true}
+// dump name): RIPE and AFRINIC. AFRINIC is on as a live test since 2026-11-17 (measured on
+// only 25 RIPE Atlas probes: right for 68%, +5 right and -3 lost). APNIC is off: measured
+// on 325 probes it changed nothing (+54 right, -52 lost; right for 54.5%). Adding a name
+// here is all it takes to read another registry.
+var whoisTextDumps = map[string]bool{"ripe-inetnum": true, "afrinic": true}
 
 // whois-ignore.txt lists words that are also the name of some town but in a
 // network description almost never mean that town (see the file).

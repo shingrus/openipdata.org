@@ -9,7 +9,7 @@ import (
 	"openipdata.org/hatchet/geofeeds"
 )
 
-// The whois text layer (37-whois-text). sync-geofeeds reads the free text of the RIPE inetnum
+// The whois text layer (37-whois-text). sync-geofeeds reads the free text of the RIPE and AFRINIC inetnum
 // objects (descr and netname lines), names the city a text mentions (a place of GeoNames in the
 // object's own country) and uploads the rows to the fixed R2 key geofeeds.WhoisTextKey.
 // build-geo-data puts the file in as it is, with -same-country: the description names a place,

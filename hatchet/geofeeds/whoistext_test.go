@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -426,6 +427,62 @@ func TestUploadWhoisTextGate(t *testing.T) {
 
 // The geoloc layer and the text layer read country: the same way: the first one, upper
 // case, cut at a space, a tab or "#".
+// Two registries: each row carries the registry of its own dump, also when the first dump
+// names no city at all, and the AFRINIC dump (every object type in one file) gives only its inetnums.
+func TestDiscoverWhoisTextRegistries(t *testing.T) {
+	run := func(ripeText string) string {
+		ripe := gzipped(t, ripeText)
+		afrinic := gzipped(t, "inet6num: 2001:db8::/32\ndescr: Berlin\ncountry: DE\n\n"+
+			"person: Berlin Amsterdam\naddress: Berlin\n\n"+
+			"inetnum: 203.0.113.0 - 203.0.113.255\ndescr: Acme in Berlin\ncountry: DE\n")
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ripe.gz", func(w http.ResponseWriter, r *http.Request) { w.Write(ripe) })
+		mux.HandleFunc("/afrinic.gz", func(w http.ResponseWriter, r *http.Request) { w.Write(afrinic) })
+		mux.HandleFunc("/cities.zip", func(w http.ResponseWriter, r *http.Request) { w.Write(citiesZip(t, testCities)) })
+		server := httptest.NewServer(mux)
+		defer server.Close()
+		p := &Pipeline{
+			store:     newFakeStore(),
+			DataDir:   t.TempDir(),
+			dumps:     []dump{{"ripe-inetnum", "ripe", server.URL + "/ripe.gz"}, {"afrinic", "afrinic", server.URL + "/afrinic.gz"}},
+			caidaBase: server.URL + "/caida", listPages: []string{},
+			geonames:     server.URL + "/cities.zip",
+			now:          func() time.Time { return time.Date(2026, 11, 17, 5, 0, 0, 0, time.UTC) },
+			allowPrivate: true,
+		}
+		out, err := p.Discover(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Sources["afrinic"].WhoisText != 1 {
+			t.Errorf("afrinic: %+v", out.Sources["afrinic"])
+		}
+		return readGzip(t, filepath.Join(p.dir(), OutDir, WhoisTextFile))
+	}
+	const header = "prefix,country,region,city,source\n"
+	both := run("inetnum: 192.0.2.0 - 192.0.2.255\ndescr: Acme in Amsterdam\ncountry: NL\n")
+	if want := header + "192.0.2.0/24,NL,,Amsterdam,whois-text:ripe\n203.0.113.0/24,DE,,Berlin,whois-text:afrinic\n"; both != want {
+		t.Errorf("both registries:\n%s\nwant:\n%s", both, want)
+	}
+	onlyAfrinic := run("inetnum: 192.0.2.0 - 192.0.2.255\ndescr: no place here\ncountry: NL\n")
+	if want := header + "203.0.113.0/24,DE,,Berlin,whois-text:afrinic\n"; onlyAfrinic != want {
+		t.Errorf("afrinic only:\n%s\nwant:\n%s", onlyAfrinic, want)
+	}
+}
+
+// The text layer reads RIPE and AFRINIC, not APNIC (measured: no gain). Each name must be a dump
+// of the list, or the registry would silently not be read.
+func TestWhoisTextDumps(t *testing.T) {
+	if !whoisTextDumps["ripe-inetnum"] || !whoisTextDumps["afrinic"] || whoisTextDumps["apnic-inetnum"] {
+		t.Errorf("whoisTextDumps = %v", whoisTextDumps)
+	}
+	for name := range whoisTextDumps {
+		if !slices.ContainsFunc(defaultDumps, func(d dump) bool { return d.Name == name }) {
+			t.Errorf("%q is not a dump of defaultDumps", name)
+		}
+	}
+}
+
 func TestWhoisCountry(t *testing.T) {
 	tests := map[string]string{"NL": "NL", "nl": "NL", "NL # moved": "NL", "NL\t# moved": "NL", " nl\t": "NL", "NL#x": "NL", "": ""}
 	for in, want := range tests {

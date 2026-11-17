@@ -139,7 +139,7 @@ the task output has `ix_kept` with the reason, and the log has a warning. Needs 
 
 Finds every geofeed (RFC 8805) URL it can, checks each feed, and hands the checked rows to the
 geo database build through the private R2 bucket. It also turns the `geoloc:` points of whois
-inetnums, and the cities that the free text of RIPE inetnums names, into city rows for the same build. Nothing is published.
+inetnums, and the cities that the free text of RIPE and AFRINIC inetnums names, into city rows for the same build. Nothing is published.
 
 | Task | Runs after | Does |
 |---|---|---|
@@ -299,9 +299,11 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   the last upload (`whois-upload.json`), or fewer than 20,000 rows on the first upload, is refused;
   `force_upload` skips it. A refusal or any other problem with this upload is a warning, not a failure: the
   reason is in the task output (`whois.skipped`) and the geofeed rows are not affected.
-- Whois text layer (`37-whois-text.csv.gz`, one of the layers of `build-geo-data`). Many RIPE `inetnum` objects name a
-  city in their free text. While `discover` reads the RIPE `inetnum` dump (only that dump: APNIC and AFRINIC are not
-  measured yet; `whoisTextDumps` in `hatchet/geofeeds/whoistext.go` is the one place to switch another one on), it matches
+- Whois text layer (`37-whois-text.csv.gz`, one of the layers of `build-geo-data`). Many RIPE and AFRINIC `inetnum` objects name a
+  city in their free text. While `discover` reads the RIPE `inetnum` dump and the AFRINIC dump (AFRINIC is on as a live
+  test since 2026-11-17: measured on only 25 RIPE Atlas probes, right for 68%, +5 right and -3 lost; APNIC is off: on 325
+  probes it changed nothing, +54 right and -52 lost; `whoisTextDumps` in `hatchet/geofeeds/whoistext.go` is the one place
+  to switch a registry on or off), it matches
   the text of every IPv4 `inetnum` against the GeoNames places of the object's own country, so the 4.1 million objects
   are never kept; only a compact block (range, country, place) is kept for an object with a city. GeoNames is therefore
   loaded before the dumps are read (the same `cities1000` read as for the geoloc layer, one pass). Rules:
@@ -321,7 +323,7 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
     word on its own line, with `#` for comments, entries may have several words; a test checks every entry survives
     normalisation), a lone `saint` or `sainte`, a single word of 3 letters or fewer, a group of words that all have 2
     letters or fewer.
-  The file has one row per CIDR prefix of each block, region empty, `source` `whois-text:ripe`, sorted by start address
+  The file has one row per CIDR prefix of each block, region empty, `source` `whois-text:<registry>` (`ripe` or `afrinic`), sorted by start address
   (the broader block first); nested blocks are kept, the builder inserts the broader ones first, so the narrower one
   overrides its parent. It is written through a `.tmp` file; no rows, or a GeoNames problem (the two whois layers are then both
   skipped), keeps the previous file. The task output (`whois_text`) has the objects read, the blocks with a city, the dropped
@@ -573,7 +575,7 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   does not learn from the geofeed rows directly, but its MMDB-hop part reads the published MMDB (which holds geofeed cities), like the
   MMDB hop votes of `35-rdns-wide`.
 - `37-whois-text` (optional, `-same-country`, between `36-mlab` and `38-asn-geofeed`, so every later layer replaces it) is the city that the
-  `descr:` and `netname:` lines of a RIPE inetnum name, written by `sync-geofeeds` (above) at `internal/layers/37-whois-text.csv.gz` in the
+  `descr:` and `netname:` lines of a RIPE or AFRINIC inetnum name, written by `sync-geofeeds` (above) at `internal/layers/37-whois-text.csv.gz` in the
   private R2 bucket. The description names a place, but the record's country may be the holder's, so it adds cities and never changes a country.
   `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2 layers (saved in `geo/downloads/`) and puts it in the
   layers dir as it is. An object older than 14 days, a missing object or any fetch error skips the layer (`skipped_layers`, a warning); a missing
