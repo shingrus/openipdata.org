@@ -61,7 +61,8 @@ func (s *server) networkInfo(n asnRecord) netSnap {
 // to the network page; a dash when nothing is known), Prefix (the announced
 // prefix, to its page; left out when unknown) and Domain (the site; left out
 // when unknown). Without the ASN data the MMDB text stands for the organization.
-func (ns netSnap) rows() []row {
+// orgRow is the Organization row alone (none when unknown).
+func (ns netSnap) orgRow() []row {
 	var l []row
 	switch name := firstNonEmpty(ns.Name, ns.Org); {
 	case ns.Name != "" && validSlug(ns.Slug):
@@ -69,6 +70,11 @@ func (ns netSnap) rows() []row {
 	case name != "":
 		l = append(l, row{K: "Organization", Parts: []part{{Text: name}}})
 	}
+	return l
+}
+
+func (ns netSnap) rows() []row {
+	l := ns.orgRow()
 	nw := row{K: "Network"}
 	if ns.ASN != 0 {
 		as := part{Text: asnText(ns.ASN), Sp: true}

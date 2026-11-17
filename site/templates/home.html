@@ -1,11 +1,11 @@
 {{template "top" .}}{{with .Panel}}{{template "panel" .}}{{end}}{{with .Net}}<section class="panel">
-<div class="head"><h2>Network</h2><a class="r" href="{{.Href}}">{{.ASN}} &rarr;</a></div>
+<div class="head"><h2>Network</h2><span class="r">{{if .Handle}}<a href="{{.Href}}">{{.Handle}}</a> {{end}}<a href="{{.Href}}">{{.ASN}}</a></span></div>
 <div class="cells">
 <div><span>Type</span><b>{{.Type}}</b></div>
 <div><span>Country</span><b>{{if .CountryHref}}<a href="{{.CountryHref}}">{{.Country}}</a>{{else}}{{.Country}}{{end}}</b></div>
 <div><span>Role</span><b>{{.Role}}</b></div>
-<div><span>IPv4 prefixes</span><b>{{.N4}}</b></div>
-<div><span>IPv6 prefixes</span><b>{{.N6}}</b></div>
+<div><span>Domain</span><b>{{if .DomainHref}}<a href="{{.DomainHref}}" rel="nofollow noopener">{{.Domain}}</a>{{else}}{{.Domain}}{{end}}</b></div>
+<div><span>Prefix</span><b>{{if .PrefixHref}}<a href="{{.PrefixHref}}">{{.Prefix}}</a>{{else}}{{.Prefix}}{{end}}</b></div>
 <div><span>IPv4 addresses</span><b>{{.Addr}}</b></div>
 </div>
 </section>

@@ -426,17 +426,22 @@ func TestASNLookupRedirectAndLink(t *testing.T) {
 		}
 	}
 
-	// The panel rows: the organization links to its page, the Network row links
-	// the handle and the AS number to the network page, then Prefix and Domain.
+	// The connection panel has the organization row only; the handle, AS number,
+	// prefix and domain are in the Network panel.
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
 	for _, x := range []string{
 		`<dt>Organization</dt><dd><a href="/asn-example-net">Example Net</a></dd>`,
-		`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>`,
-		`<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
-		`<dt>Domain</dt><dd><a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`,
+		`<span class="r"><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></span>`,
+		`<div><span>Prefix</span><b><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></b></div>`,
+		`<div><span>Domain</span><b><a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></b></div>`,
 	} {
 		if !strings.Contains(body, x) {
 			t.Errorf("panel lacks %s", x)
+		}
+	}
+	for _, k := range []string{"Network", "Prefix", "Domain"} {
+		if strings.Contains(body, "<dt>"+k+"</dt>") {
+			t.Errorf("connection panel has a %s row", k)
 		}
 	}
 }

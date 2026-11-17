@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"html/template"
@@ -163,12 +164,17 @@ func (s *server) serveShare(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	p := s.panelFor(r.Context(), "", a)
+	p := s.panelFor("", a)
 	if p.snap == nil {
 		reply(http.StatusBadRequest, struct{}{})
 		return
 	}
 	sn := *p.snap
+	if sn.Network.InData { // the report shows the domain as a row (it has no Network panel): one read
+		s.asnf.read(func(db *sql.DB, _ *asnData) {
+			sn.Network.Domain = clip(asnDomain(r.Context(), db, sn.Network.ASN), 253)
+		})
+	}
 	if token != "" && s.zone != "" {
 		if val, found, err := s.redis.hget("beacon:"+token, "resolver_ip"); err == nil && found {
 			if ra, ok := parseAddr(val); ok && s.public(ra) {

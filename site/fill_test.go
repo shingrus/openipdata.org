@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -207,7 +206,7 @@ func TestAddFillIgnoresOtherRows(t *testing.T) {
 		{"2001:db8::9", []string{"X", "IPv4", "IPv6", "Organization", "Y", "Network", "Prefix"}},
 	} {
 		a := netip.MustParseAddr(c.addr)
-		p := s.panelFor(context.Background(), "Your connection", a)
+		p := s.panelFor("Your connection", a)
 		p.Rows = append([]row{{K: "X", V: "x"}}, p.Rows...)
 		p.Rows = slices.Insert(p.Rows, 3, row{K: "Y", V: "y"})
 		if !s.addFill(&p, a) {

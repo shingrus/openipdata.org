@@ -4,8 +4,6 @@ package main
 // two MMDBs know about it, and how that is shown. Nothing here logs an address.
 
 import (
-	"context"
-	"database/sql"
 	"html/template"
 	"log"
 	"math"
@@ -99,11 +97,19 @@ func clientAddr(r *http.Request, header string) (netip.Addr, bool) {
 		return ip, true
 	}
 	v := r.Header.Values(header)
+	if len(v) == 0 && testAddr.IsValid() {
+		return testAddr, true // local work only: a direct loopback request with no header (nginx always sets it)
+	}
 	if len(v) != 1 {
 		return netip.Addr{}, false
 	}
 	return parseAddr(v[0])
 }
+
+// testAddr is TEST_IP: the visitor address of a request that comes straight
+// from loopback without the real-IP header, for local work (a browser on the
+// developer's machine). Never set on a server; behind nginx it changes nothing.
+var testAddr netip.Addr
 
 // query is what the raw query string of "/" asks for.
 type query struct {
@@ -467,7 +473,7 @@ func (s *server) addrData(a netip.Addr) (g geoRecord, n asnRecord, info netSnap)
 // panelFor builds the panel for a public or non-public address: the family
 // row, the Network row and the Prefix row, in this order (the visitor's own
 // page rearranges them, see visitorRows).
-func (s *server) panelFor(ctx context.Context, title string, a netip.Addr) panel {
+func (s *server) panelFor(title string, a netip.Addr) panel {
 	p := panel{Title: title}
 	if !s.public(a) {
 		p.Addr, p.Msg = a.String(), "Not a public address"
@@ -486,10 +492,14 @@ func (s *server) panelFor(ctx context.Context, title string, a netip.Addr) panel
 	if a.Is4() {
 		family, fam = "IPv4", 4
 	}
-	if info.InData { // the network is in the ASN data: its domain, one read (unknown stays empty)
-		s.asnf.read(func(db *sql.DB, _ *asnData) { info.Domain = clip(asnDomain(ctx, db, info.ASN), 253) })
+	// With the network in the ASN data the Network panel below has the handle, the
+	// AS number, the prefix and the domain, so this panel keeps only the
+	// organization; without it everything known is a row here.
+	net := info.rows()
+	if info.InData {
+		net = info.orgRow()
 	}
-	p.Rows = append([]row{{K: family, V: a.String(), Own: true, Copy: true}}, info.rows()...)
+	p.Rows = append([]row{{K: family, V: a.String(), Own: true, Copy: true}}, net...)
 	p.Copy = true
 	p.snap = &snapshot{Created: s.now().UTC().Format(time.RFC3339), IP: a.String(), Family: fam, Network: info}
 	if g.CityName != "" || g.CountryCode != "" || g.CountryName != "" {
@@ -556,9 +566,12 @@ func (s *server) addDNS(p *panel) bool {
 	if s.zone == "" || p.Msg != "" {
 		return false
 	}
-	i := slices.IndexFunc(p.Rows, func(r row) bool { return r.K == "Network" }) + 1
-	for i > 0 && i < len(p.Rows) && (p.Rows[i].K == "Prefix" || p.Rows[i].K == "Domain") { // after the network rows (netSnap.rows)
-		i++
+	// After the network rows (netSnap.rows): the last of Organization, Network, Prefix, Domain.
+	i := 0
+	for j, r := range p.Rows {
+		if r.K == "Organization" || r.K == "Network" || r.K == "Prefix" || r.K == "Domain" {
+			i = j + 1
+		}
 	}
 	if i == 0 {
 		i = len(p.Rows)

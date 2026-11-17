@@ -2,9 +2,9 @@ package main
 
 // The Network panel of the visitor's page and of a lookup page: the network
 // (AS) of the address, as a grid of cells. The panel exists only when the ASN
-// data is loaded and has the network. Country, prefix counts and addresses
-// come from the in-memory record; type and role are read with one
-// parameterised query per page view under the read lock of asnFile.
+// data is loaded and has the network. The handle, the country, the announced
+// prefix and the addresses come from memory; type, role and domain are read
+// with parameterised queries per page view under the read lock of asnFile.
 
 import (
 	"context"
@@ -18,11 +18,12 @@ import (
 )
 
 type netPanel struct {
-	ASN, Href            string // "AS2856" and its page
+	Handle, ASN, Href    string // "BT-UK-AS", "AS2856" and the network's page (the head)
 	Type                 string
 	Country, CountryHref string
 	Role                 string
-	N4, N6               string
+	Domain, DomainHref   string // DomainHref: the site, only for a plain host name (domainKV)
+	Prefix, PrefixHref   string // the longest announced prefix of the address and its page
 	Addr                 string
 }
 
@@ -100,6 +101,9 @@ func (s *server) netPanelFor(ctx context.Context, a netip.Addr) *netPanel {
 		found     bool
 		cname     string
 		cat, role string
+		dom       string
+		pfx       netip.Prefix
+		hasPfx    bool
 	)
 	loaded := s.asnf.read(func(db *sql.DB, d *asnData) {
 		if nw, found = d.find(num); !found || nw == nil {
@@ -113,25 +117,34 @@ func (s *server) netPanelFor(ctx context.Context, a netip.Addr) *netPanel {
 		if err == nil {
 			cat, role = clip(c.String, 120), clip(r.String, 120)
 		}
+		dom = clip(asnDomain(ctx, db, num), 253) // missing only means unknown
+		pfx, _, hasPfx = d.idx.longest(a)
 	})
 	if !loaded || !found {
 		return nil
 	}
 	p := &netPanel{
-		ASN:  "AS" + strconv.FormatUint(uint64(num), 10),
-		Href: asnHref(num),
-		Type: orDash(words(cat)),
-		Role: orDash(roleText(role)),
-		N4:   dash,
-		N6:   dash,
+		Handle: clip(nw.handle, 120),
+		ASN:    asnText(num),
+		Href:   asnHref(num),
+		Type:   orDash(words(cat)),
+		Role:   orDash(roleText(role)),
+		Domain: dash,
+		Prefix: dash,
+	}
+	if dk := domainKV(dom); dom != "" {
+		p.Domain, p.DomainHref = dk.V, dk.Href
+	}
+	if hasPfx {
+		p.Prefix = pfx.String()
+		if prefixOK(pfx) {
+			p.PrefixHref = prefixHref(pfx)
+		}
 	}
 	p.Country = dash
 	if nw.cc != "" {
 		p.Country = clip(cname, 120)
 		p.CountryHref = s.countryHref(nw.cc)
-	}
-	if nw.hasPfxes {
-		p.N4, p.N6 = fmtInt(int64(nw.n4)), fmtInt(int64(nw.n6))
 	}
 	p.Addr = fmtInt(nw.v4) // in full, like every IPv4 count of the site
 	return p

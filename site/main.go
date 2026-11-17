@@ -407,14 +407,14 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	case "lookup":
 		input = q.addr.String()
 		title = input + " · openipdata.org"
-		p = s.panelFor(r.Context(), "Lookup", q.addr)
+		p = s.panelFor("Lookup", q.addr)
 	default: // the visitor: private data
 		cache = "private, no-store"
 		title, desc, canon = homeTitle, homeDesc, s.canon("/")
 		if a, ok := clientAddr(r, s.realIP); ok {
 			visitor = a
 			input = a.String()
-			p = s.panelFor(r.Context(), "Your connection", a)
+			p = s.panelFor("Your connection", a)
 			fill = s.addFill(&p, a)
 			res = s.addDNS(&p)
 			if p.Msg == "" {
@@ -555,6 +555,14 @@ func main() {
 	}
 	if realIP != "" && !validHeaderName(realIP) {
 		fatal("REAL_IP_HEADER", errors.New("not a header name"))
+	}
+	if v := os.Getenv("TEST_IP"); v != "" {
+		a, ok := parseAddr(v)
+		if !ok {
+			fatal("TEST_IP", errors.New("not an IP address"))
+		}
+		testAddr = a
+		log.Printf("TEST_IP is set: a loopback request without the %s header is shown this address", realIP)
 	}
 
 	urls := map[string]string{"V4_URL": "https://v4.openipdata.org/", "V6_URL": "https://v6.openipdata.org/"}

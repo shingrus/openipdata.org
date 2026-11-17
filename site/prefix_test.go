@@ -544,10 +544,10 @@ func TestPrefixLinksOnOtherPages(t *testing.T) {
 		t.Error("IPv6 prefix not linked")
 	}
 
-	// The lookup panel shows the longest announced prefix in its Prefix row and links it.
+	// The Network panel shows the longest announced prefix in its Prefix cell and links it.
 	for _, c := range []struct{ target, want string }{
-		{"/?203.0.113.9", `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`},
-		{"/?203.0.113.200", `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></dd>`}, // the MMDB says /24
+		{"/?203.0.113.9", `<div><span>Prefix</span><b><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></b></div>`},
+		{"/?203.0.113.200", `<div><span>Prefix</span><b><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></b></div>`}, // the MMDB says /24
 		{"/?2001:db8::5", `<a href="/prefix/2001:db8::/32">2001:db8::/32</a>`},
 	} {
 		if b := get(s, "GET", c.target).Body.String(); !strings.Contains(b, c.want) {
@@ -558,9 +558,9 @@ func TestPrefixLinksOnOtherPages(t *testing.T) {
 	if b := get(s, "GET", "/?192.0.2.1").Body.String(); !strings.Contains(b, "<dt>Network</dt><dd>—</dd>") || strings.Contains(b, "<dt>Prefix") {
 		t.Error("an address with no prefix")
 	}
-	// The visitor's page stays private; its Prefix row links the prefix.
+	// The visitor's page stays private; its Network panel links the prefix.
 	w := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "203.0.113.9")
-	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || !strings.Contains(w.Body.String(), `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
+	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || !strings.Contains(w.Body.String(), `<div><span>Prefix</span><b><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></b></div>`) {
 		t.Errorf("visitor page: %v", w.Header())
 	}
 	// Without the ASN data the MMDB tree prefix is linked in the Prefix row.

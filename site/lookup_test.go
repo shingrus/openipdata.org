@@ -423,3 +423,20 @@ func TestEmptyBoxAndTitles(t *testing.T) {
 		}
 	}
 }
+
+func TestTestAddr(t *testing.T) {
+	s := fixtureServer(t)
+	testAddr = netip.MustParseAddr("203.0.113.9")
+	t.Cleanup(func() { testAddr = netip.Addr{} })
+	// Straight from loopback with no header: the test address.
+	if b := fromPeer(s, "/", "127.0.0.1:5000").Body.String(); !strings.Contains(b, "203.0.113.9") {
+		t.Error("loopback without the header: the test address is not shown")
+	}
+	// Behind nginx the header wins, and another peer is never given it.
+	if b := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "198.51.100.7").Body.String(); strings.Contains(b, "203.0.113.9") {
+		t.Error("the header did not win over the test address")
+	}
+	if b := fromPeer(s, "/", "198.51.100.1:5000").Body.String(); strings.Contains(b, "203.0.113.9") {
+		t.Error("a non-loopback peer got the test address")
+	}
+}

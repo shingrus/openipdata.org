@@ -38,26 +38,16 @@ func TestNetworkRowVariants(t *testing.T) {
 		rows []fixtureRow
 		want string
 	}{
-		{"slug present: organization linked, handle and AS to the network, prefix, domain", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", slug: "example-net", cc: "PT", v4: 512, category: "isp", domain: "example.net"}},
-			`<dt>Organization</dt><dd><a href="/asn-example-net">Example Net</a></dd>
-<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>
-` + pfx + "\n" + dom},
-		{"no slug: organization is plain text, no domain row", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512}},
-			`<dt>Organization</dt><dd>Example Net</dd>
-<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>
-` + pfx},
-		{"category is not shown, the domain is", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512, category: "cable_dsl_isp", domain: "example.net"}},
-			`<dt>Organization</dt><dd>Example Net</dd>
-<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>
-` + pfx + "\n" + dom},
+		{"slug present: organization linked; network, prefix and domain are in the Network panel", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", slug: "example-net", cc: "PT", v4: 512, category: "isp", domain: "example.net"}},
+			`<dt>Organization</dt><dd><a href="/asn-example-net">Example Net</a></dd>`},
+		{"no slug: organization is plain text, no other row", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512}},
+			`<dt>Organization</dt><dd>Example Net</dd>`},
+		{"category and domain are not rows of the connection panel", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", cc: "PT", v4: 512, category: "cable_dsl_isp", domain: "example.net"}},
+			`<dt>Organization</dt><dd>Example Net</dd>`},
 		{"invalid slug: organization is plain text", []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", org: "Example Net", slug: "Bad Slug", cc: "PT", v4: 512}},
-			`<dt>Organization</dt><dd>Example Net</dd>
-<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>
-` + pfx},
-		{"no handle: the MMDB text, plain AS number, prefix", []fixtureRow{{asn: 64500, noMetadata: true, noPrefixKeys: true}},
-			`<dt>Organization</dt><dd>Example Net</dd>
-<dt>Network</dt><dd>AS64500</dd>
-` + pfx},
+			`<dt>Organization</dt><dd>Example Net</dd>`},
+		{"no handle: the MMDB text only (the network is in the data)", []fixtureRow{{asn: 64500, noMetadata: true, noPrefixKeys: true}},
+			`<dt>Organization</dt><dd>Example Net</dd>`},
 		{"network not in the data: the MMDB text, plain AS number, prefix", []fixtureRow{{asn: 64999, handle: "OTHER", org: "Other", cc: "PT", v4: 1}},
 			`<dt>Organization</dt><dd>Example Net</dd>
 <dt>Network</dt><dd>AS64500</dd>
@@ -100,9 +90,8 @@ func netRowsOf(t *testing.T, body string) string {
 	return strings.Join(out, "\n")
 }
 
-// Rows as rendered: the visitor's page has IPv4, IPv6, Organization, Network, Prefix,
-// Domain, DNS resolver, Browser; a lookup page has the address, Organization, Network,
-// Prefix and Domain.
+// Rows as rendered with ASN data: the visitor's page has IPv4, IPv6, Organization,
+// DNS resolver, Browser; a lookup page has the address and Organization.
 func TestPanelRowOrder(t *testing.T) {
 	keys := func(body string) []string {
 		var out []string
@@ -120,20 +109,29 @@ func TestPanelRowOrder(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	b := w.Body.String()
-	if got := strings.Join(keys(b), ","); got != "IPv4,IPv6,Organization,Network,Prefix,Domain,DNS resolver,Browser" {
+	if got := strings.Join(keys(b), ","); got != "IPv4,IPv6,Organization,DNS resolver,Browser" {
 		t.Errorf("visitor rows: %s", got)
 	}
-	if want := `<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>`; !strings.Contains(b, want) || !strings.Contains(b, `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
-		t.Error("the visitor page lacks the Network or the Prefix row")
+	// The network, handle, prefix and domain are in the Network panel, not rows.
+	for _, x := range []string{`<span class="r"><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></span>`,
+		`<div><span>Prefix</span><b><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></b></div>`} {
+		if !strings.Contains(b, x) {
+			t.Errorf("the visitor page lacks %s", x)
+		}
+	}
+	for _, k := range []string{"Network", "Prefix", "Domain"} {
+		if strings.Contains(b, "<dt>"+k+"</dt>") {
+			t.Errorf("the connection panel has a %s row", k)
+		}
 	}
 	if i, j := strings.Index(b, "<dl>"), strings.Index(b, `<div class="place`); j < 0 || i < j {
 		t.Error("the place block is not before the rows")
 	}
 	b = get(s, "GET", "/?203.0.113.9").Body.String()
-	if got := strings.Join(keys(b), ","); got != "IPv4,Organization,Network,Prefix,Domain" {
+	if got := strings.Join(keys(b), ","); got != "IPv4,Organization" {
 		t.Errorf("lookup rows: %s", got)
 	}
-	if got := strings.Join(keys(get(s, "GET", "/?2001:db8::5").Body.String()), ","); got != "IPv6,Organization,Network,Prefix,Domain" {
+	if got := strings.Join(keys(get(s, "GET", "/?2001:db8::5").Body.String()), ","); got != "IPv6,Organization" {
 		t.Errorf("lookup v6 rows: %s", got)
 	}
 }

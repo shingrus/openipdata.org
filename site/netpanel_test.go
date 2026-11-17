@@ -56,13 +56,13 @@ func TestNetworkPanelLookup(t *testing.T) {
 		v4Prefixes: []string{"203.0.113.0/24", "198.51.100.0/24"}, v6Prefixes: []string{"2001:db8::/32"}}})
 	b := get(s, "GET", "/?203.0.113.9").Body.String()
 	want := `<section class="panel">
-<div class="head"><h2>Network</h2><a class="r" href="/as64500">AS64500 &rarr;</a></div>
+<div class="head"><h2>Network</h2><span class="r"><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></span></div>
 <div class="cells">
 <div><span>Type</span><b>ISP</b></div>
 <div><span>Country</span><b><a href="/portugal-asn-list">Portugal</a></b></div>
 <div><span>Role</span><b>Tier 1 transit</b></div>
-<div><span>IPv4 prefixes</span><b>2</b></div>
-<div><span>IPv6 prefixes</span><b>1</b></div>
+<div><span>Domain</span><b><a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></b></div>
+<div><span>Prefix</span><b><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></b></div>
 <div><span>IPv4 addresses</span><b>1,250,000</b></div>
 </div>
 </section>`
@@ -76,7 +76,7 @@ func TestNetworkPanelLookup(t *testing.T) {
 	}
 	// The visitor's own page has it too.
 	v := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()
-	if !strings.Contains(v, `<div class="head"><h2>Network</h2><a class="r" href="/as64500">`) {
+	if !strings.Contains(v, `<div class="head"><h2>Network</h2><span class="r"><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></span></div>`) {
 		t.Error("visitor page has no Network panel")
 	}
 }
@@ -88,8 +88,8 @@ func TestNetworkPanelUnknowns(t *testing.T) {
 	want := `<div><span>Type</span><b>—</b></div>
 <div><span>Country</span><b>—</b></div>
 <div><span>Role</span><b>—</b></div>
-<div><span>IPv4 prefixes</span><b>—</b></div>
-<div><span>IPv6 prefixes</span><b>—</b></div>
+<div><span>Domain</span><b>—</b></div>
+<div><span>Prefix</span><b>—</b></div>
 <div><span>IPv4 addresses</span><b>0</b></div>`
 	if !strings.Contains(b, want) {
 		t.Errorf("unknown cells:\n%s", b)
@@ -131,7 +131,7 @@ func TestVisitorRowOrderWithDNS(t *testing.T) {
 	s.useBeacon("r.openipdata.org", "127.0.0.1:1")
 	b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String()
 	last := -1
-	for _, k := range []string{"IPv4", "IPv6", "Network", "DNS resolver", "Browser"} {
+	for _, k := range []string{"IPv4", "IPv6", "Organization", "DNS resolver", "Browser"} {
 		i := strings.Index(b, "<dt>"+k+"</dt>")
 		if i <= last {
 			t.Fatalf("row %s at %d, after %d", k, i, last)

@@ -117,8 +117,8 @@ func TestBrowserRowPage(t *testing.T) {
 	if strings.Contains(head, `class="hd"`) || !strings.Contains(head, `class="sh"`) {
 		t.Errorf("head: %s", head)
 	}
-	if i, j := strings.Index(b, "<dt>Network</dt>"), strings.Index(b, "<dt>Browser</dt>"); i < 0 || j < i {
-		t.Error("the Browser row is not after Network")
+	if i, j := strings.Index(b, "<dt>Organization</dt>"), strings.Index(b, "<dt>Browser</dt>"); i < 0 || j < i {
+		t.Error("the Browser row is not after Organization")
 	}
 	// Unknown browser and system: a dash and the button; an empty User-Agent too.
 	for _, ua := range []string{"curl/8.7.1", ""} {

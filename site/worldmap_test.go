@@ -588,9 +588,10 @@ func TestMapSizes(t *testing.T) {
 				{K: "Prefix", Parts: []part{{Text: "203.0.113.0/24", Href: "/prefix/203.0.113.0/24"}}},
 				{K: "Domain", Parts: []part{{Text: "example-network-domain.net", Href: "https://example-network-domain.net/?utm_source=openipdata.org", Ext: true}}}},
 			Hdr: template.JS(strings.Repeat("x", 600)), Br: browserRowFor("Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0", "")} // the biggest icons: Firefox and Linux
-		v.Net = &netPanel{ASN: "AS2856", Href: "/as2856",
+		v.Net = &netPanel{Handle: "BT-UK-AS", ASN: "AS2856", Href: "/as2856",
 			Type: "Education research", Country: "United Kingdom", CountryHref: "/united-kingdom-asn-list", Role: "Access provider",
-			N4: "1,234", N6: "123", Addr: "12,402,688"} // a long Network panel
+			Domain: "example-network-domain.net", DomainHref: "https://example-network-domain.net/?utm_source=openipdata.org",
+			Prefix: "2001:db8:1234::/48", PrefixHref: "/prefix/2001:db8:1234::/48", Addr: "12,402,688"} // a long Network panel
 		v.API = s.apiPanelFor("/json", netip.MustParseAddr("203.0.113.9"))
 		v.CSS = v.homeCSS()
 		page, err := render(s.tmpl, "home.html", v)
