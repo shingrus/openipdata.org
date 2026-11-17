@@ -236,6 +236,7 @@ func (s *server) llmsText() string {
 	b.WriteString("[CC0 1.0](" + cc0URL + "). " + sourcesText + "\n")
 	b.WriteString("\n## Pages\n\n")
 	b.WriteString("- [Download](" + o + downloadPath + ")\n")
+	b.WriteString("- [Bulk IP lookup](" + o + bulkPath + "): up to 1000 addresses at once, as a table or CSV\n")
 	for _, rk := range rankings {
 		b.WriteString("- [" + rk.title + "](" + o + rk.path + ")\n")
 	}
@@ -248,6 +249,8 @@ func (s *server) llmsText() string {
 	b.WriteString("- " + o + "/api/as<number>: one network as JSON\n")
 	b.WriteString("- " + o + "/json: your own address as JSON (country, city, coordinates, network)\n")
 	b.WriteString("- " + o + "/json/<ip>: one address as JSON\n")
+	b.WriteString("- " + o + "/json/<ip>,<ip>: up to 100 addresses as a JSON array, one entry per address, in order\n")
+	b.WriteString("- POST " + o + "/json: up to 1000 addresses in the body (text or a JSON array of strings), the same JSON array\n")
 	b.WriteString("- " + o + "/<country>-asn-list: the networks of one country (for example /united-kingdom-asn-list)\n")
 	return b.String()
 }

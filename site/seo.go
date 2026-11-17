@@ -168,6 +168,7 @@ func (s *server) static() *seoStatic {
 	pg := []byte(urlsetOpen)
 	pg = appendLoc(pg, "url", eo, "/")
 	pg = appendLoc(pg, "url", eo, downloadPath)
+	pg = appendLoc(pg, "url", eo, bulkPath)
 	for _, rk := range rankings {
 		pg = appendLoc(pg, "url", eo, rk.path)
 	}

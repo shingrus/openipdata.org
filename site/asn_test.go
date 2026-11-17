@@ -697,7 +697,7 @@ func TestASNPageHygieneAndSize(t *testing.T) {
 		if n := strings.Count(text, "<script"); n != 2 || strings.Contains(text, "<script src") || strings.Contains(text, `<link rel="stylesheet"`) || strings.Contains(text, "<img") {
 			t.Errorf("%s: scripts %d or an external resource", c.target, n)
 		}
-		if !strings.Contains(text, `aria-label="GitHub"`) || !strings.Contains(text, `id="theme"`) || !strings.Contains(text, `<form class="lookup" method="get" action="/">`) {
+		if !strings.Contains(text, `aria-label="GitHub"`) || !strings.Contains(text, `id="theme"`) || !strings.Contains(text, `<form class="lookup" method="post" action="/">`) {
 			t.Errorf("%s: header or lookup bar missing", c.target)
 		}
 		if strings.Contains(text, "<h2>Accuracy</h2>") {

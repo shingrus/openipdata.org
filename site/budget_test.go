@@ -41,6 +41,7 @@ type pageBudget struct {
 var pageBudgets = []pageBudget{
 	{"/", 13000, 4700, 110000, 2000 * time.Microsecond},                                    // 11426, 4199, 67537, 25µs
 	{"/download", 21000, 6900, 40000, 2000 * time.Microsecond},                             // 18649, 6240, 25772, 3µs
+	{"/bulk-ip-lookup", 16200, 5500, 30000, 2000 * time.Microsecond},                       // 14711, 5004, 22714, 2µs
 	{"/as64500", 16100, 5330, 130000, 2000 * time.Microsecond},                             // 14611, 4842, 104124, 77µs (name band and cells, no map, 2026-11-17; limits were 17900 raw, 6350 gz, 140000 alloc; before 16249, 5778, 124460)
 	{"/as64503", 79000, 12000, 1290000, 19000 * time.Microsecond},                          // 71991, 10877, 1028954, 1797µs (name band and cells, no map, 2026-11-17; gz limit was 13300, alloc 1490000; before 74125, 12086, 1060929)
 	{"/as64600", 32200, 6670, 490000, 7000 * time.Microsecond},                             // 29253, 6065, 389413, 712µs (name band and cells, no map, 2026-11-17; limits were 36600 raw, 8750 gz; before 33292, 7956, 434588)

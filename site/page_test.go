@@ -131,6 +131,8 @@ func TestStylePartsFollowThePage(t *testing.T) {
 		"download":     get(s, "GET", "/download").Body.String(),
 		"ranking":      get(as, "GET", "/top-asn-by-ip-address").Body.String(),
 		"status":       get(as, "GET", "/status").Body.String(),
+		"bulk":         get(s, "GET", "/bulk-ip-lookup").Body.String(),
+		"bulk results": post(s, "/bulk-ip-lookup", "ips=203.0.113.9+203.0.113.10").Body.String(),
 	}
 	seen := map[string]bool{}
 	for name, b := range pages {

@@ -109,6 +109,7 @@ type server struct {
 	origin     string                    // SITE_ORIGIN: the origin of the share links
 	seo        atomic.Pointer[seoStatic] // robots.txt, llms.txt and the fixed sitemaps for s.origin
 	dl         dlCache                   // the rendered /download page
+	bulk       bulkCache                 // the rendered GET /bulk-ip-lookup page
 	shareMu    [64]sync.Mutex            // updates of one report run one after another (see updateReport)
 	cspPnl     [8]string                 // csp of a page that has panel.js, by fill (1), res (2) and the Share button (4)
 	public     func(netip.Addr) bool
@@ -274,16 +275,32 @@ func (s *server) watch(ctx context.Context) {
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/share" { // the only route that takes POST
+	p, post := r.URL.Path, r.Method == http.MethodPost
+	isJSON := p == "/json" || strings.HasPrefix(p, "/json/")
+	switch {
+	case p == "/share": // takes POST only
 		s.serveShare(w, r)
 		return
-	}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
+	case post && p == "/":
+		s.servePostHome(w, r)
+		return
+	case post && p == bulkPath:
+		s.serveBulk(w, r)
+		return
+	case isJSON && (post || r.Method == http.MethodOptions):
+		s.serveIPJSON(w, r)
+		return
+	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+	default:
+		allow := "GET, HEAD"
+		if p == "/" || p == bulkPath || p == "/json" {
+			allow = "GET, HEAD, POST"
+		}
+		w.Header().Set("Allow", allow)
 		plain(w, http.StatusMethodNotAllowed, "method not allowed\n")
 		return
 	}
-	switch p := r.URL.Path; {
+	switch {
 	case p == "/":
 		s.serveHome(w, r)
 	case p == "/ip":
@@ -302,6 +319,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveReport(w, r)
 	case p == downloadPath:
 		s.serveDownload(w, r)
+	case p == bulkPath:
+		s.serveBulk(w, r)
 	case p == "/llms.txt":
 		s.serveLLMs(w, r)
 	case p == "/robots.txt":

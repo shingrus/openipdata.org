@@ -149,8 +149,8 @@ func TestRoutes(t *testing.T) {
 			t.Errorf("%s: %d", p, w.Code)
 		}
 	}
-	for _, m := range []string{"POST", "PUT", "DELETE"} {
-		if w := get(s, m, "/"); w.Code != 405 || w.Header().Get("Allow") != "GET, HEAD" {
+	for _, m := range []string{"PUT", "DELETE"} {
+		if w := get(s, m, "/"); w.Code != 405 || w.Header().Get("Allow") != "GET, HEAD, POST" {
 			t.Errorf("%s /: %d", m, w.Code)
 		}
 	}

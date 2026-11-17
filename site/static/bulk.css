@@ -1,0 +1,40 @@
+/* The bulk lookup page: with style.css it is the whole style of the page. */
+.head h1{font:inherit;color:var(--text);min-width:0}
+.bf{padding:16px 20px}
+.bf textarea{display:block;width:100%;min-height:200px;padding:12px 14px;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--line-2);border-radius:8px;font:400 14px/1.6 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;outline:0}
+.bf textarea:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-soft)}
+.bf textarea::placeholder{color:var(--faint)}
+.bb{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.bb button{height:42px;padding:0 20px;border:0;border-radius:7px;cursor:pointer;background:var(--accent);color:var(--accent-ink);font:600 14px/1 Geist,system-ui,sans-serif;white-space:nowrap}
+.bb .alt{background:var(--raised);color:var(--text);border:1px solid var(--line-2)}
+.bb .alt:hover{border-color:var(--accent)}
+.mut{margin:12px 0 0;font-size:13px;line-height:1.6;color:var(--muted)}
+.sum{margin-top:16px;padding-inline:2px;font-size:13px;line-height:1.6;color:var(--muted)}
+.sy{position:absolute;width:0;height:0;overflow:hidden}
+.cp{display:inline-grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer}
+.cp[hidden]{display:none}
+.cp:hover{color:var(--text);border-color:var(--line-2)}
+.cp svg{width:13px;height:13px}
+.cp .u2{display:none}
+.cp.ok{color:var(--accent);border-color:var(--accent)}
+.cp.ok .u1{display:none}
+.cp.ok .u2{display:inline}
+.code{position:relative}
+.code+.code{border-top:1px solid var(--line)}
+.code pre{margin:0;padding:14px 56px 14px 20px;overflow-x:auto;font:400 13px/1.6 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.tw{max-height:560px;overflow:auto}
+.bt{width:100%;border-collapse:collapse;font:400 13px/1.5 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+.bt th{position:sticky;top:0;padding:10px 12px;text-align:left;background:var(--panel);font:500 11px/1.3 Geist,system-ui,sans-serif;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line)}
+.bt td{padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.bt tbody tr:last-child td{border-bottom:0}
+.bt th:first-child,.bt td:first-child{padding-left:20px}
+.bt th:last-child,.bt td:last-child{padding-right:20px}
+.rc{display:flex;margin:-3px 0}
+.code .cp{position:absolute;top:10px;right:14px;z-index:2}
+.anote{padding:12px 20px;font-size:13px;line-height:1.6;color:var(--muted);border-top:1px solid var(--line)}
+@media (max-width:700px){
+  .bf{padding:14px 16px}
+  .code pre{padding-inline:16px 52px}
+  .anote{padding-inline:16px}
+  .bb button{flex:1 1 auto}
+}

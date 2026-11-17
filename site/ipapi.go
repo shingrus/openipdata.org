@@ -8,10 +8,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"html/template"
+	"io"
 	"net/http"
 	"net/netip"
 	"strings"
+	"unicode"
 )
 
 type ipJSON struct {
@@ -58,12 +61,94 @@ func writeIPJSON(w http.ResponseWriter, r *http.Request, code int, cache string,
 
 type errJSON struct {
 	IP    string `json:"ip,omitempty"`
+	Input string `json:"input,omitempty"`
 	Error string `json:"error"`
+}
+
+const (
+	jsonListMax = 100 // most addresses in the URL
+	jsonBodyMax = 64 << 10
+	jsonPostMax = bulkMax // most addresses in a POST body
+)
+
+// listEntry is the element of a list answer for one item.
+func (s *server) listEntry(item string) any {
+	a, ok := parseAddr(item)
+	if !ok {
+		in := item
+		if len(in) > 64 {
+			in = strings.ToValidUTF8(in[:64], "")
+		}
+		return errJSON{Input: in, Error: "not an IP address"}
+	}
+	if !s.public(a) {
+		return errJSON{IP: a.String(), Error: "not a public address"}
+	}
+	return s.ipJSONFor(a)
+}
+
+func (s *server) writeList(w http.ResponseWriter, r *http.Request, cache string, items []string) {
+	out := make([]any, len(items))
+	for i, it := range items {
+		out[i] = s.listEntry(it)
+	}
+	writeIPJSON(w, r, http.StatusOK, cache, out)
+}
+
+// postJSON answers POST /json: a JSON array of strings, or text split on white
+// space and commas.
+func (s *server) postJSON(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, jsonBodyMax))
+	if err != nil {
+		var mb *http.MaxBytesError
+		if errors.As(err, &mb) {
+			writeIPJSON(w, r, http.StatusRequestEntityTooLarge, "no-store", errJSON{Error: "body too large"})
+		} else {
+			writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{Error: "bad request"})
+		}
+		return
+	}
+	text := strings.TrimSpace(string(body))
+	var items []string
+	if strings.HasPrefix(text, "[") {
+		if json.Unmarshal([]byte(text), &items) != nil {
+			writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{Error: "bad JSON"})
+			return
+		}
+	} else {
+		items = strings.FieldsFunc(text, func(c rune) bool { return c == ',' || unicode.IsSpace(c) })
+	}
+	switch {
+	case len(items) == 0:
+		writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{Error: "no addresses"})
+	case len(items) > jsonPostMax:
+		writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{Error: "at most 1000 addresses"})
+	default:
+		s.writeList(w, r, "no-store", items)
+	}
 }
 
 // serveIPJSON answers /json and /json/<ip> (GET and HEAD).
 func (s *server) serveIPJSON(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/json"), "/")
+	switch r.Method {
+	case http.MethodOptions:
+		h := w.Header()
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Access-Control-Allow-Methods", "GET, HEAD, POST")
+		h.Set("Access-Control-Allow-Headers", "Content-Type")
+		h.Set("Access-Control-Max-Age", "86400")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case http.MethodPost:
+		if r.URL.Path != "/json" { // also /json/: nginx limits the body and rate of /json only
+			w.Header().Set("Allow", "GET, HEAD")
+			plain(w, http.StatusMethodNotAllowed, "method not allowed\n")
+			return
+		}
+		s.postJSON(w, r)
+		return
+	}
 	if rest == "" { // the visitor's own address
 		a, ok := clientAddr(r, s.realIP)
 		switch {
@@ -78,6 +163,10 @@ func (s *server) serveIPJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.Contains(rest, "/") { // anything after the address
 		writeIPJSON(w, r, http.StatusNotFound, asnCache, errJSON{Error: "not found"})
+		return
+	}
+	if strings.Contains(rest, ",") {
+		s.serveList(w, r, rest)
 		return
 	}
 	a, ok := parseAddr(rest)
@@ -97,6 +186,39 @@ func (s *server) serveIPJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeIPJSON(w, r, http.StatusOK, asnCache, s.ipJSONFor(a))
+}
+
+// serveList answers /json/<a>,<b>,...: an array, one entry per item.
+func (s *server) serveList(w http.ResponseWriter, r *http.Request, rest string) {
+	items := strings.Split(rest, ",")
+	if len(items) > jsonListMax {
+		writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{Error: "at most 100 addresses"})
+		return
+	}
+	canon := make([]string, len(items))
+	all := true
+	for i, it := range items {
+		if it == "" {
+			writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{Error: "not an IP address"})
+			return
+		}
+		a, ok := parseAddr(it)
+		if !ok {
+			all = false
+			continue
+		}
+		canon[i] = a.String()
+	}
+	if all {
+		if c := "/json/" + strings.Join(canon, ","); r.URL.Path != c || r.URL.RawPath != "" {
+			h := w.Header()
+			h.Set("Cache-Control", asnCache)
+			h.Set("Location", c)
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
+	}
+	s.writeList(w, r, asnCache, items)
 }
 
 // apiPanel is the "API" panel of the home and lookup pages: the curl command
