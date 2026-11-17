@@ -117,6 +117,9 @@ func TestExportRows(t *testing.T) {
 	if out.Whois.Skipped == "" || out.Whois.Uploaded {
 		t.Errorf("whois geo = %+v", out.Whois)
 	}
+	if out.WhoisText.Skipped == "" || out.WhoisText.Uploaded {
+		t.Errorf("whois text = %+v", out.WhoisText)
+	}
 	file, err := os.Open(filepath.Join(p.dir(), OutDir, RowsFile))
 	if err != nil {
 		t.Fatal(err)

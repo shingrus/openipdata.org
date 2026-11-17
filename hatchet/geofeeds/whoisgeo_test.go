@@ -285,7 +285,7 @@ var testCities = [][]string{
 func TestReadPlaces(t *testing.T) {
 	path := filepath.Join(t.TempDir(), geonamesFile)
 	os.WriteFile(path, citiesZip(t, testCities), 0o640)
-	x, err := readPlaces(path)
+	x, _, err := readPlaces(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestReadPlaces(t *testing.T) {
 		{"Former Capital", "52.43", "4.9", "NL", "200000", "PPLCH"},
 		{"Capital", "52.5", "4.9", "NL", "100000", "PPLC"},
 	}), 0o640)
-	if x, err = readPlaces(path); err != nil {
+	if x, _, err = readPlaces(path); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := x.biggestWithin("NL", 52.43, 4.9, 25); !ok || got.name != "Capital" {
@@ -313,13 +313,19 @@ func TestReadPlaces(t *testing.T) {
 		t.Errorf("a district is bigger but not a city: %+v, %v", got, ok)
 	}
 	os.WriteFile(path, []byte("not a zip"), 0o640)
-	if _, err := readPlaces(path); err == nil {
+	if _, _, err := readPlaces(path); err == nil {
 		t.Error("a broken zip was read")
 	}
 }
 
 // A copy younger than geonamesMaxAge is used without any request; an older
 // one is asked about; a failing server leaves the old copy in use.
+// loadPlaces4 is loadPlaces without the name index (these tests check the age rules only).
+func (p *Pipeline) loadPlaces4(ctx context.Context) (placeIndex, string, error) {
+	x, _, st, err := p.loadPlaces(ctx)
+	return x, st, err
+}
+
 func TestLoadPlacesAge(t *testing.T) {
 	var requests atomic.Int32
 	status := http.StatusOK
@@ -340,18 +346,18 @@ func TestLoadPlacesAge(t *testing.T) {
 	path := filepath.Join(p.dir(), "dumps", geonamesFile)
 
 	// No copy: downloaded.
-	if _, st, err := p.loadPlaces(context.Background()); err != nil || st != statusDownloaded || requests.Load() != 1 {
+	if _, st, err := p.loadPlaces4(context.Background()); err != nil || st != statusDownloaded || requests.Load() != 1 {
 		t.Fatalf("first load: %q, %v, %d requests", st, err, requests.Load())
 	}
 	// Fresh copy: no request at all, even though the server is down.
 	status = http.StatusInternalServerError
 	os.Chtimes(path, now.Add(-geonamesMaxAge+time.Hour), now.Add(-geonamesMaxAge+time.Hour))
-	if x, st, err := p.loadPlaces(context.Background()); err != nil || st != statusFresh || requests.Load() != 1 || len(x) == 0 {
+	if x, st, err := p.loadPlaces4(context.Background()); err != nil || st != statusFresh || requests.Load() != 1 || len(x) == 0 {
 		t.Fatalf("fresh copy: %q, %v, %d requests", st, err, requests.Load())
 	}
 	// Old copy, server down: the copy is used, with a warning.
 	os.Chtimes(path, now.Add(-geonamesMaxAge), now.Add(-geonamesMaxAge))
-	if x, st, err := p.loadPlaces(context.Background()); err != nil || st != statusStale || requests.Load() != 2 || len(x) == 0 {
+	if x, st, err := p.loadPlaces4(context.Background()); err != nil || st != statusStale || requests.Load() != 2 || len(x) == 0 {
 		t.Fatalf("old copy, server down: %q, %v, %d requests", st, err, requests.Load())
 	}
 	if len(logs) != 1 || !strings.Contains(logs[0], "WARNING") {
@@ -359,18 +365,18 @@ func TestLoadPlacesAge(t *testing.T) {
 	}
 	// Old copy, server up: replaced.
 	status = http.StatusOK
-	if _, st, err := p.loadPlaces(context.Background()); err != nil || st != statusDownloaded || requests.Load() != 3 {
+	if _, st, err := p.loadPlaces4(context.Background()); err != nil || st != statusDownloaded || requests.Load() != 3 {
 		t.Fatalf("old copy, server up: %q, %v, %d requests", st, err, requests.Load())
 	}
 	// No copy, server down: an error.
 	os.Remove(path)
 	status = http.StatusInternalServerError
-	if _, st, err := p.loadPlaces(context.Background()); err == nil || st != statusFailed {
+	if _, st, err := p.loadPlaces4(context.Background()); err == nil || st != statusFailed {
 		t.Errorf("no copy, server down: %q, %v", st, err)
 	}
 	// A damaged copy is removed so the next run downloads it again.
 	os.WriteFile(path, []byte("not a zip"), 0o640)
-	if _, _, err := p.loadPlaces(context.Background()); err == nil {
+	if _, _, err := p.loadPlaces4(context.Background()); err == nil {
 		t.Error("a damaged copy was read")
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -408,12 +414,17 @@ func TestBuildWhois(t *testing.T) {
 	p := &Pipeline{DataDir: t.TempDir(), geonames: server.URL, allowPrivate: true}
 	rowsPath := filepath.Join(p.dir(), OutDir, WhoisRowsFile)
 
-	// Nothing usable: GeoNames is not even asked for.
-	if out := p.buildWhois(context.Background(), testGeoloc[3:]); out.Skipped == "" || requests.Load() != 0 {
+	// Nothing usable: nothing is written, and GeoNames is not asked about either (discover
+	// loads it before the dumps, so here it is simply not loaded).
+	if out := p.buildWhois(testGeoloc[3:], &geoNames{}); out.Skipped == "" || requests.Load() != 0 {
 		t.Errorf("no usable blocks: %+v, %d requests", out, requests.Load())
 	}
 
-	out := p.buildWhois(context.Background(), testGeoloc)
+	gn, err := p.loadGeoNames(context.Background())
+	if err != nil || gn.err != nil {
+		t.Fatal(err, gn.err)
+	}
+	out := p.buildWhois(testGeoloc, gn)
 	wantDropped := map[string]int{dropTooLarge: 1, dropBadCountry: 2, dropNoPlace: 1}
 	if out.Blocks != 6 || out.Rows != 2 || !reflect.DeepEqual(out.Dropped, wantDropped) || out.Skipped != "" ||
 		out.GeoNames != statusDownloaded || out.Bytes == 0 {
@@ -427,7 +438,11 @@ func TestBuildWhois(t *testing.T) {
 	// file stays. It never fails.
 	broken := &Pipeline{DataDir: p.DataDir, geonames: server.URL + "-unreachable", allowPrivate: true}
 	os.Remove(filepath.Join(p.dir(), "dumps", geonamesFile))
-	if out = broken.buildWhois(context.Background(), testGeoloc); !strings.Contains(out.Skipped, "GeoNames") || out.Blocks != 6 {
+	brokenGN, err := broken.loadGeoNames(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out = broken.buildWhois(testGeoloc, brokenGN); !strings.Contains(out.Skipped, "GeoNames") || out.Blocks != 6 {
 		t.Errorf("no GeoNames: %+v", out)
 	}
 	if got := readGzip(t, rowsPath); got != testWhoisFile {
@@ -435,7 +450,7 @@ func TestBuildWhois(t *testing.T) {
 	}
 
 	// Blocks that all lack a place leave the previous file alone as well.
-	if out = p.buildWhois(context.Background(), testGeoloc[2:3]); out.Skipped == "" {
+	if out = p.buildWhois(testGeoloc[2:3], gn); out.Skipped == "" {
 		t.Errorf("no rows: %+v", out)
 	}
 	if got := readGzip(t, rowsPath); got != testWhoisFile {
@@ -449,9 +464,15 @@ func TestBuildWhois(t *testing.T) {
 // writeRowsFile writes a whois rows file with n rows, as if discover had just built it.
 func writeRowsFile(t *testing.T, p *Pipeline, n int) string {
 	t.Helper()
+	return writeLayerRows(t, p, WhoisRowsFile, n)
+}
+
+// writeLayerRows writes the layer file name with n rows into the out dir.
+func writeLayerRows(t *testing.T, p *Pipeline, name string, n int) string {
+	t.Helper()
 	dir := filepath.Join(p.dir(), OutDir)
 	os.MkdirAll(dir, 0o750)
-	path := filepath.Join(dir, WhoisRowsFile)
+	path := filepath.Join(dir, name)
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	gz.Write([]byte("prefix,country,region,city,source\n"))

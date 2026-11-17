@@ -1,0 +1,363 @@
+# Words that are also the name of some town but in a network description almost
+# never mean that town. The whois text layer (37-whois-text) never names a city
+# after one of these: an entry is compared with the words of a description line
+# after the same cleaning (lower case, no accents, anything but a letter is a
+# space). An entry may have several words. One entry per line; # starts a comment.
+# To stop a wrong city showing up, add the word here (a word of 3 letters or
+# fewer, and "saint" or "sainte" alone, are refused in code and need no entry).
+
+# Country and region names: they name a place of the country, not a city.
+Afghanistan
+Albania
+Algeria
+Andorra
+Angola
+Antigua and Barbuda
+Argentina
+Armenia
+Australia
+Austria
+Azerbaijan
+Bahamas
+Bahrain
+Bangladesh
+Barbados
+Belarus
+Belgium
+Belize
+Benin
+Bhutan
+Bolivia
+Bosnia and Herzegovina
+Bosnia
+Botswana
+Brazil
+Brunei
+Bulgaria
+Burkina Faso
+Burundi
+Cambodia
+Cameroon
+Canada
+Cape Verde
+Cabo Verde
+Central African Republic
+Chad
+Chile
+China
+Colombia
+Comoros
+Congo
+Costa Rica
+Cote d'Ivoire
+Ivory Coast
+Croatia
+Cuba
+Cyprus
+Czech Republic
+Czechia
+Denmark
+Djibouti
+Dominica
+Dominican Republic
+East Timor
+Timor Leste
+Ecuador
+Egypt
+El Salvador
+Equatorial Guinea
+Eritrea
+Estonia
+Eswatini
+Swaziland
+Ethiopia
+Fiji
+Finland
+France
+Gabon
+Gambia
+Georgia
+Germany
+Ghana
+Greece
+Grenada
+Guatemala
+Guinea
+Guinea-Bissau
+Guyana
+Haiti
+Honduras
+Hungary
+Iceland
+India
+Indonesia
+Iran
+Iraq
+Ireland
+Israel
+Italy
+Jamaica
+Japan
+Jordan
+Kazakhstan
+Kenya
+Kiribati
+Kosovo
+Kuwait
+Kyrgyzstan
+Laos
+Latvia
+Lebanon
+Lesotho
+Liberia
+Libya
+Liechtenstein
+Lithuania
+Luxembourg
+Madagascar
+Malawi
+Malaysia
+Maldives
+Mali
+Malta
+Marshall Islands
+Mauritania
+Mauritius
+Mexico
+Micronesia
+Moldova
+Monaco
+Mongolia
+Montenegro
+Morocco
+Mozambique
+Myanmar
+Burma
+Namibia
+Nauru
+Nepal
+Netherlands
+Holland
+New Zealand
+Nicaragua
+Niger
+Nigeria
+North Korea
+South Korea
+Korea
+North Macedonia
+Macedonia
+Norway
+Oman
+Pakistan
+Palau
+Palestine
+Panama
+Papua New Guinea
+Paraguay
+Peru
+Philippines
+Poland
+Portugal
+Qatar
+Romania
+Russia
+Russian Federation
+Rwanda
+Saint Kitts and Nevis
+Saint Lucia
+Saint Vincent
+Samoa
+San Marino
+Sao Tome and Principe
+Saudi Arabia
+Senegal
+Serbia
+Seychelles
+Sierra Leone
+Singapore
+Slovakia
+Slovenia
+Solomon Islands
+Somalia
+South Africa
+South Sudan
+Spain
+Sri Lanka
+Sudan
+Suriname
+Sweden
+Switzerland
+Syria
+Taiwan
+Tajikistan
+Tanzania
+Thailand
+Togo
+Tonga
+Trinidad and Tobago
+Tunisia
+Turkey
+Turkiye
+Turkmenistan
+Tuvalu
+Uganda
+Ukraine
+United Arab Emirates
+United Kingdom
+United States
+United States of America
+America
+Uruguay
+Uzbekistan
+Vanuatu
+Vatican
+Venezuela
+Vietnam
+Yemen
+Zambia
+Zimbabwe
+England
+Scotland
+Wales
+Northern Ireland
+Hong Kong
+Macau
+Macao
+Puerto Rico
+Greenland
+Faroe Islands
+Gibraltar
+Jersey
+Guernsey
+Isle of Man
+Bermuda
+Cayman Islands
+Aruba
+Curacao
+Guam
+Reunion
+Martinique
+Guadeloupe
+French Guiana
+New Caledonia
+French Polynesia
+Mayotte
+Western Sahara
+Europe
+Asia
+Africa
+Antarctica
+Oceania
+European Union
+Great Britain
+Britain
+Deutschland
+Espana
+Polska
+Nederland
+Osterreich
+Suisse
+Schweiz
+Svizzera
+Belgique
+Belgie
+Sverige
+Norge
+Danmark
+Suomi
+Italia
+Hellas
+Magyarorszag
+Romania
+Ceska Republika
+Slovensko
+Hrvatska
+
+# Generic words that are also town names (found by looking at the most frequent matches).
+pool
+static
+dynamic
+network
+net
+customer
+customers
+client
+clients
+broadband
+mobile
+office
+center
+centre
+city
+bank
+hotel
+university
+college
+school
+hosting
+server
+servers
+data
+cable
+wireless
+fiber
+fibre
+home
+business
+corporate
+service
+services
+internet
+telecom
+global
+north
+south
+east
+west
+central
+park
+station
+union
+national
+royal
+victoria
+wan
+lan
+vpn
+dsl
+adsl
+ftth
+isp
+llc
+ltd
+gmbh
+inc
+sanayi
+centro
+marco
+line
+destek
+orange
+
+# Found in the measurement on RIPE Atlas.
+ulus
+bilgi
+villa
+sara
+care
+bruno
+rossi
+maxi
+opera
+fabrizio
+vittorio
+alto
+europa
+street
+church
+noord
+goes
+best
+pila
+kolo

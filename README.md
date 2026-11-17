@@ -139,15 +139,15 @@ the task output has `ix_kept` with the reason, and the log has a warning. Needs 
 
 Finds every geofeed (RFC 8805) URL it can, checks each feed, and hands the checked rows to the
 geo database build through the private R2 bucket. It also turns the `geoloc:` points of whois
-inetnums into city rows for the same build. Nothing is published.
+inetnums, and the cities that the free text of RIPE inetnums names, into city rows for the same build. Nothing is published.
 
 | Task | Runs after | Does |
 |---|---|---|
 | `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
 | `probe-domains` | | needs `PGSQL` (and checks the R2 settings, unless `skip_upload`); reads the ASN website domains from `public.asn_domain` and probes the due ones for a geofeed at the usual paths, within a budget per run; runs beside the other tasks |
-| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list (and the feed links on its pages), and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them and `out/60-whois.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
+| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums and the whois text layer from the text of the RIPE ones), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list (and the feed links on its pages), and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them, `out/60-whois.csv.gz` and `out/37-whois-text.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
 | `check-feeds` | `discover` | needs `PGSQL`; fetches every due feed in `public.geofeed_urls`, keeps a checked copy of each working one, stores the results in the table, and writes the lists |
-| `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them as `70-geofeeds.csv.gz` to R2; also uploads `60-whois.csv.gz` (a problem with that one never fails the task) |
+| `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them as `70-geofeeds.csv.gz` to R2; also uploads `60-whois.csv.gz` and `37-whois-text.csv.gz` (a problem with either never fails the task) |
 
 `rdap-lookups` and `probe-domains` have no child task: they run at the same time as `discover` → `check-feeds` →
 `export-rows` (about 40 minutes), so the rows reach R2 without waiting for the RDAP pass (up to
@@ -299,10 +299,42 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   the last upload (`whois-upload.json`), or fewer than 20,000 rows on the first upload, is refused;
   `force_upload` skips it. A refusal or any other problem with this upload is a warning, not a failure: the
   reason is in the task output (`whois.skipped`) and the geofeed rows are not affected.
+- Whois text layer (`37-whois-text.csv.gz`, one of the layers of `build-geo-data`). Many RIPE `inetnum` objects name a
+  city in their free text. While `discover` reads the RIPE `inetnum` dump (only that dump: APNIC and AFRINIC are not
+  measured yet; `whoisTextDumps` in `hatchet/geofeeds/whoistext.go` is the one place to switch another one on), it matches
+  the text of every IPv4 `inetnum` against the GeoNames places of the object's own country, so the 4.1 million objects
+  are never kept; only a compact block (range, country, place) is kept for an object with a city. GeoNames is therefore
+  loaded before the dumps are read (the same `cities1000` read as for the geoloc layer, one pass). Rules:
+  - the country is the first `country:` value; one that is not a real country is dropped (`bad_country`), and so is
+    a block broader than a /16 (`too_large`; measured, such records are right only 32% of the time);
+  - the text is every `descr:` value and the `netname:` value. A line is lower-cased, accents are folded, every
+    character that is not a Latin letter separates words, `st` is `saint` and `ste` is `sainte`; a line with a letter
+    of another script is skipped; a value that is not valid UTF-8 is read as Latin-1;
+  - a word group of 1 to 3 words within one line is a candidate when it is the normalised name of a GeoNames place of the
+    country (main name or asciiname, and for a place of at least 15,000 people also any alternate name written in Latin letters: the alternate names of a village are mostly old or foreign spellings that an ISP or a product also carries; with several places the most populous,
+    then the smaller name). The longest group wins, then the more populous place, then the smaller name: one city per
+    object, written with the place's main name;
+  - never a city: a group on the ignore list `hatchet/geofeeds/whois-ignore.txt` (country and region names and words
+    that are also the name of some town but in a network description almost never mean that town; to stop a wrong city, add the
+    word on its own line, with `#` for comments, entries may have several words; a test checks every entry survives
+    normalisation), a lone `saint` or `sainte`, a single word of 3 letters or fewer, a group of words that all have 2
+    letters or fewer.
+  The file has one row per CIDR prefix of each block, region empty, `source` `whois-text:ripe`, sorted by start address
+  (the broader block first); nested blocks are kept, the builder inserts the broader ones first, so the narrower one
+  overrides its parent. It is written through a `.tmp` file; no rows, or a GeoNames problem (the two whois layers are then both
+  skipped), keeps the previous file. The task output (`whois_text`) has the objects read, the blocks with a city, the dropped
+  objects by reason, the rows, bytes, the GeoNames status and `skipped`; never a name, an address or a prefix. `export-rows`
+  uploads the file to `internal/layers/37-whois-text.csv.gz` (`whois_text` in its output) with the same gate as the geoloc
+  file (not rebuilt since the last upload, more than 10% fewer rows than the last one in `whois-text-upload.json`, or
+  fewer than 200,000 rows on the first upload, is refused; `force_upload` skips it). Measured on RIPE Atlas (build of
+  2026-11-16, real rebuild), the layer above the weak layers gave +384 right and -81 lost probes (net +303; right city
+  54.8% to 57.0%, precision of all answers 56.6% to 58.7%); the layer's own city was right for 68% of the 995 probes it answers.
+  Records broader than a /16 were right 32% of the time and are left out.
+  Atlas probes are mostly in the RIPE region, so the worldwide gain is smaller.
 - GeoNames `cities1000.zip` (places with 1,000 or more people, CC BY) is downloaded by `discover` itself
   into `/var/lib/openipdata/geofeeds/dumps/`, with the shared conditional download. GeoNames rebuilds the file
   daily, so a copy younger than 7 days is used without contacting the server; an older one is refreshed, and
-  if that fails the existing copy is used, however old, with a warning. With no copy at all the whois layer is not built.
+  if that fails the existing copy is used, however old, with a warning. With no copy at all neither whois layer is built.
 - Deploy note: the layers moved from `internal/geofeeds/` to `internal/layers/` and `build-geo-data` has no
   fallback to the old keys. After deploying, run `sync-geofeeds` once by hand before the next `build-geo-data`
   run, or its `download` task fails on the missing `70-geofeeds.csv.gz`.
@@ -433,12 +465,12 @@ together +882 right and +1,212 wrong probes (right city of all probes 48.1% to 5
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,
-`36-mlab.csv.gz`, `38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
+`36-mlab.csv.gz`, `37-whois-text.csv.gz`, `38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
 `/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
 `.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
-layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-text` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
 `70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
 
 | Task | Runs after | Does |
@@ -538,7 +570,15 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   skips the layer (`skipped_layers`, a warning); this never skips the `HC_PING_GEO` ping. The holdout build passes the layer as it is: it
   does not learn from the geofeed rows directly, but its MMDB-hop part reads the published MMDB (which holds geofeed cities), like the
   MMDB hop votes of `35-rdns-wide`.
-- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
+- `37-whois-text` (optional, `-same-country`, between `36-mlab` and `38-asn-geofeed`, so every later layer replaces it) is the city that the
+  `descr:` and `netname:` lines of a RIPE inetnum name, written by `sync-geofeeds` (above) at `internal/layers/37-whois-text.csv.gz` in the
+  private R2 bucket. The description names a place, but the record's country may be the holder's, so it adds cities and never changes a country.
+  `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2 layers (saved in `geo/downloads/`) and puts it in the
+  layers dir as it is. The object missing, older than 14 days (the text of whois records changes slowly, so an older copy is better than none)
+  or any fetch error skips the layer (`skipped_layers`, a warning); this never skips the `HC_PING_GEO` ping. It is not one of the layers
+  `download` must have (not in the `60-whois`/`70-geofeeds` list). The holdout build passes the layer as it is: it is not learned from the
+  geofeed rows, so held-out feeds do not reach it. Measured on RIPE Atlas (build of 2026-11-16): +384 right and -81 lost probes (net +303).
+- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-text`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.
@@ -565,7 +605,7 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
 - Needs `PGSQL` and `R2` always, and `GITHUB_TOKEN` to publish; a missing setting fails
   `download` without retries. `MAXMIND_LICENSE_KEY` is optional (see below). Manual runs can pass
   `{"skip_publish": true}` (or `run-geo -skip-publish`) to build and evaluate without uploading,
-  and `{"skip_layers": ["40-hosting.csv.gz"]}` to leave an optional layer (`40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`) out of the build
+  and `{"skip_layers": ["40-hosting.csv.gz"]}` to leave an optional layer (`37-whois-text.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`) out of the build
   and the holdout build; any other name fails `download` without retries.
 - It only reads the ASN tables, so it has its own `geo` concurrency limit.
 

@@ -66,7 +66,8 @@ type ExportOutput struct {
 	Uploaded        bool              `json:"uploaded"`            // the rows file was sent
 	Refreshed       bool              `json:"refreshed,omitempty"` // R2 already had this exact file: only its upload time was renewed
 	PreviousRows    int               `json:"previous_rows,omitempty"`
-	Whois           WhoisUploadOutput `json:"whois"` // never fails the task: see WhoisUploadOutput.Skipped
+	Whois           WhoisUploadOutput `json:"whois"`      // never fails the task: see WhoisUploadOutput.Skipped
+	WhoisText       WhoisUploadOutput `json:"whois_text"` // the same for the whois text rows
 	DurationSeconds float64           `json:"duration_seconds"`
 }
 
@@ -252,7 +253,8 @@ func (p *Pipeline) CheckUpload() error {
 // ExportRows writes RowsFile from the stored copies of the working feeds (the
 // feeds that public.geofeed_urls says worked in the last 30 days) and, if upload is
 // set, puts it at RowsKey in R2. It also uploads the whois geoloc rows that
-// discover wrote (WhoisRowsFile) to WhoisRowsKey. An upload with more than 10% fewer rows than
+// discover wrote (WhoisRowsFile) to WhoisRowsKey, and the whois text rows (WhoisTextFile) to
+// WhoisTextKey. An upload with more than 10% fewer rows than
 // the last one is refused with ErrGate, unless force is set (for a manual run
 // that accepts a real drop).
 func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOutput, error) {
@@ -397,6 +399,7 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 		put = r2.Put
 	}
 	out.Whois = p.uploadWhois(ctx, put, force)
+	out.WhoisText = p.uploadWhoisText(ctx, put, force)
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}

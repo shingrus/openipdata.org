@@ -208,27 +208,29 @@ var skipFeature = map[string]bool{"PPLX": true, "PPLH": true, "PPLQ": true, "PPL
 // name, latitude, longitude, feature code, country code and population in
 // columns 1, 4, 5, 7, 8 and 14. Sections of a populated place (PPLX, such as a
 // city district) and places that no longer exist (PPLH, PPLQ, PPLW, PPLCH) are
-// left out, so a city is never named by its district or by a ghost.
-func readPlaces(path string) (placeIndex, error) {
+// left out, so a city is never named by its district or by a ghost. The same
+// pass fills the name index of the whois text layer (see whoistext.go), with the
+// same places: the asciiname and alternate names are in columns 2 and 3.
+func readPlaces(path string) (placeIndex, *nameIndex, error) {
 	zr, err := zip.OpenReader(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer zr.Close()
 	var text io.ReadCloser
 	for _, f := range zr.File {
 		if f.Name == geonamesText {
 			if text, err = f.Open(); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			break
 		}
 	}
 	if text == nil {
-		return nil, fmt.Errorf("%s not in the zip", geonamesText)
+		return nil, nil, fmt.Errorf("%s not in the zip", geonamesText)
 	}
 	defer text.Close()
-	index, n := placeIndex{}, 0
+	index, names, n := placeIndex{}, newNameIndex(), 0
 	sc := bufio.NewScanner(text)
 	sc.Buffer(make([]byte, 64*1024), maxLine)
 	for sc.Scan() {
@@ -243,15 +245,16 @@ func readPlaces(path string) (placeIndex, error) {
 			continue
 		}
 		index.add(f[8], place{name: f[1], lat: lat, lon: lon, pop: pop})
+		names.add(f[8], f[1], f[2], f[3], pop)
 		n++
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if n == 0 {
-		return nil, fmt.Errorf("no places in %s", geonamesText)
+		return nil, nil, fmt.Errorf("no places in %s", geonamesText)
 	}
-	return index, nil
+	return index, names, nil
 }
 
 // loadPlaces refreshes the GeoNames zip in the dumps directory and reads it.
@@ -259,10 +262,10 @@ func readPlaces(path string) (placeIndex, error) {
 // download is conditional; if it fails, the copy there is used, however old.
 // It returns the status (downloaded, cached, fresh, stale) or an error when
 // there is no usable copy.
-func (p *Pipeline) loadPlaces(ctx context.Context) (placeIndex, string, error) {
+func (p *Pipeline) loadPlaces(ctx context.Context) (placeIndex, *nameIndex, string, error) {
 	dir := filepath.Join(p.dir(), "dumps")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	path := filepath.Join(dir, geonamesFile)
 	status := statusFresh
@@ -274,21 +277,41 @@ func (p *Pipeline) loadPlaces(ctx context.Context) (placeIndex, string, error) {
 		var err error
 		if status, err = download.File(ctx, newHTTPClient(10*time.Minute, p.allowPrivate), url, path); err != nil {
 			if ctx.Err() != nil {
-				return nil, "", ctx.Err()
+				return nil, nil, "", ctx.Err()
 			}
 			if _, statErr := os.Stat(path); statErr != nil {
-				return nil, statusFailed, fmt.Errorf("GeoNames download failed and there is no earlier copy: %w", err)
+				return nil, nil, statusFailed, fmt.Errorf("GeoNames download failed and there is no earlier copy: %w", err)
 			}
 			p.log("discover: WARNING GeoNames download failed, using the earlier copy: %v", err)
 			status = statusStale
 		}
 	}
-	index, err := readPlaces(path)
+	index, names, err := readPlaces(path)
 	if err != nil {
 		os.Remove(path) // downloaded again next run
-		return nil, status, fmt.Errorf("read %s: %w", geonamesFile, err)
+		return nil, nil, status, fmt.Errorf("read %s: %w", geonamesFile, err)
 	}
-	return index, status, nil
+	return index, names, status, nil
+}
+
+// geoNames is what discover loads from GeoNames before it reads the dumps: the
+// places for the geoloc layer and the name index for the text layer. err is why
+// they could not be loaded; both whois layers are then skipped with it.
+type geoNames struct {
+	places placeIndex
+	names  *nameIndex
+	status string
+	err    error
+}
+
+// loadGeoNames loads GeoNames once for both whois layers. Only a cancelled run
+// returns an error; any other problem is in the result's err.
+func (p *Pipeline) loadGeoNames(ctx context.Context) (*geoNames, error) {
+	places, names, status, err := p.loadPlaces(ctx)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return &geoNames{places, names, status, err}, nil
 }
 
 // WhoisOutput is the whois geoloc part of the discover result.
@@ -304,9 +327,9 @@ type WhoisOutput struct {
 }
 
 // buildWhois writes WhoisRowsFile from the inetnums with a geoloc: one row per
-// prefix of each block that passes reject and has a GeoNames place near it.
-// It never fails: a problem ends in the result's Skipped.
-func (p *Pipeline) buildWhois(ctx context.Context, blocks []geolocBlock) WhoisOutput {
+// prefix of each block that passes reject and has a GeoNames place near it
+// (gn was loaded before the dumps were read). It never fails: a problem ends in the result's Skipped.
+func (p *Pipeline) buildWhois(blocks []geolocBlock, gn *geoNames) WhoisOutput {
 	out := WhoisOutput{Blocks: len(blocks), Dropped: map[string]int{}}
 	skip := func(format string, args ...any) WhoisOutput {
 		out.Skipped = fmt.Sprintf(format, args...)
@@ -324,17 +347,17 @@ func (p *Pipeline) buildWhois(ctx context.Context, blocks []geolocBlock) WhoisOu
 	if len(usable) == 0 {
 		return skip("no usable blocks with a geoloc")
 	}
-	places, status, err := p.loadPlaces(ctx)
-	out.GeoNames = status
-	if err != nil {
-		return skip("%v", err)
+	out.GeoNames = gn.status
+	if gn.err != nil {
+		return skip("%v", gn.err)
 	}
 	outDir := filepath.Join(p.dir(), OutDir)
 	if err := os.MkdirAll(outDir, 0o750); err != nil {
 		return skip("%v", err)
 	}
 	path := filepath.Join(outDir, WhoisRowsFile)
-	if out.Rows, err = writeWhoisRows(path, usable, places, out.Dropped); err != nil {
+	var err error
+	if out.Rows, err = writeWhoisRows(path, usable, gn.places, out.Dropped); err != nil {
 		return skip("%v", err)
 	}
 	out.Bytes = outputs.FileSize(path)
@@ -351,6 +374,26 @@ func (p *Pipeline) buildWhois(ctx context.Context, blocks []geolocBlock) WhoisOu
 // temporary file. A block with no such place is counted in dropped. With no
 // rows at all it fails and leaves the file there.
 func writeWhoisRows(path string, blocks []geolocBlock, places placeIndex, dropped map[string]int) (rows int, err error) {
+	return writeLayerFile(path, func(w *csv.Writer) int {
+		rows := 0
+		for _, b := range blocks {
+			city, ok := places.biggestWithin(b.country, b.lat, b.lon, maxPlaceKm)
+			if !ok {
+				dropped[dropNoPlace]++
+				continue
+			}
+			for _, prefix := range rirstats.RangeToPrefixes(b.from, b.to) {
+				w.Write([]string{prefix.String(), b.country, "", city.name, "whois:" + b.registry})
+				rows++
+			}
+		}
+		return rows
+	})
+}
+
+// writeLayerFile writes a layer file (layerHeader, then the rows fill writes and
+// counts) through a temporary file. With no rows it fails and leaves the file there.
+func writeLayerFile(path string, fill func(w *csv.Writer) int) (rows int, err error) {
 	tmp := path + ".tmp"
 	file, err := os.Create(tmp)
 	if err != nil {
@@ -361,18 +404,7 @@ func writeWhoisRows(path string, blocks []geolocBlock, places placeIndex, droppe
 	gz := gzip.NewWriter(file)
 	w := csv.NewWriter(gz)
 	w.Write(layerHeader)
-	for _, b := range blocks {
-		city, ok := places.biggestWithin(b.country, b.lat, b.lon, maxPlaceKm)
-		if !ok {
-			dropped[dropNoPlace]++
-			continue
-		}
-		for _, prefix := range rirstats.RangeToPrefixes(b.from, b.to) {
-			w.Write([]string{prefix.String(), b.country, "", city.name, "whois:" + b.registry})
-			rows++
-		}
-	}
-	if rows == 0 {
+	if rows = fill(w); rows == 0 {
 		return 0, errors.New("no rows")
 	}
 	w.Flush()
@@ -388,14 +420,14 @@ func writeWhoisRows(path string, blocks []geolocBlock, places placeIndex, droppe
 	return rows, os.Rename(tmp, path)
 }
 
-// WhoisUploadOutput is the whois geoloc part of the export-rows result.
+// WhoisUploadOutput is the whois geoloc (or whois text) part of the export-rows result.
 type WhoisUploadOutput struct {
 	Rows         int  `json:"rows"`                // rows in the file
 	Uploaded     bool `json:"uploaded"`            // the file was sent
 	Refreshed    bool `json:"refreshed,omitempty"` // R2 already had this exact file: only its upload time was renewed
 	PreviousRows int  `json:"previous_rows,omitempty"`
 	// Skipped says why the file was not uploaded. The geofeed rows are not
-	// affected: a problem with the whois rows never fails export-rows.
+	// affected: a problem with a whois file never fails export-rows.
 	Skipped string `json:"skipped,omitempty"`
 }
 
@@ -410,24 +442,48 @@ func putLayer(ctx context.Context, upload uploadFunc, key, path string, force bo
 	return upload(ctx, key, path, publish.PutOptions{Force: force, Refresh: true})
 }
 
-// uploadWhois puts the whois rows file that discover wrote at WhoisRowsKey,
-// if upload is not nil. It never fails: a problem ends in the result's
-// Skipped. A file that discover did not rewrite since the last upload is not
-// sent again (its upload time would hide that discover could not build it).
-// The gate is the geofeed rows': more than 10% fewer rows than the last
-// upload is refused, as are fewer than minWhoisFirstUpload rows on the first
-// upload; force skips both checks.
+// layerUpload says what uploadLayer sends and how it is gated: the whois
+// geoloc rows and the whois text rows are two such files.
+type layerUpload struct {
+	file, key   string // the file discover wrote in OutDir, and its key in R2
+	stateFile   string // what the last upload sent, in the geofeeds dir
+	label       string // for log lines
+	firstUpload int    // with no previous upload, refuse fewer rows than this
+}
+
+var (
+	whoisGeolocUpload = layerUpload{WhoisRowsFile, WhoisRowsKey, whoisUploadFile, "whois geoloc rows", minWhoisFirstUpload}
+	whoisTextUpload   = layerUpload{WhoisTextFile, WhoisTextKey, whoisTextUploadFile, "whois text rows", minWhoisTextFirstUpload}
+)
+
+// uploadWhois puts the whois geoloc rows file that discover wrote at
+// WhoisRowsKey (see uploadLayer).
 func (p *Pipeline) uploadWhois(ctx context.Context, upload uploadFunc, force bool) WhoisUploadOutput {
+	return p.uploadLayer(ctx, upload, force, whoisGeolocUpload)
+}
+
+// uploadWhoisText puts the whois text rows file at WhoisTextKey (see uploadLayer).
+func (p *Pipeline) uploadWhoisText(ctx context.Context, upload uploadFunc, force bool) WhoisUploadOutput {
+	return p.uploadLayer(ctx, upload, force, whoisTextUpload)
+}
+
+// uploadLayer puts the file that discover wrote at its key, if upload is not
+// nil. It never fails: a problem ends in the result's Skipped. A file that
+// discover did not rewrite since the last upload is not sent again (its upload
+// time would hide that discover could not build it). The gate is the geofeed
+// rows': more than 10% fewer rows than the last upload is refused, as are fewer
+// than l.firstUpload rows on the first upload; force skips both checks.
+func (p *Pipeline) uploadLayer(ctx context.Context, upload uploadFunc, force bool, l layerUpload) WhoisUploadOutput {
 	var out WhoisUploadOutput
 	skip := func(format string, args ...any) WhoisUploadOutput {
 		out.Skipped = fmt.Sprintf(format, args...)
-		p.log("export: WARNING whois geoloc rows not uploaded: %s", out.Skipped)
+		p.log("export: WARNING %s not uploaded: %s", l.label, out.Skipped)
 		return out
 	}
-	path := filepath.Join(p.dir(), OutDir, WhoisRowsFile)
+	path := filepath.Join(p.dir(), OutDir, l.file)
 	info, err := os.Stat(path)
 	if err != nil {
-		return skip("no %s (has discover built it?)", WhoisRowsFile)
+		return skip("no %s (has discover built it?)", l.file)
 	}
 	if out.Rows, err = countRows(path); err != nil {
 		return skip("%v", err)
@@ -435,31 +491,31 @@ func (p *Pipeline) uploadWhois(ctx context.Context, upload uploadFunc, force boo
 	if upload == nil {
 		return out
 	}
-	if err := p.checkWhoisUpload(info.ModTime(), force, &out); err != nil {
+	if err := p.checkLayerUpload(info.ModTime(), force, l, &out); err != nil {
 		return skip("%v", err)
 	}
-	location, status, err := putLayer(ctx, upload, WhoisRowsKey, path, force)
+	location, status, err := putLayer(ctx, upload, l.key, path, force)
 	if err != nil {
 		return skip("%v", err)
 	}
 	out.Uploaded, out.Refreshed = status == publish.PutUploaded, status != publish.PutUploaded
 	p.log("export: %s %s", status, location)
 	data, _ := json.Marshal(uploaded{Date: p.clock().UTC().Format(time.RFC3339), Rows: out.Rows})
-	if err := writeFileAtomic(filepath.Join(p.dir(), whoisUploadFile), data); err != nil {
+	if err := writeFileAtomic(filepath.Join(p.dir(), l.stateFile), data); err != nil {
 		return skip("%v", err)
 	}
 	return out
 }
 
-// checkWhoisUpload applies the checks of uploadWhois; the error says why
+// checkLayerUpload applies the checks of uploadLayer; the error says why
 // nothing should be uploaded.
-func (p *Pipeline) checkWhoisUpload(modified time.Time, force bool, out *WhoisUploadOutput) error {
+func (p *Pipeline) checkLayerUpload(modified time.Time, force bool, l layerUpload, out *WhoisUploadOutput) error {
 	var last uploaded
-	data, err := os.ReadFile(filepath.Join(p.dir(), whoisUploadFile))
+	data, err := os.ReadFile(filepath.Join(p.dir(), l.stateFile))
 	switch {
 	case err == nil:
 		if err := json.Unmarshal(data, &last); err != nil && !force {
-			return fmt.Errorf("%s is damaged (%v); run once with force_upload", whoisUploadFile, err)
+			return fmt.Errorf("%s is damaged (%v); run once with force_upload", l.stateFile, err)
 		}
 	case !errors.Is(err, os.ErrNotExist) && !force:
 		return err
@@ -469,7 +525,7 @@ func (p *Pipeline) checkWhoisUpload(modified time.Time, force bool, out *WhoisUp
 		return errors.New("no rows")
 	}
 	if force {
-		p.log("export: whois gate skipped (force_upload)")
+		p.log("export: %s gate skipped (force_upload)", l.label)
 		return nil
 	}
 	if date, err := time.Parse(time.RFC3339, last.Date); err == nil && !modified.After(date) {
@@ -478,8 +534,8 @@ func (p *Pipeline) checkWhoisUpload(modified time.Time, force bool, out *WhoisUp
 	switch {
 	case last.Rows > 0 && float64(out.Rows) < float64(last.Rows)*(1-maxRowsDrop):
 		return fmt.Errorf("%d rows, down from %d on %s", out.Rows, last.Rows, last.Date)
-	case last.Rows == 0 && out.Rows < minWhoisFirstUpload:
-		return fmt.Errorf("%d rows, fewer than %d", out.Rows, minWhoisFirstUpload)
+	case last.Rows == 0 && out.Rows < l.firstUpload:
+		return fmt.Errorf("%d rows, fewer than %d", out.Rows, l.firstUpload)
 	}
 	return nil
 }

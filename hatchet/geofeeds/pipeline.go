@@ -64,11 +64,12 @@ const BlocksFile = "blocks.csv"
 
 // SourceStats describes one dump or list in a run.
 type SourceStats struct {
-	Status      string `json:"status"`            // downloaded, cached, stale, failed
-	Objects     int    `json:"objects,omitempty"` // RPSL objects read
-	Blocks      int    `json:"blocks,omitempty"`  // prefixes that point to a feed
-	Geoloc      int    `json:"geoloc,omitempty"`  // inetnums with a valid geoloc (see whoisgeo.go)
-	URLs        int    `json:"urls"`              // distinct feed URLs
+	Status      string `json:"status"`               // downloaded, cached, stale, failed
+	Objects     int    `json:"objects,omitempty"`    // RPSL objects read
+	Blocks      int    `json:"blocks,omitempty"`     // prefixes that point to a feed
+	Geoloc      int    `json:"geoloc,omitempty"`     // inetnums with a valid geoloc (see whoisgeo.go)
+	WhoisText   int    `json:"whois_text,omitempty"` // inetnums whose text names a city (see whoistext.go)
+	URLs        int    `json:"urls"`                 // distinct feed URLs
 	BadPrefixes int    `json:"bad_prefixes,omitempty"`
 	Error       string `json:"error,omitempty"`
 }
@@ -78,7 +79,8 @@ type DiscoverOutput struct {
 	Sources         map[string]SourceStats `json:"sources"`
 	URLs            int                    `json:"urls"`
 	Blocks          int                    `json:"blocks"`
-	Whois           WhoisOutput            `json:"whois"` // the whois geoloc layer; a problem there never fails discover
+	Whois           WhoisOutput            `json:"whois"`      // the whois geoloc layer; a problem there never fails discover
+	WhoisText       WhoisTextOutput        `json:"whois_text"` // the whois text layer; the same
 	DurationSeconds float64                `json:"duration_seconds"`
 }
 
@@ -93,6 +95,12 @@ type collector struct {
 	blocks *csv.Writer
 	nRows  int
 	geoloc []geolocBlock // inetnums with a geoloc, from the whois dumps
+
+	// The whois text layer: the name index (nil: GeoNames could not be loaded, no text
+	// is read), the blocks found and the registries their dumps came from.
+	names      *nameIndex
+	text       textReader
+	registries []string
 }
 
 func (c *collector) add(source, u string, prefix netip.Prefix) {
@@ -112,7 +120,8 @@ func (c *collector) add(source, u string, prefix netip.Prefix) {
 // Discover downloads the dumps and lists, adds the stored RDAP results, and
 // writes BlocksFile and adds the URLs to public.geofeed_urls. It also turns
 // the inetnums with a geoloc that the RIPE, APNIC and AFRINIC dumps hold into
-// WhoisRowsFile (see buildWhois). A source that fails is skipped (its previous
+// WhoisRowsFile (see buildWhois) and the inetnums whose text names a city into
+// WhoisTextFile (see buildWhoisText). A source that fails is skipped (its previous
 // download is used if there is one), except a whois dump: without one, its
 // registry's space would look unowned, so the run fails.
 func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
@@ -144,6 +153,19 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 	c := &collector{urls: map[string]*found{}, blocks: csv.NewWriter(blocksFile)}
 	c.blocks.Write([]string{"source", "prefix", "url"})
 
+	// GeoNames comes first: the text of the inetnums is matched while the dump is read
+	// (4 million objects are not kept). A problem only skips the two whois layers.
+	gn := &geoNames{}
+	for _, d := range dumps {
+		if geolocDumps[d.Name] || whoisTextDumps[d.Name] {
+			if gn, err = p.loadGeoNames(ctx); err != nil {
+				return out, err
+			}
+			break
+		}
+	}
+	c.names = gn.names
+
 	client := newHTTPClient(30*time.Minute, p.allowPrivate)
 	var missing []string // whois dumps that could not be read: their space would look unowned
 	for i, d := range dumps {
@@ -155,8 +177,8 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 		if stats.Status == statusFailed && d.Source != "irr" {
 			missing = append(missing, d.Name)
 		}
-		p.log("discover: %s: %s, %d objects, %d blocks, %d URLs, %d bad prefixes, %d with geoloc%s", d.Name, stats.Status,
-			stats.Objects, stats.Blocks, stats.URLs, stats.BadPrefixes, stats.Geoloc, errSuffix(stats.Error))
+		p.log("discover: %s: %s, %d objects, %d blocks, %d URLs, %d bad prefixes, %d with geoloc, %d with a city in the text%s", d.Name, stats.Status,
+			stats.Objects, stats.Blocks, stats.URLs, stats.BadPrefixes, stats.Geoloc, stats.WhoisText, errSuffix(stats.Error))
 		out.Sources[d.Name] = stats
 	}
 	if len(missing) > 0 {
@@ -164,8 +186,9 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 		return out, fmt.Errorf("whois dumps could not be read: %s", strings.Join(missing, ", "))
 	}
 
-	// The whois dumps are read: name the cities of the geoloc blocks.
-	out.Whois = p.buildWhois(ctx, c.geoloc)
+	// The whois dumps are read: name the cities of the geoloc blocks and write the text layer.
+	out.Whois = p.buildWhois(c.geoloc, gn)
+	out.WhoisText = p.buildWhoisText(&c.text, c.registries, gn)
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
@@ -321,6 +344,12 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 	var blocks []block
 	var geoloc []geolocBlock
 	readGeoloc := geolocDumps[d.Name]
+	var text textReader // like geoloc, added to c only when the whole dump is read
+	readText := whoisTextDumps[d.Name] && c.names != nil
+	registry := slices.Index(c.registries, d.Source)
+	if registry < 0 {
+		registry = len(c.registries)
+	}
 	seen := map[string]bool{}
 	file, err := os.Open(path)
 	if err != nil {
@@ -336,6 +365,9 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 				if b, ok := geolocBlockOf(obj, d.Source); ok {
 					geoloc = append(geoloc, b)
 				}
+			}
+			if readText {
+				text.read(obj, c.names, uint8(registry))
 			}
 			urls := feedURLs(obj)
 			if len(urls) == 0 {
@@ -366,6 +398,11 @@ func (p *Pipeline) readDump(ctx context.Context, client *http.Client, c *collect
 		c.add(d.Source, b.url, b.prefix)
 	}
 	c.geoloc = append(c.geoloc, geoloc...)
+	if len(text.blocks) > 0 && registry == len(c.registries) {
+		c.registries = append(c.registries, d.Source)
+	}
+	c.text.merge(&text)
+	stats.WhoisText = len(text.blocks)
 	stats.Blocks, stats.URLs, stats.Geoloc = len(blocks), len(seen), len(geoloc)
 	return stats
 }
