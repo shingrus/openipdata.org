@@ -492,7 +492,7 @@ func TestMapLayoutStable(t *testing.T) {
 		t.Errorf("place classes: %q %q", re.FindString(with), re.FindString(without))
 	}
 	css := styleCSS + placeCSS + mapCSS
-	for _, x := range []string{".place svg.map{position:absolute;", "height:100%;max-width:100%", "pointer-events:none", "mask:linear-gradient", "vector-effect:non-scaling-stroke"} {
+	for _, x := range []string{".place svg.map{position:absolute;", "height:100%;max-height:66.7cqw;max-width:100%", ".place{container-type:inline-size}", "pointer-events:none", "mask:linear-gradient", "vector-effect:non-scaling-stroke"} {
 		if !strings.Contains(css, x) {
 			t.Errorf("style.css lacks %q", x)
 		}
