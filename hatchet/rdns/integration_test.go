@@ -898,3 +898,67 @@ func TestIntegrationSampleNamesWithoutMMDB(t *testing.T) {
 		t.Fatalf("%+v %v", out, err)
 	}
 }
+
+// A change of the names alone waits for the 6-hour rule; a rule change rebuilds at once.
+func TestIntegrationLocateRecentSkip(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := schema.EnsureRDNS(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(w.p.dir(), locateStateFile))
+	// Without the MMDB of R2 a rebuild saves no rules part and the next run rebuilds again (it
+	// tries R2 again): the 6-hour skip never applies.
+	if out, err := w.p.Locate(ctx, false); err != nil || out.Skipped {
+		t.Fatalf("first rebuild: %+v %v", out, err)
+	}
+	if st := readLocateState(filepath.Join(w.p.dir(), locateStateFile)); st.Rules != "" {
+		t.Fatalf("a rebuild without the R2 MMDB saved the rules part: %+v", st)
+	}
+	w.exec(`INSERT INTO public.ip_ptr_names (ip, ptr, status, resolved_at) VALUES ('5.6.0.8', 'y.isp.net', 'ok', now())`)
+	if out, err := w.p.Locate(ctx, false); err != nil || out.Skipped {
+		t.Fatalf("after a rebuild without the R2 MMDB the next run must rebuild: %+v %v", out, err)
+	}
+	// With the MMDB of R2 the rules part is saved.
+	clock := testNow
+	w.p.now = func() time.Time { return clock }
+	store := newFakeStore()
+	store.put(todayKey, "e1", "mmdb")
+	w.p.store = store
+	w.p.lookup = func(_ context.Context, _, _, out string) error { return os.WriteFile(out, nil, 0o640) }
+	if out, err := w.p.Locate(ctx, false); err != nil || out.Skipped || out.MMDB != statusUsed {
+		t.Fatalf("rebuild with the R2 MMDB: %+v %v", out, err)
+	}
+	statePath := filepath.Join(w.p.dir(), locateStateFile)
+	before := readLocateState(statePath)
+	if before.Rules == "" {
+		t.Fatalf("the state after a rebuild has no rules part: %+v", before)
+	}
+	w.exec(`INSERT INTO public.ip_ptr_names (ip, ptr, status, resolved_at) VALUES ('5.6.0.9', 'x.isp.net', 'ok', now())`)
+	// A visitor IP of a located /24: it goes on a skipped run too, not only after a rebuild.
+	w.exec(`INSERT INTO public.traced_networks (prefix, status, attempts, last_traced_at) VALUES ('198.51.100.0/24', 'located', 1, now())
+		ON CONFLICT (prefix) DO UPDATE SET status = 'located'`)
+	w.exec(`INSERT INTO public.visitor_ips (ip, source) VALUES ('198.51.100.7', 'test') ON CONFLICT DO NOTHING`)
+	out, err := w.p.Locate(ctx, false)
+	if err != nil || !out.Skipped || out.SkipReason != skipRecent {
+		t.Fatalf("names changed, rules did not: %+v %v", out, err)
+	}
+	if out.VisitorsCut < 1 {
+		t.Errorf("a skipped run kept the visitor IP of a located /24: %+v", out)
+	}
+	var left int
+	if err := w.conn.QueryRow(ctx, `SELECT count(*) FROM public.visitor_ips WHERE ip = '198.51.100.7'`).Scan(&left); err != nil || left != 0 {
+		t.Errorf("visitor IP rows left: %d %v", left, err)
+	}
+	if after := readLocateState(statePath); after != before {
+		t.Errorf("a skip changed the state file: %+v -> %+v", before, after)
+	}
+	// A rule change rebuilds at once, inside the 6 hours.
+	w.exec(`INSERT INTO public.generated_rules VALUES ('zz-new-rule', '^zz[0-9]+\\.example\\.net$', '["example.net"]', 'DE', 'Berlin')`)
+	if out, err := w.p.Locate(ctx, false); err != nil || out.Skipped {
+		t.Fatalf("a rule changed: %+v %v", out, err)
+	}
+	if out, err := w.p.Locate(ctx, true); err != nil || out.Skipped {
+		t.Fatalf("force: %+v %v", out, err)
+	}
+}

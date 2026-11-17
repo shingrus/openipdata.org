@@ -92,10 +92,13 @@ type KindStats struct {
 
 // LocateOutput counts what locate read, found and stored.
 type LocateOutput struct {
-	// Skipped: nothing locate reads changed since the last rebuild (less than a day
-	// ago), so the table was left as it is and every count is zero.
-	Skipped    bool `json:"skipped,omitempty"`
-	Backfilled int  `json:"backfilled,omitempty"` // traces that got their candidates (see backfillCandidates)
+	// Skipped: the table was left as it is and every count is zero, because nothing locate
+	// reads changed since the last rebuild (less than a day ago; SkipReason "unchanged"), or only
+	// other inputs than the rules changed and the last rebuild is less than 6 hours old
+	// (SkipReason "recent").
+	Skipped    bool   `json:"skipped,omitempty"`
+	SkipReason string `json:"skip_reason,omitempty"`
+	Backfilled int    `json:"backfilled,omitempty"` // traces that got their candidates (see backfillCandidates)
 
 	Traces   int `json:"traces"`
 	Networks int `json:"networks"` // /24s with a trace
@@ -767,7 +770,9 @@ func (p *Pipeline) clock() time.Time {
 //
 // A run whose inputs look as they did at the last rebuild (see inputsSummary and
 // fingerprintOf), less than a day ago, leaves the table alone and says so
-// (LocateOutput.Skipped); force always rebuilds. The fingerprint is taken before the
+// (LocateOutput.Skipped, reason "unchanged"). So does a run whose rules (legacy and candidate)
+// are those of the last rebuild, when that is less than 6 hours ago, whatever else changed
+// (reason "recent"); a rule change rebuilds at once. force always rebuilds. The fingerprint is taken before the
 // inputs are read and saved only after the commit, so a change during the run only
 // causes one more rebuild.
 //
@@ -796,10 +801,25 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 		p.log("locate: %v; rebuilding", err)
 		fingerprint = ""
 	}
-	if !force && fingerprint != "" && readLocateState(statePath).canSkip(fingerprint, p.clock()) {
-		out.Skipped = true
-		p.log("locate: skipped, no trace, name, rule or ASN changed since the last rebuild")
-		return out, nil
+	state := readLocateState(statePath)
+	if !force && fingerprint != "" {
+		if ok, reason := state.canSkip(fingerprint, summary[2], p.clock()); ok {
+			out.Skipped, out.SkipReason = true, reason
+			if reason == skipRecent {
+				p.log("locate: skipped, the rules are unchanged and the last rebuild was %s ago (other inputs changed; next rebuild after %s)",
+					p.clock().Sub(state.RebuiltAt).Round(time.Minute), locateMinInterval)
+			} else {
+				p.log("locate: skipped, no trace, name, rule or ASN changed since the last rebuild")
+			}
+			// The visitor IPs of located /24s go on every run, also a skipped one: the websites
+			// keep adding them, and they must not wait for the next rebuild.
+			tag, err := conn.Exec(ctx, deleteLocatedVisitorsSQL)
+			if err != nil {
+				return out, dbError("delete visitor IPs", err)
+			}
+			out.VisitorsCut = int(tag.RowsAffected())
+			return out, nil
+		}
 	}
 
 	if out.Backfilled, err = backfillCandidates(ctx, conn); err != nil {
@@ -884,7 +904,8 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 	out.VisitorsCut = int(tag.RowsAffected())
 	if fingerprint != "" {
 		// Only the next skip is lost when this fails: the layer itself is stored.
-		if err := writeLocateState(statePath, locateState{Fingerprint: fingerprint, RebuiltAt: p.clock().UTC()}); err != nil {
+		fromR2 := res.Status == statusUsed && res.ETag == ref.etag()
+		if err := writeLocateState(statePath, rebuiltState(fingerprint, summary[2], p.clock().UTC(), fromR2)); err != nil {
 			p.log("locate: could not save %s: %v", locateStateFile, err)
 		}
 	}

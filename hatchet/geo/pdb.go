@@ -23,12 +23,22 @@ import (
 // after 7 days without a build-asn-data run seeing it. A NULL seen_at counts
 // only until the first run has stamped some row: after that, NULL means the
 // ASN was already gone when the column was added.
-const pdbQuery = `SELECT a.json, upper(btrim(g.country)), btrim(g.city)
+//
+// The json column is read reduced to its prefixes object (ipdata.PrefixesJSON);
+// pdbWholeQuery is the same with the whole json, for a damaged value (writeASNPrefixRows).
+var (
+	pdbQuery      = pdbSelect(ipdata.PrefixesJSON)
+	pdbWholeQuery = pdbSelect("a.json")
+)
+
+func pdbSelect(doc string) string {
+	return `SELECT ` + doc + `, upper(btrim(g.country)), btrim(g.city)
 	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
 	WHERE btrim(coalesce(g.city, '')) <> ''
 	  AND upper(btrim(a.country)) = upper(btrim(g.country))
 	  AND ` + ipdata.SeenAtFilter + `
 	ORDER BY a.asn`
+}
 
 // hostingQuery picks hosting networks whose PeeringDB facilities are all in
 // one city (sync-peeringdb sets fac_city only then). "Content" is PeeringDB's
@@ -36,7 +46,15 @@ const pdbQuery = `SELECT a.json, upper(btrim(g.country)), btrim(g.city)
 // network is left out, and so is one without a 2-letter facility country.
 // The registration country is not compared: this layer may change it, which
 // is the point (a hoster's block registered to a customer abroad). Read only.
-const hostingQuery = `SELECT a.json, upper(btrim(g.fac_country)), btrim(g.fac_city)
+//
+// Like pdbQuery it reads the json reduced (hostingWholeQuery: the whole json).
+var (
+	hostingQuery      = hostingSelect(ipdata.PrefixesJSON)
+	hostingWholeQuery = hostingSelect("a.json")
+)
+
+func hostingSelect(doc string) string {
+	return `SELECT ` + doc + `, upper(btrim(g.fac_country)), btrim(g.fac_city)
 	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
 	WHERE g.info_type = 'Content'
 	  AND coalesce(g.info_scope, '') <> 'Global'
@@ -45,6 +63,7 @@ const hostingQuery = `SELECT a.json, upper(btrim(g.fac_country)), btrim(g.fac_ci
 	  AND length(btrim(coalesce(g.fac_country, ''))) = 2
 	  AND ` + ipdata.SeenAtFilter + `
 	ORDER BY a.asn`
+}
 
 // writePDBRows writes every announced prefix of those ASNs as a layer row
 // with the PeeringDB country and city.
@@ -54,7 +73,7 @@ func writePDBRows(ctx context.Context, dsn string, w *csv.Writer) (asns, prefixe
 		return 0, 0, err
 	}
 	defer conn.Close(ctx)
-	return writeASNPrefixRows(ctx, conn, pdbQuery, w)
+	return writeASNPrefixRows(ctx, conn, pdbQuery, pdbWholeQuery, w)
 }
 
 // connect opens the read-only connection. There is no schema.Ensure in this
@@ -71,31 +90,53 @@ func connect(ctx context.Context, dsn string) (*pgx.Conn, error) {
 	return conn, nil
 }
 
-// writeASNPrefixRows runs a query that returns (public.asn.json, country,
-// city) and writes every announced prefix of each ASN as a layer row. It
-// returns the number of ASNs that had a prefix and the number of prefixes.
-func writeASNPrefixRows(ctx context.Context, conn *pgx.Conn, query string, w *csv.Writer) (asns, prefixes int, err error) {
-	rows, err := conn.Query(ctx, query)
+// writeASNPrefixRows runs a query that returns (public.asn.json or its prefixes object,
+// country, city) and writes every announced prefix of each ASN as a layer row. It returns the
+// number of ASNs that had a prefix and the number of prefixes. A damaged json value fails the
+// reduced query (a document Postgres cannot cast to jsonb, ipdata.WithJSONFallback) and the read is repeated with the whole query. The CSV writer
+// is never touched by a failed pass: a pass collects its rows in memory and they are written
+// only after it has read every row, so nothing is written twice or half.
+func writeASNPrefixRows(ctx context.Context, conn *pgx.Conn, reduced, whole string, w *csv.Writer) (asns, prefixes int, err error) {
+	var rows []prefixRow
+	err = ipdata.WithJSONFallback(reduced, whole, func(query string) error {
+		var perr error
+		rows, asns, perr = readASNPrefixRows(ctx, conn, query)
+		return perr
+	})
 	if err != nil {
 		return 0, 0, err
+	}
+	for _, r := range rows {
+		layerRow(w, r.prefix, r.code, r.city)
+	}
+	return asns, len(rows), nil
+}
+
+// prefixRow is one layer row read by readASNPrefixRows.
+type prefixRow struct{ prefix, code, city string }
+
+// readASNPrefixRows reads the rows of one query: every announced prefix (masked) with the
+// country and city of its ASN, and the number of ASNs that had a prefix.
+func readASNPrefixRows(ctx context.Context, conn *pgx.Conn, query string) (out []prefixRow, asns int, err error) {
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var raw, code, city string
 		if err := rows.Scan(&raw, &code, &city); err != nil {
-			return 0, 0, err
+			return nil, 0, err
 		}
-		n := 0
+		before := len(out)
 		for _, p := range ipdata.ASNPrefixes(raw) {
-			layerRow(w, p.Masked().String(), code, city)
-			n++
+			out = append(out, prefixRow{p.Masked().String(), code, city})
 		}
-		if n > 0 {
+		if len(out) > before {
 			asns++
-			prefixes += n
 		}
 	}
-	return asns, prefixes, rows.Err()
+	return out, asns, rows.Err()
 }
 
 // writeHostingRows writes every announced prefix of the hosting networks as a
@@ -117,7 +158,7 @@ func writeHostingRows(ctx context.Context, dsn string, w *csv.Writer) (int, erro
 	if columns < 5 {
 		return 0, ErrNoRows
 	}
-	_, prefixes, err := writeASNPrefixRows(ctx, conn, hostingQuery, w)
+	_, prefixes, err := writeASNPrefixRows(ctx, conn, hostingQuery, hostingWholeQuery, w)
 	if err != nil {
 		return 0, err
 	}

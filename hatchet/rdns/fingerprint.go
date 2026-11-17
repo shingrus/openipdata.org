@@ -19,12 +19,25 @@ const (
 	locateStateFile = "locate-state.json"
 	// locateMaxAge is how long an unchanged set of inputs may keep the table as it is.
 	locateMaxAge = 24 * time.Hour
+	// locateMinInterval is how long the table may stay as it is when the inputs changed but the
+	// rules did not: new traces, names, ASN data, customer samples or a new MMDB wait for the next
+	// rebuild, at most this long. A rule change rebuilds at once.
+	locateMinInterval = 6 * time.Hour
+)
+
+// Why locate skipped its rebuild (LocateOutput.SkipReason).
+const (
+	skipUnchanged = "unchanged" // the same fingerprint, less than locateMaxAge old
+	skipRecent    = "recent"    // other inputs changed, the rules did not, less than locateMinInterval old
 )
 
 // locateState is the content of locateStateFile.
 type locateState struct {
 	Fingerprint string    `json:"fingerprint"`
 	RebuiltAt   time.Time `json:"rebuilt_at"`
+	// Rules is the rules part of the inputs (inputsSummary, part 2) at that rebuild. A file
+	// written before this field existed has none: the 6-hour skip then does not apply.
+	Rules string `json:"rules,omitempty"`
 }
 
 // fingerprintTracesQuery, fingerprintNamesQuery and fingerprintASNQuery summarize
@@ -109,11 +122,35 @@ func fingerprintOf(summary [5]string, mmdbETag string) string {
 	return string(data)
 }
 
-// canSkip reports whether a locate with these inputs may leave the table as it
-// is: the last rebuild had the same fingerprint and is less than locateMaxAge old.
-func (s locateState) canSkip(fingerprint string, now time.Time) bool {
+// canSkip reports whether a locate with these inputs may leave the table as it is, and why
+// (skipUnchanged, skipRecent; empty when it must rebuild). Unchanged: the last rebuild had the
+// same fingerprint and is less than locateMaxAge old. Recent: the fingerprint differs, but the
+// rules are the ones of the last rebuild (a state without them never matches) and that rebuild is
+// less than locateMinInterval old. A rebuild time in the future never skips.
+func (s locateState) canSkip(fingerprint, rules string, now time.Time) (bool, string) {
 	age := now.Sub(s.RebuiltAt)
-	return s.Fingerprint != "" && s.Fingerprint == fingerprint && age >= 0 && age < locateMaxAge
+	if s.Fingerprint == "" || age < 0 {
+		return false, ""
+	}
+	if s.Fingerprint == fingerprint && age < locateMaxAge {
+		return true, skipUnchanged
+	}
+	if s.Rules != "" && s.Rules == rules && age < locateMinInterval {
+		return true, skipRecent
+	}
+	return false, ""
+}
+
+// rebuiltState is the state saved after a rebuild. mmdbFromR2 says whether the rebuild read the
+// MMDB that R2 offered. When it did not (a saved copy during an outage, another copy after a
+// failed download, or none), the rules part is left out, so the 6-hour skip does not apply and
+// the next run rebuilds and tries R2 again, as it always did.
+func rebuiltState(fingerprint, rules string, now time.Time, mmdbFromR2 bool) locateState {
+	s := locateState{Fingerprint: fingerprint, RebuiltAt: now}
+	if mmdbFromR2 {
+		s.Rules = rules
+	}
+	return s
 }
 
 // readLocateState reads the state file; a missing or damaged one is an empty

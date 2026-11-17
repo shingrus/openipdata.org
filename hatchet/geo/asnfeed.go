@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"openipdata.org/hatchet/ipdata"
 )
 
@@ -56,8 +58,17 @@ type asnPrefix struct {
 	Prefix netip.Prefix
 }
 
-// announcedQuery reads the announced prefixes of every current ASN. Read only.
-const announcedQuery = `SELECT a.asn, a.json FROM public.asn a WHERE ` + ipdata.SeenAtFilter + ` ORDER BY a.asn`
+// announcedQuery reads the announced prefixes of every current ASN (only the prefixes object
+// of its json, ipdata.PrefixesJSON); announcedWholeQuery sends the whole json, for the case that
+// one damaged value fails the first. Read only.
+var (
+	announcedQuery      = announcedSelect(ipdata.PrefixesJSON)
+	announcedWholeQuery = announcedSelect("a.json")
+)
+
+func announcedSelect(doc string) string {
+	return `SELECT a.asn, ` + doc + ` FROM public.asn a WHERE ` + ipdata.SeenAtFilter + ` ORDER BY a.asn`
+}
 
 // readAnnounced returns the announced prefixes (masked) of the current ASNs.
 func readAnnounced(ctx context.Context, dsn string) ([]asnPrefix, error) {
@@ -66,7 +77,23 @@ func readAnnounced(ctx context.Context, dsn string) ([]asnPrefix, error) {
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	rows, err := conn.Query(ctx, announcedQuery)
+	var out []asnPrefix
+	// Each pass collects into its own slice, so a failed first pass adds nothing.
+	err = ipdata.WithJSONFallback(announcedQuery, announcedWholeQuery, func(query string) error {
+		pass, err := readAnnouncedPass(ctx, conn, query)
+		if err == nil {
+			out = pass
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func readAnnouncedPass(ctx context.Context, conn *pgx.Conn, query string) ([]asnPrefix, error) {
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}

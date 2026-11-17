@@ -546,7 +546,7 @@ layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-arin`, `37-w
 
 | Task | Runs after | Does |
 |---|---|---|
-| `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2 |
+| `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2. Of `public.asn.json` the `download` task reads only the `prefixes` object (an SQL fragment shared with the announced-prefix read; a document Postgres cannot read as JSON makes the read repeat with the whole json) |
 | `build-mmdb` | `download` | makes the GeoNames copy available, runs `mmdbbuilder geo` on all the layer files (with `-geonames` when the copy is there, `-asn-main` when `download` saved the ASN prefixes, and always `-fallback`) → `ip2geo-openipdata-<date>.mmdb`; the output says `coordinates: on` or `skipped: <reason>`, with the counts of placed and unplaced cities, `asn_main`: `on`, `skipped: no ASN prefixes` or `skipped: ASN prefixes unreadable` (a bad file never fails the build), and `fallback`: `on` (the guesses `82-asn-likely`, `84-asn-near` and `86-country-main`; without the ASN prefixes only the last one runs) |
 | `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2) against RIPE Atlas (country and city) and our MMDB against a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
 | `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
@@ -824,6 +824,16 @@ country must be the row's) as a row of scope `named` in `public.rdns_geo_layer`,
 layer `67-rdns-names` (same-country). Named rows are recomputed every rebuild: never sticky, carried, counted by the
 shrink guard (they show in `previous_named`/`stored_named`), voting for a wide row, or marking a /24 located. The
 `locate` fingerprint holds only the UTC day of the newest sample.
+
+`locate` skips its rebuild (output `skipped` with `skip_reason`) when the fingerprint of its inputs equals the one of the
+last rebuild and that is less than 24 hours old (`unchanged`), or when the fingerprint differs but the rules (the
+legacy `public.generated_rules` and the candidate `public.rdns_city_rules`) are those of the last rebuild and that
+rebuild is less than 6 hours old (`recent`). So new traces, names, ASN data, customer samples or a new MMDB wait for the
+next rebuild, at most 6 hours, and a rule change still rebuilds at once; `force_replace` always rebuilds. A rebuild that
+could not read the MMDB R2 offered is followed by a rebuild at the next run (it tries R2 again), and the visitor IPs of
+located /24s are deleted on every run, also a skipped one. The state file
+`locate-state.json` keeps the rules part too; one written before that rule has none, so the first run after the change
+rebuilds once.
 
 ### PTR failures in `resolve-ips`
 

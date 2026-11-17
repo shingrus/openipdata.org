@@ -9,28 +9,41 @@ import (
 
 func TestLocateStateCanSkip(t *testing.T) {
 	now := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
-	s := locateState{Fingerprint: "fp", RebuiltAt: now.Add(-time.Hour)}
+	st := func(fp, rules string, age time.Duration) locateState {
+		return locateState{Fingerprint: fp, Rules: rules, RebuiltAt: now.Add(-age)}
+	}
 	for name, c := range map[string]struct {
 		state       locateState
 		fingerprint string
+		rules       string
 		now         time.Time
 		want        bool
+		reason      string
 	}{
-		"same, recent":        {s, "fp", now, true},
-		"changed":             {s, "other", now, false},
-		"just under a day":    {locateState{"fp", now.Add(-locateMaxAge + time.Second)}, "fp", now, true},
-		"a day old":           {locateState{"fp", now.Add(-locateMaxAge)}, "fp", now, false},
-		"older":               {locateState{"fp", now.Add(-48 * time.Hour)}, "fp", now, false},
-		"no state":            {locateState{}, "fp", now, false},
-		"empty fingerprint":   {locateState{"", now}, "", now, false},
-		"clock moved back":    {s, "fp", now.Add(-2 * time.Hour), false},
-		"zero rebuild time":   {locateState{Fingerprint: "fp"}, "fp", now, false},
-		"same, a minute ago":  {locateState{"fp", now.Add(-time.Minute)}, "fp", now, true},
-		"changed and a day":   {locateState{"fp", now.Add(-25 * time.Hour)}, "x", now, false},
-		"same and exactly 0s": {locateState{"fp", now}, "fp", now, true},
+		"same, recent":             {st("fp", "r", time.Hour), "fp", "r", now, true, skipUnchanged},
+		"same, just under a day":   {st("fp", "r", locateMaxAge-time.Second), "fp", "r", now, true, skipUnchanged},
+		"same, a day old":          {st("fp", "r", locateMaxAge), "fp", "r", now, false, ""},
+		"same, older":              {st("fp", "r", 48*time.Hour), "fp", "r", now, false, ""},
+		"same, a minute ago":       {st("fp", "r", time.Minute), "fp", "r", now, true, skipUnchanged},
+		"same and exactly 0s":      {st("fp", "r", 0), "fp", "r", now, true, skipUnchanged},
+		"same, old state no rules": {st("fp", "", time.Hour), "fp", "r", now, true, skipUnchanged},
+		"changed, same rules, 1h":  {st("fp", "r", time.Hour), "other", "r", now, true, skipRecent},
+		"changed, just under 6h":   {st("fp", "r", locateMinInterval-time.Second), "other", "r", now, true, skipRecent},
+		"changed, exactly 6h":      {st("fp", "r", locateMinInterval), "other", "r", now, false, ""},
+		"changed, over 6h":         {st("fp", "r", 7*time.Hour), "other", "r", now, false, ""},
+		"changed rules, 1h":        {st("fp", "r", time.Hour), "other", "r2", now, false, ""},
+		"same fp, changed rules":   {st("fp", "r", 24*time.Hour+time.Minute), "fp", "r2", now, false, ""},
+		"old state without rules":  {st("fp", "", time.Hour), "other", "r", now, false, ""},
+		"no rules both":            {st("fp", "", time.Hour), "other", "", now, false, ""},
+		"no state":                 {locateState{}, "fp", "r", now, false, ""},
+		"empty fingerprint":        {locateState{Fingerprint: "", Rules: "r", RebuiltAt: now}, "", "r", now, false, ""},
+		"clock moved back":         {st("fp", "r", time.Hour), "fp", "r", now.Add(-2 * time.Hour), false, ""},
+		"future, other inputs":     {st("fp", "r", -time.Minute), "other", "r", now, false, ""},
+		"zero rebuild time":        {locateState{Fingerprint: "fp", Rules: "r"}, "other", "r", now, false, ""},
 	} {
-		if got := c.state.canSkip(c.fingerprint, c.now); got != c.want {
-			t.Errorf("%s: canSkip = %v, want %v", name, got, c.want)
+		got, reason := c.state.canSkip(c.fingerprint, c.rules, c.now)
+		if got != c.want || reason != c.reason {
+			t.Errorf("%s: canSkip = %v %q, want %v %q", name, got, reason, c.want, c.reason)
 		}
 	}
 }
@@ -55,5 +68,28 @@ func TestLocateStateFile(t *testing.T) {
 	os.WriteFile(path, []byte("{not json"), 0o640)
 	if s := readLocateState(path); s != (locateState{}) {
 		t.Errorf("damaged file: %+v", s)
+	}
+}
+
+// A rebuild that did not read the MMDB R2 offered saves no rules part, so the 6-hour skip does
+// not apply and the next run rebuilds and tries R2 again.
+func TestRebuiltState(t *testing.T) {
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	good := rebuiltState("fp", "rules", now, true)
+	if good.Rules != "rules" || good.Fingerprint != "fp" || !good.RebuiltAt.Equal(now) {
+		t.Errorf("state %+v", good)
+	}
+	if ok, reason := good.canSkip("other", "rules", now.Add(time.Hour)); !ok || reason != skipRecent {
+		t.Errorf("after a rebuild with the R2 MMDB: %v %q", ok, reason)
+	}
+	degraded := rebuiltState("fp", "rules", now, false)
+	if degraded.Rules != "" {
+		t.Errorf("state %+v", degraded)
+	}
+	if ok, _ := degraded.canSkip("other", "rules", now.Add(time.Hour)); ok {
+		t.Error("the next run skipped after a rebuild without the R2 MMDB")
+	}
+	if ok, reason := degraded.canSkip("fp", "rules", now.Add(time.Hour)); !ok || reason != skipUnchanged {
+		t.Errorf("the same fingerprint still skips as unchanged: %v %q", ok, reason)
 	}
 }

@@ -1,9 +1,14 @@
 package ipdata
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestPublicAddr(t *testing.T) {
@@ -107,6 +112,99 @@ func TestSeenAtFilter(t *testing.T) {
 	for _, part := range []string{"a.seen_at > now() - interval '7 days'", "a.seen_at IS NULL", "FROM public.asn WHERE seen_at IS NOT NULL"} {
 		if !strings.Contains(SeenAtFilter, part) {
 			t.Errorf("SeenAtFilter lacks %q", part)
+		}
+	}
+}
+
+// reducedJSON mirrors PrefixesJSON in Go for a valid JSON object: only the prefixes member stays,
+// null when there is none.
+func reducedJSON(t *testing.T, whole string) string {
+	t.Helper()
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(whole), &doc); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := doc["prefixes"]
+	if !ok {
+		p = json.RawMessage("null")
+	}
+	out, _ := json.Marshal(map[string]json.RawMessage{"prefixes": p})
+	return string(out)
+}
+
+// The reduced document PrefixesJSON builds gives the same prefixes as the whole one, and the
+// shapes without prefixes give none.
+func TestASNPrefixesReducedShapes(t *testing.T) {
+	for name, c := range map[string]struct {
+		whole string
+		want  string
+	}{
+		"both families": {`{"asn": 1, "metadata": {"x": [1]}, "prefixes": {"ipv4": ["45.10.0.1/24", "bad"], "ipv6": ["2a00::/32"]}}`, "45.10.0.1/24 2a00::/32"},
+		"ipv4 only":     {`{"prefixes": {"ipv4": ["8.8.8.0/24"]}}`, "8.8.8.0/24"},
+		"empty object":  {`{"asn": 1, "prefixes": {}}`, ""},
+		"null":          {`{"asn": 1, "prefixes": null}`, ""},
+		"missing":       {`{"asn": 1, "metadata": {}}`, ""},
+		"not an object": {`{"asn": 1, "prefixes": 3}`, ""},
+	} {
+		texts := func(raw string) string {
+			var s []string
+			for _, p := range ASNPrefixes(raw) {
+				s = append(s, p.String())
+			}
+			return strings.Join(s, " ")
+		}
+		reduced := reducedJSON(t, c.whole)
+		if got, whole := texts(reduced), texts(c.whole); got != c.want || whole != c.want {
+			t.Errorf("%s: reduced %q whole %q, want %q", name, got, whole, c.want)
+		}
+	}
+	// What the CASE gives for a value that is no object.
+	if got := ASNPrefixes(""); len(got) != 0 {
+		t.Errorf("empty string: %v", got)
+	}
+}
+
+func TestPrefixesJSONText(t *testing.T) {
+	for _, part := range []string{"a.json LIKE '{%'", "jsonb_build_object('prefixes'", "-> 'prefixes'", "ELSE ''"} {
+		if !strings.Contains(PrefixesJSON, part) {
+			t.Errorf("PrefixesJSON lacks %q: %s", part, PrefixesJSON)
+		}
+	}
+	if strings.Contains(PrefixesJSON, "pg_input_is_valid") {
+		t.Error("PrefixesJSON needs Postgres 16")
+	}
+}
+
+func TestWithJSONFallback(t *testing.T) {
+	damaged := &pgconn.PgError{Code: "22P02"}
+	other := &pgconn.PgError{Code: "42P01"}
+	for name, c := range map[string]struct {
+		errs  []error // the error of each pass
+		want  []string
+		final error
+	}{
+		"first pass fine":         {[]error{nil}, []string{"reduced"}, nil},
+		"damaged, then fine":      {[]error{fmt.Errorf("read: %w", damaged), nil}, []string{"reduced", "whole"}, nil},
+		"a NUL escape, then fine": {[]error{&pgconn.PgError{Code: "22P05"}, nil}, []string{"reduced", "whole"}, nil},
+		"a number out of range":   {[]error{&pgconn.PgError{Code: "22003"}, nil}, []string{"reduced", "whole"}, nil},
+		"nesting too deep":        {[]error{&pgconn.PgError{Code: "54001"}, nil}, []string{"reduced", "whole"}, nil},
+		"damaged twice":           {[]error{damaged, damaged}, []string{"reduced", "whole"}, damaged},
+		"other error, no retry":   {[]error{other}, []string{"reduced"}, other},
+		"plain error, no retry":   {[]error{errors.New("boom")}, []string{"reduced"}, nil},
+	} {
+		var queries []string
+		err := WithJSONFallback("reduced", "whole", func(q string) error {
+			queries = append(queries, q)
+			return c.errs[len(queries)-1]
+		})
+		if strings.Join(queries, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s: queries %v, want %v", name, queries, c.want)
+		}
+		if c.final != nil && !errors.Is(err, c.final) {
+			t.Errorf("%s: err = %v, want %v", name, err, c.final)
+		}
+		if c.final == nil && (err != nil) != (c.errs[len(c.errs)-1] != nil) {
+			t.Errorf("%s: err = %v", name, err)
 		}
 	}
 }
