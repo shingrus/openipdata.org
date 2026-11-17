@@ -150,8 +150,9 @@ func TestPrefixListLinks(t *testing.T) {
 	if strings.Contains(get(s, "GET", "/as64541").Body.String(), "prefixes.txt") {
 		t.Error("link on a network with no prefixes")
 	}
-	if strings.Contains(get(s, "GET", "/prefix/203.0.113.0/24").Body.String(), "prefixes.txt") {
-		t.Error("link on a prefix page")
+	// A prefix page links the list of its network, in the head of "Other prefixes".
+	if b := get(s, "GET", "/prefix/203.0.113.0/24").Body.String(); strings.Count(b, `href="/as64500/prefixes.txt"`) != 1 || !strings.Contains(b, `<h2>Other prefixes of AS64500</h2><a class="r" href="/as64500/prefixes.txt">prefixes.txt</a>`) {
+		t.Error("prefix page: the list link of its network is missing or repeated")
 	}
 	if !strings.Contains(get(s, "GET", "/llms.txt").Body.String(), "/as<number>/prefixes.txt") || !strings.Contains(get(s, "GET", "/llms.txt").Body.String(), "/asn-<slug>/prefixes.txt") {
 		t.Error("llms.txt lacks the patterns")
@@ -192,7 +193,7 @@ func TestBreadcrumbs(t *testing.T) {
 func TestPrefixLinksAdded(t *testing.T) {
 	s := prefixServer(t)
 	b := get(s, "GET", "/prefix/203.0.113.0/24").Body.String()
-	if !strings.Contains(b, `<dd><a href="/asn-example-net">Example Net</a> <a href="/as64500">AS64500</a>`) {
+	if !strings.Contains(b, `<span>Organization</span><b><a href="/asn-example-net">Example Net</a>`) {
 		t.Error("network name does not link to the organization")
 	}
 	// A network with no organization page (no slug): the name, if any, stays plain.
@@ -200,7 +201,8 @@ func TestPrefixLinksAdded(t *testing.T) {
 		t.Error("empty organization link")
 	}
 	// Organization table: the country is plain text (hundreds of rows repeat it).
-	if org := get(s, "GET", "/asn-example-net").Body.String(); strings.Contains(org, `portugal-asn-list`) {
+	// The head has the one link (the Country cell).
+	if org := get(s, "GET", "/asn-example-net").Body.String(); strings.Count(org, `portugal-asn-list`) != 1 || !strings.Contains(org, `<td class="s">Portugal</td>`) {
 		t.Errorf("organization table country is linked")
 	}
 	// The network page already linked the country.
@@ -238,8 +240,10 @@ func BenchmarkPrefixList(b *testing.B) {
 	})
 }
 
-// The network page head: the place in the IPv4 ranking is the second line and
-// there is no map; a network with no IPv4 addresses keeps its handle there.
+// The network page head: the place in the IPv4 ranking is the second line,
+// the name band has no map and the rows are cells (like the organization and
+// the prefix page); a network with no IPv4 addresses keeps its handle on the
+// second line.
 func TestNetworkHeadRank(t *testing.T) {
 	s, _ := asnServer(t)
 	d := s.asnf.data()
@@ -255,8 +259,18 @@ func TestNetworkHeadRank(t *testing.T) {
 	if d.rankV4(4294967295) != 0 {
 		t.Error("rank of an unknown network")
 	}
-	if b := get(s, "GET", "/as64500").Body.String(); !strings.Contains(b, "<p>#138 by IPv4 addresses</p>") || strings.Contains(b, `<svg class="map"`) || strings.Contains(b, "svg.map") {
-		t.Error("network page: no rank line, or a map or its styles")
+	b := get(s, "GET", "/as64500").Body.String()
+	if !strings.Contains(b, "<p>#138 by IPv4 addresses</p>") {
+		t.Error("network page: no rank line")
+	}
+	if !strings.Contains(b, `<div class="w band"><div class="place s"><h2>Example Net</h2>`) || !strings.Contains(b, `<div class="cells">`) || !strings.Contains(b, ".cells{display:grid") || !strings.Contains(b, ".band+.cells{grid-template-columns:repeat(4,") {
+		t.Error("network page: not the name band and the cells, or no cells styles")
+	}
+	if strings.Contains(b, `<svg class="map"`) || strings.Contains(b, "mapped") || strings.Contains(b, `class="conn w"`) || strings.Contains(b, "<dl>") || strings.Contains(b, ".place svg.map{position:absolute") {
+		t.Error("network page: a map, the two halves or the map styles")
+	}
+	if o := get(s, "GET", "/asn-example-net").Body.String(); !strings.Contains(o, `<div class="w band"><div class="place s"><h1>Example Net</h1>`) || !strings.Contains(o, `<div class="cells">`) || strings.Contains(o, `<svg class="map"`) || strings.Contains(o, "mapped") || strings.Contains(o, "<dl>") || strings.Contains(o, ".place svg.map{position:absolute") {
+		t.Error("organization page: not the name band and the cells, or a map")
 	}
 	if noV4 != 0 {
 		n, _ := d.find(noV4)

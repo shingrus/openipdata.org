@@ -355,33 +355,34 @@ func TestPrefixPages(t *testing.T) {
 		want, not    []string
 	}{
 		{"exact, two networks", "/prefix/203.0.113.0/24", true, []string{
-			"<title>203.0.113.0/24 Example Net AS64500</title>", "<h2>Prefix</h2>", `<div class="place s m mapped">`, "<h1>203.0.113.0/24</h1>", "<p>Lisbon, Portugal</p>",
-			`<dd><a href="/asn-example-net">Example Net</a> <a href="/as64500">AS64500</a><br><a href="/asn-example-two">Example Two</a> <a href="/as64501">AS64501</a></dd>`,
-			"<dt>Addresses</dt><dd>256</dd>", `class="aim"`,
-			"More specific prefixes", `<td class="a"><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></td><td class="a"><a href="/as64501">AS64501</a></td><td>Example Two</td>`,
+			"<title>203.0.113.0/24 Example Net AS64500</title>", "<h2>Prefix</h2>", `<div class="w band"><div class="place s m"><h1>203.0.113.0/24</h1>`, `<div class="cells">`, `<p>Lisbon, <a href="/portugal-asn-list">Portugal</a></p>`,
+			`<span>Organization</span><b><a href="/asn-example-net">Example Net</a><br><a href="/asn-example-two">Example Two</a></b>`,
+			`<span>Network</span><b><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a><br><a href="/as64501">EXAMPLE-TWO</a> <a href="/as64501">AS64501</a></b>`,
+			"<span>Addresses</span><b>256</b>",
+			"More specific prefixes", `<td class="a"><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></td><td class="a"><a href="/as64501">AS64501</a></td><td><a href="/asn-example-two">Example Two</a></td>`,
 			`value=""`, `href="/top-asn-by-ip-address"`,
-		}, []string{"Part of", "Places", "Location unknown", "more prefixes"}},
+		}, []string{"Part of", "Places", "Location unknown", "more prefixes", `<svg class="map"`, `class="aim"`, "mapped", "<dl>"}},
 		{"covered only, inside one record", "/prefix/203.0.113.0/25", false, []string{
-			"<title>203.0.113.0/25</title>", "<p>Lisbon, Portugal</p>", `class="aim"`,
-			`<dt>Part of</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a> <a href="/as64500">AS64500</a></dd>`,
-			"<dt>Addresses</dt><dd>128</dd>",
-		}, []string{"<dt>Network</dt>", "More specific", "Places"}},
+			"<title>203.0.113.0/25</title>", `<p>Lisbon, <a href="/portugal-asn-list">Portugal</a></p>`,
+			`<span>Part of</span><b><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a> <a href="/as64500">AS64500</a></b>`,
+			"<span>Addresses</span><b>128</b>",
+		}, []string{"<span>Network</span>", "More specific", "Places", `<svg class="map"`, `class="aim"`}},
 		{"IPv6 exact", "/prefix/2001:db8::/32", true, []string{
-			"<h1>2001:db8::/32</h1>", "<dt>/64s</dt><dd>4,294,967,296</dd>", "<p>Lisbon, Portugal</p>", `class="aim"`,
-			`<a href="/prefix/2001:db8:1::/48">2001:db8:1::/48</a>`, `<a href="/prefix/2001:db8:ffff::/48">`, "<dt>Network</dt>",
-		}, []string{"<dt>Addresses</dt>", "Part of"}},
+			"<h1>2001:db8::/32</h1>", `<span>Addresses</span><b title="4,294,967,296 /64 networks">4.3B /64 networks</b>`, `<p>Lisbon, <a href="/portugal-asn-list">Portugal</a></p>`,
+			`<a href="/prefix/2001:db8:1::/48">2001:db8:1::/48</a>`, `<a href="/prefix/2001:db8:ffff::/48">`, "<span>Network</span>",
+		}, []string{"<span>/64s</span>", "Part of", `<svg class="map"`, `class="aim"`}},
 		{"IPv6 leaf with a parent", "/prefix/2001:db8:1::/48", true, []string{
-			"<dt>/64s</dt><dd>65,536</dd>", `<dt>Part of</dt><dd><a href="/prefix/2001:db8::/32">2001:db8::/32</a> <a href="/as64500">AS64500</a></dd>`, `<dt>Network</dt><dd><a href="/asn-big-net">Big Net</a>`,
+			`<span>Addresses</span><b title="65,536 /64 networks">65.5K /64 networks</b>`, `<span>Part of</span><b><a href="/prefix/2001:db8::/32">2001:db8::/32</a> <a href="/as64500">AS64500</a></b>`, `<span>Organization</span><b><a href="/asn-big-net">Big Net</a></b>`, `<span>Network</span><b><a href="/as64503">BIG-NET</a> <a href="/as64503">AS64503</a></b>`,
 		}, []string{"More specific"}},
-		{"IPv6 longer than /64", "/prefix/2001:db8:1::/96", false, []string{"<dt>/64s</dt><dd>&lt;1</dd>", "Part of"}, nil},
-		{"IPv6 /128", "/prefix/2001:db8:1::5/128", false, []string{"<h1>2001:db8:1::5/128</h1>", "<dt>/64s</dt><dd>&lt;1</dd>", `<a href="/prefix/2001:db8:1::/48"`}, nil},
-		{"announced only inside", "/prefix/198.18.0.0/21", false, []string{"<dt>Addresses</dt><dd>2,048</dd>", "More specific prefixes"}, []string{"Part of", "<dt>Network</dt>"}},
+		{"IPv6 longer than /64", "/prefix/2001:db8:1::/96", false, []string{"<span>Addresses</span><b>4,294,967,296</b>", "Part of"}, []string{"/64"}},
+		{"IPv6 /128", "/prefix/2001:db8:1::5/128", false, []string{"<h1>2001:db8:1::5/128</h1>", "<span>Addresses</span><b>1</b>", `<a href="/prefix/2001:db8:1::/48"`}, nil},
+		{"announced only inside", "/prefix/198.18.0.0/21", false, []string{"<span>Addresses</span><b>2,048</b>", "More specific prefixes"}, []string{"Part of", "<span>Network</span>"}},
 		{"a piece of a prefix with a smaller piece announced", "/prefix/198.18.0.0/23", false, []string{"198.18.0.0/22", `href="/prefix/198.18.0.0/25"`}, nil},
 		{"many networks, one prefix", "/prefix/198.18.8.0/24", true, []string{
-			`href="/as64550">AS64550</a>`, `href="/as64554">AS64554</a>`, `<a href="/asn-net-one">Net One</a> <a`,
+			`href="/as64550">AS64550</a>`, `href="/as64554">AS64554</a>`, `<span>Organization</span><b><a href="/asn-net-one">Net One</a></b>`, `<b><a href="/as64550">ONE</a> <a href="/as64550">AS64550</a><br><a href="/as64551">SHARE-1</a> <a`,
 		}, []string{`href="/as64555"`, `href="/as64556"`}},
 		{"more specific prefixes are capped", "/prefix/203.0.114.0/24", true, []string{
-			">120</span>", "20 more prefixes", `<td class="a"><a href="/prefix/203.0.114.99/32">`, "<td>Small Net</td>", `<a href="/asn-wide-net">Wide Net</a> <a`,
+			">120</span>", "20 more prefixes", `<td class="a"><a href="/prefix/203.0.114.99/32">`, `<td><a href="/asn-small-net">Small Net</a></td>`, `<b><a href="/asn-wide-net">Wide Net</a></b>`,
 		}, []string{`href="/prefix/203.0.114.100/32"`}},
 		{"odd data is skipped", "/prefix/9.9.9.0/24", true, []string{"Odd Net"}, nil},
 	} {
@@ -418,8 +419,10 @@ func TestPrefixPages(t *testing.T) {
 		t.Errorf("more specific rows: %d, want %d", n, maxInside)
 	}
 	// Five networks at most in the head.
-	if got := get(s, "GET", "/prefix/198.18.8.0/24").Body.String(); strings.Count(got, `href="/as645`) != maxNetworkRows {
-		t.Errorf("networks in the head: %d", strings.Count(got, `href="/as645`))
+	got := get(s, "GET", "/prefix/198.18.8.0/24").Body.String()
+	head, _, _ := strings.Cut(got, "</section>") // the tables below have links of their own
+	if n := strings.Count(head, `">AS645`); n != maxNetworkRows {
+		t.Errorf("networks in the head: %d", n)
 	}
 }
 
@@ -429,16 +432,16 @@ func TestPrefixPlaces(t *testing.T) {
 		name, target string
 		want, not    []string
 	}{
-		{"one place, whole prefix", "/prefix/198.18.0.0/25", []string{"<p>Lisbon, Portugal</p>", `class="aim"`, `class="place s m mapped"`}, []string{"Places"}},
-		{"country only", "/prefix/198.51.100.0/24", []string{"<p>Spain</p>", `<svg class="map"`, `class="here"`}, []string{`class="aim"`, "Places", "Unknown"}},
+		{"one place, whole prefix", "/prefix/198.18.0.0/25", []string{`<p>Lisbon, <a href="/portugal-asn-list">Portugal</a></p>`, `<div class="w band"><div class="place s m">`}, []string{"Places", `<svg class="map"`, `class="aim"`, "mapped"}},
+		{"country only", "/prefix/198.51.100.0/24", []string{`<p><a href="/spain-asn-list">Spain</a></p>`}, []string{`<svg class="map"`, `class="here"`, `class="aim"`, "Places", "Unknown"}},
 		{"nothing known", "/prefix/203.0.114.0/24", []string{`<p class="none">Location unknown</p>`}, []string{"Places", `<svg class="map"`, `class="here"`}},
 		{"two places and a gap", "/prefix/198.18.0.0/24", []string{
 			"<h2>Places</h2>", `<span class="r">2</span>`,
 			`<td>Lisbon</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<td>—</td><td><a href="/spain-asn-list">Spain</a></td><td class="n">25.0%</td>`, `<td>Unknown</td><td>—</td><td class="n">25.0%</td>`,
 		}, []string{"Lisbon, Portugal", `<svg class="map"`, "more places"}},
 		{"two cities of one country", "/prefix/198.18.1.0/24", []string{
-			`<td>Lisbon</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<td>Porto</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<svg class="map"`, `class="here"`,
-		}, []string{`class="aim"`, "Unknown", "<p>"}},
+			`<td>Lisbon</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<td>Porto</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">50.0%</td>`, `<p><a href="/portugal-asn-list">Portugal</a></p>`,
+		}, []string{`<svg class="map"`, `class="here"`, `class="aim"`, "Unknown"}},
 		{"part of a prefix, a gap and one place", "/prefix/198.18.0.0/23", []string{
 			`<td>Lisbon</td><td><a href="/portugal-asn-list">Portugal</a></td><td class="n">`, `<td>Unknown</td>`,
 		}, nil},
@@ -541,10 +544,10 @@ func TestPrefixLinksOnOtherPages(t *testing.T) {
 		t.Error("IPv6 prefix not linked")
 	}
 
-	// The lookup panel shows the longest announced prefix and links it.
+	// The lookup panel shows the longest announced prefix in its Prefix row and links it.
 	for _, c := range []struct{ target, want string }{
-		{"/?203.0.113.9", ` · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`},
-		{"/?203.0.113.200", ` · <a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></dd>`}, // the MMDB says /24
+		{"/?203.0.113.9", `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`},
+		{"/?203.0.113.200", `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></dd>`}, // the MMDB says /24
 		{"/?2001:db8::5", `<a href="/prefix/2001:db8::/32">2001:db8::/32</a>`},
 	} {
 		if b := get(s, "GET", c.target).Body.String(); !strings.Contains(b, c.want) {
@@ -555,13 +558,13 @@ func TestPrefixLinksOnOtherPages(t *testing.T) {
 	if b := get(s, "GET", "/?192.0.2.1").Body.String(); !strings.Contains(b, "<dt>Network</dt><dd>—</dd>") || strings.Contains(b, "<dt>Prefix") {
 		t.Error("an address with no prefix")
 	}
-	// The visitor's page stays private; its Network row links the prefix, and there is no Prefix row.
+	// The visitor's page stays private; its Prefix row links the prefix.
 	w := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "203.0.113.9")
-	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || strings.Contains(w.Body.String(), "<dt>Prefix") || !strings.Contains(w.Body.String(), ` · <a href="/prefix/203.0.113.0/24">`) {
+	if w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("ETag") != "" || !strings.Contains(w.Body.String(), `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
 		t.Errorf("visitor page: %v", w.Header())
 	}
-	// Without the ASN data the MMDB tree prefix is linked after the MMDB text.
-	if b := get(fixtureServer(t), "GET", "/?203.0.113.9").Body.String(); !strings.Contains(b, `<dd>Example Net · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
+	// Without the ASN data the MMDB tree prefix is linked in the Prefix row.
+	if b := get(fixtureServer(t), "GET", "/?203.0.113.9").Body.String(); !strings.Contains(b, `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
 		t.Errorf("no ASN data: %s", b)
 	}
 }
@@ -616,5 +619,31 @@ func TestPrefixPagesHaveNoVisitorData(t *testing.T) {
 		if w.Code == 200 && (!strings.Contains(w.Body.String(), `value=""`) || strings.Count(w.Body.String(), "<script") != 3) {
 			t.Errorf("%s: lookup bar or scripts", target)
 		}
+	}
+}
+
+// The head of the network, organization and prefix pages is a name band with
+// the facts as cells: no two halves, no map and no definition list; a prefix
+// that is not announced exactly has only the cells Addresses and Part of.
+func TestNameBandAndCells(t *testing.T) {
+	s := prefixServer(t)
+	for _, target := range []string{"/as64500", "/asn-example-net", "/prefix/203.0.113.0/24", "/prefix/203.0.113.0/25"} {
+		b := get(s, "GET", target).Body.String()
+		for _, x := range []string{`<div class="w band">`, `<div class="cells">`} {
+			if !strings.Contains(b, x) {
+				t.Errorf("%s: page lacks %q", target, x)
+			}
+		}
+		for _, x := range []string{`<svg class="map"`, "<dl>", "<dt>", `class="conn w"`, "mapped"} {
+			if strings.Contains(b, x) {
+				t.Errorf("%s: page has %q", target, x)
+			}
+		}
+	}
+	b := get(s, "GET", "/prefix/203.0.113.0/25").Body.String()
+	_, cells, _ := strings.Cut(b, `<div class="cells">`)
+	cells, _, _ = strings.Cut(cells, "</section>")
+	if n := strings.Count(cells, "<div><span>"); n != 2 || !strings.Contains(cells, "<span>Addresses</span>") || !strings.Contains(cells, "<span>Part of</span>") {
+		t.Errorf("a prefix that is not announced exactly: %d cells, want Addresses and Part of: %s", n, cells)
 	}
 }

@@ -580,7 +580,9 @@ func TestReportPage(t *testing.T) {
 		"<title>Shared report · openipdata.org</title>", `<meta name="robots" content="noindex">`, "<h2>Shared report</h2>", `<span class="r">Shared 15 Nov 2026 16:50 UTC · expires 15 Dec 2026</span>`,
 		`<dt>IPv4</dt><dd class="c"><span class="w"><span class="v">203.0.113.9</span><button class="cp"`, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::9</span><button class="cp"`,
 		`<dt>DNS resolver</dt><dd class="od"><a href="/?203.0.113.50">203.0.113.50</a><small><a href="/asn-example-net">EXAMPLE-NET</a></small></dd>`,
-		`<dt>Network</dt><dd><a href="/asn-example-net">EXAMPLE-NET</a> · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
+		`<dt>Organization</dt><dd><a href="/asn-example-net">Example Net</a></dd>`,
+		`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>`,
+		`<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
 		"<h1>Lisbon</h1>", `<p><a href="/portugal-asn-list">Portugal</a></p>`, `class="place mapped"`, `<svg class="map"`,
 	} {
 		if !strings.Contains(b, x) {
@@ -590,7 +592,7 @@ func TestReportPage(t *testing.T) {
 	if i, j := strings.Index(b, "<dt>Network</dt>"), strings.Index(b, "<dt>DNS resolver</dt>"); i < 0 || j < i {
 		t.Error("report: the Network row is not before the DNS resolver row")
 	}
-	for _, bad := range []string{resolverJS, fillJS, `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>", "<dt>Prefix"} {
+	for _, bad := range []string{resolverJS, fillJS, `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>"} {
 		if strings.Contains(b, bad) {
 			t.Errorf("report has %q", bad)
 		}
@@ -642,8 +644,8 @@ func TestReportPage(t *testing.T) {
 }
 
 // A report shows the values of the visit, not what the data says now. Older
-// snapshots have no slug and no prefix: the handle links to the network page
-// and there is no prefix part.
+// snapshots have no slug, no organization and no prefix: the handle and the AS
+// number link to the network page and there is no Organization or Prefix row.
 func TestReportShownAsStored(t *testing.T) {
 	s, m := shareServer(t)
 	id := share(t, s, "203.0.113.9", "")
@@ -652,10 +654,13 @@ func TestReportShownAsStored(t *testing.T) {
 		slug, prefix string
 		want         string
 	}{
-		{"older snapshot: no slug, no prefix", "", "", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a></dd>`},
-		{"slug and prefix", "old-name", "198.51.100.0/24", `<dt>Network</dt><dd><a href="/asn-old-name">OLD-NAME</a> · <a href="/prefix/198.51.100.0/24">198.51.100.0/24</a></dd>`},
-		{"slug, prefix outside the page range: plain", "old-name", "2.0.0.0/7", `<dt>Network</dt><dd><a href="/asn-old-name">OLD-NAME</a> · 2.0.0.0/7</dd>`},
-		{"prefix, no slug", "", "198.51.100.0/24", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a> · <a href="/prefix/198.51.100.0/24">198.51.100.0/24</a></dd>`},
+		{"older snapshot: no slug, no prefix", "", "", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a> <a href="/as1">AS1</a></dd>`},
+		{"slug and prefix", "old-name", "198.51.100.0/24", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a> <a href="/as1">AS1</a></dd></div>
+<div><dt>Prefix</dt><dd><a href="/prefix/198.51.100.0/24">198.51.100.0/24</a></dd>`},
+		{"slug, prefix outside the page range: plain", "old-name", "2.0.0.0/7", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a> <a href="/as1">AS1</a></dd></div>
+<div><dt>Prefix</dt><dd>2.0.0.0/7</dd>`},
+		{"prefix, no slug", "", "198.51.100.0/24", `<dt>Network</dt><dd><a href="/as1">OLD-NAME</a> <a href="/as1">AS1</a></dd></div>
+<div><dt>Prefix</dt><dd><a href="/prefix/198.51.100.0/24">198.51.100.0/24</a></dd>`},
 	} {
 		sn := m.snapshot(t, id)
 		sn.Network = netSnap{ASN: 1, Handle: "OLD-NAME", Slug: c.slug, Prefix: c.prefix}

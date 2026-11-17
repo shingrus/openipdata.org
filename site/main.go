@@ -388,14 +388,14 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 	case "lookup":
 		input = q.addr.String()
 		title = input + " · openipdata.org"
-		p = s.panelFor("Lookup", q.addr)
+		p = s.panelFor(r.Context(), "Lookup", q.addr)
 	default: // the visitor: private data
 		cache = "private, no-store"
 		title, desc, canon = homeTitle, homeDesc, s.canon("/")
 		if a, ok := clientAddr(r, s.realIP); ok {
 			visitor = a
 			input = a.String()
-			p = s.panelFor("Your connection", a)
+			p = s.panelFor(r.Context(), "Your connection", a)
 			fill = s.addFill(&p, a)
 			res = s.addDNS(&p)
 			if p.Msg == "" {

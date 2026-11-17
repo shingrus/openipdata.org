@@ -491,7 +491,7 @@ func TestMapLayoutStable(t *testing.T) {
 	if re.FindString(with) != `<div class="place mapped">` || re.FindString(without) != `<div class="place none">` {
 		t.Errorf("place classes: %q %q", re.FindString(with), re.FindString(without))
 	}
-	css := styleCSS + mapCSS
+	css := styleCSS + placeCSS + mapCSS
 	for _, x := range []string{".place svg.map{position:absolute;", "height:100%;max-width:100%", "pointer-events:none", "mask:linear-gradient", "vector-effect:non-scaling-stroke"} {
 		if !strings.Contains(css, x) {
 			t.Errorf("style.css lacks %q", x)
@@ -501,13 +501,9 @@ func TestMapLayoutStable(t *testing.T) {
 	if !strings.Contains(css, ".place{position:relative;min-width:0;min-height:240px") || !strings.Contains(css, ".place{min-height:170px") {
 		t.Error("the place block lost its fixed min-height")
 	}
-	// The class set with a map only drops the grid (keeps the glow); it never touches the box.
-	m := regexp.MustCompile(`\.place\.mapped\{([^}]*)\}`).FindStringSubmatch(css)
-	if m == nil || !strings.HasPrefix(m[1], "background:radial-gradient(") || strings.Contains(m[1], "linear-gradient") || strings.Contains(m[1], ";") {
-		t.Errorf(".place.mapped is not a background-only rule without the grid: %v", m)
-	}
-	if strings.Count(css, ".place.mapped") != 1 {
-		t.Error(".place.mapped has more than one rule")
+	// No grid behind a place block, with or without a map: only the glow (owner, 2026-11-17).
+	if strings.Contains(css, "--grid") || strings.Contains(css, "linear-gradient(var(") || strings.Contains(css, ".place.mapped") {
+		t.Error("the place block has a grid background, or a rule for the mapped class")
 	}
 	// Only existing colour tokens.
 	for _, x := range []string{"fill:var(--raised)", "stroke:var(--line-2)", "stroke:var(--accent)", "fill:var(--accent-soft)", "fill:var(--accent);opacity"} {
@@ -587,11 +583,14 @@ func TestMapSizes(t *testing.T) {
 			Share: true, Rows: []row{
 				{K: "IPv4", V: "203.0.113.9", Copy: true}, {K: "IPv6", V: "—", Fam: "6", From: u6, Copy: true},
 				{K: "DNS resolver", V: "—", Zone: "r.openipdata.org"},
-				{K: "Network", Parts: []part{{Text: "EXAMPLE-NET", Href: "/as64500"}, {Text: "ISP"}, {Text: "example.net"}}}},
+				{K: "Organization", Parts: []part{{Text: "British Telecommunications Limited", Href: "/asn-british-telecommunications-limited"}}},
+				{K: "Network", Parts: []part{{Text: "EXAMPLE-NET", Href: "/as64500"}, {Text: "AS64500", Href: "/as64500", Sp: true}}},
+				{K: "Prefix", Parts: []part{{Text: "203.0.113.0/24", Href: "/prefix/203.0.113.0/24"}}},
+				{K: "Domain", Parts: []part{{Text: "example-network-domain.net", Href: "https://example-network-domain.net/?utm_source=openipdata.org", Ext: true}}}},
 			Hdr: template.JS(strings.Repeat("x", 600)), Br: browserRowFor("Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0", "")} // the biggest icons: Firefox and Linux
-		v.Net = &netPanel{ASN: "AS2856", Href: "/as2856", Org: "British Telecommunications Limited", OrgHref: "/asn-british-telecommunications-limited",
+		v.Net = &netPanel{ASN: "AS2856", Href: "/as2856",
 			Type: "Education research", Country: "United Kingdom", CountryHref: "/united-kingdom-asn-list", Role: "Access provider",
-			N4: "1,234", N6: "123", Addr: "12.4M", AddrTitle: "12,402,688", Domain: "example-network-domain.net"} // a long Network panel
+			N4: "1,234", N6: "123", Addr: "12,402,688"} // a long Network panel
 		v.API = s.apiPanelFor("/json", netip.MustParseAddr("203.0.113.9"))
 		v.CSS = v.homeCSS()
 		page, err := render(s.tmpl, "home.html", v)

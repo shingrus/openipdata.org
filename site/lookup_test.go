@@ -156,9 +156,9 @@ func TestPanelStates(t *testing.T) {
 		want, not    []string
 	}{
 		{"city", "/?203.0.113.9", 200,
-			[]string{"<h2>Lookup</h2>", "<h1>Lisbon</h1>", "<p>Portugal</p>", "<dt>Network</dt>", `<dd class="c"><span class="w"><span class="v">203.0.113.9</span>`, "Example Net · <a href=\"/prefix/203.0.113.0/24\">203.0.113.0/24</a>", `value="203.0.113.9"`}, []string{"Your connection", "Location unknown", "<dt>Prefix"}},
+			[]string{"<h2>Lookup</h2>", "<h1>Lisbon</h1>", "<p>Portugal</p>", "<dt>Organization</dt><dd>Example Net</dd>", "<dt>Network</dt><dd>AS64500</dd>", `<dd class="c"><span class="w"><span class="v">203.0.113.9</span>`, "<dt>Prefix</dt><dd><a href=\"/prefix/203.0.113.0/24\">203.0.113.0/24</a></dd>", `value="203.0.113.9"`}, []string{"Your connection", "Location unknown", "<dt>Domain"}},
 		{"city v6", "/?2001:db8::5", 200,
-			[]string{"<h1>Lisbon</h1>", "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">2001:db8::5</span><button class=\"cp\"", "Example Net · <a href=\"/prefix/2001:db8::/32\">2001:db8::/32</a>"}, nil},
+			[]string{"<h1>Lisbon</h1>", "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">2001:db8::5</span><button class=\"cp\"", "<dt>Organization</dt><dd>Example Net</dd>", "<dt>Network</dt><dd>AS64500</dd>", "<dt>Prefix</dt><dd><a href=\"/prefix/2001:db8::/32\">2001:db8::/32</a></dd>"}, nil},
 		{"IPv4", "/?203.0.113.9", 200, []string{"<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\"", `value="203.0.113.9"`}, []string{"::ffff"}},
 		{"country only", "/?198.51.100.1", 200,
 			[]string{"<h1>Spain</h1>", `<div class="place mapped"><svg class="map"`, "<dt>Network</dt><dd>—</dd>"}, []string{"<dt>Prefix", "Lisbon", "city unknown", "<p>"}},

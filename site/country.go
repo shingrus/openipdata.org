@@ -170,13 +170,13 @@ func (s *server) countryPage(d *asnData, cc string) *cachedPage {
 	})
 	name := d.countryName(cc)
 	t := table{Title: name + " ASN list", H1: true, Right: plural(int64(len(ids)), "network", "networks"),
-		Cols: []column{{"#", "r"}, {"AS", ""}, {"Organization", ""}, {"IPv4 addresses", "n"}, {"IPv6 /64s", "n s"}}}
+		Cols: []column{{"#", "r"}, {"AS", ""}, {"Organization", ""}, {"IPv4 addresses", "n"}, {"IPv6 /64 networks", "n s"}}}
 	for i, id := range ids[:min(len(ids), maxCountryNet)] {
 		n := &d.nets[id]
 		t.Rows = append(t.Rows, []cell{
 			{Text: strconv.Itoa(i + 1), Class: "r"},
 			{Text: asnText(n.asn), Href: asnHref(n.asn), Class: "a"},
-			{Text: orElseDash(nameOf(n))},
+			orgCell(n),
 			{Text: fmtInt(n.v4), Class: "n"},
 			{Text: fmtV6(n.v6), Class: "n s"},
 		})

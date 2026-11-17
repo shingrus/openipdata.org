@@ -55,7 +55,7 @@ func TestCountryRoutes(t *testing.T) {
 		{"canonical", "/germany-asn-list", 200, "", []string{
 			"<title>Germany ASN list: networks by IPv4 addresses</title>", "<h1>Germany ASN list</h1>", `<span class="r">520 networks</span>`,
 			`<link rel="canonical" href="https://openipdata.org/germany-asn-list">`, `<a href="/as65519">AS65519</a>`, "more networks", `value=""`,
-			"<th class=\"n s\">IPv6 /64s</th>", "<th class=\"n\">IPv4 addresses</th>", "<td>Huge Net</td>",
+			"<th class=\"n s\">IPv6 /64 networks</th>", "<th class=\"n\">IPv4 addresses</th>", `<td><a href="/asn-huge-net">Huge Net</a></td>`,
 		}, []string{`content="noindex"`, "France"}},
 		{"upper case", "/Germany-ASN-list", 301, "/germany-asn-list", nil, nil},
 		{"all upper", "/GERMANY-ASN-LIST", 301, "/germany-asn-list", nil, nil},
@@ -181,7 +181,7 @@ func TestCountryLinks(t *testing.T) {
 	if b := get(s, "GET", "/list-of-countries-by-ipv4-allocation").Body.String(); !strings.Contains(b, `<td><a href="/germany-asn-list">Germany</a></td>`) {
 		t.Error("ranking has no link")
 	}
-	if b := get(s, "GET", "/as64500").Body.String(); !strings.Contains(b, `<dd><a href="/portugal-asn-list">Portugal</a></dd>`) {
+	if b := get(s, "GET", "/as64500").Body.String(); !strings.Contains(b, `<span>Country</span><b><a href="/portugal-asn-list">Portugal</a></b>`) {
 		t.Error("network page has no link")
 	}
 	// A network with no country has no link.

@@ -1,5 +1,5 @@
 /* The Network panel (home and lookup pages that have it). */
-.cells{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line)}
+.cells{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line)} /* six cells, three in a row */
 .cells div{min-width:0;padding:14px 20px;background:var(--panel)}
 .cells span{display:block} /* label and value look like dt and dd (style.css) */
 .cells b{display:block;margin-top:5px;font-variant-numeric:tabular-nums}

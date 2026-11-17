@@ -1,12 +1,15 @@
 /* The ASN pages: added to style.css on those pages only. */
 .head h1{font:inherit;color:var(--text);min-width:0}
-.place.s{min-height:150px}
 .w .place>:is(h1,h2){position:relative;font-size:clamp(26px,4.5vw,40px);font-weight:600;line-height:1.08;letter-spacing:-.03em;overflow-wrap:anywhere}
 .w .place.none>:is(h1,h2){color:var(--faint)}
 .w .place.m>:is(h1,h2){font:500 clamp(20px,3.6vw,30px)/1.15 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.02em}
+.w.band .place{min-height:0;border-right:0;border-bottom:1px solid var(--line)} /* network, organization and prefix pages: the name over the whole width, the facts as cells below */
+.band+.cells{grid-template-columns:repeat(4,minmax(0,1fr))}
+.band+.cells div:last-child:nth-child(4n+1){grid-column:span 4} /* a short last row: its last cell takes the rest, so no empty slot shows the line colour */
+.band+.cells div:last-child:nth-child(4n+2){grid-column:span 3}
+.band+.cells div:last-child:nth-child(4n+3){grid-column:span 2}
 .place p.none{color:var(--faint)}
 .place.s p{font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
-.conn.w dl div,.fact dl div{grid-template-columns:132px minmax(0,1fr)}
 dt{overflow-wrap:anywhere}
 dd.none{color:var(--faint)}
 .fact dl{grid-auto-rows:auto}
@@ -21,20 +24,15 @@ dd.none{color:var(--faint)}
 .tbl td.a{white-space:nowrap;font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
 .tbl td.n{white-space:nowrap;font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
 .tbl .n{padding-left:8px}
-.pf{display:grid;grid-template-columns:64px minmax(0,1fr);gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
-.pf h3{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);padding-top:2px}
-.pf ul{list-style:none;padding:0;columns:190px auto;column-gap:16px;font:400 14px/1.7 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
-.pf ul li{break-inside:avoid}
-.pf:last-of-type{border-bottom:0}
 @media (max-width:700px){
-  .conn.w dl div,.fact dl div{grid-template-columns:112px minmax(0,1fr)}
-  .place.s{min-height:100px}
+  .band+.cells{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .band+.cells div:last-child:nth-child(n){grid-column:auto}
+  .band+.cells div:last-child:nth-child(odd){grid-column:span 2}
   .tbl th,.tbl td{padding-inline:6px}
   .tbl td.n,.tbl td.a,.tbl td.r{font-size:13px}
   .tbl td{overflow-wrap:anywhere}
   .tbl th:first-child,.tbl td:first-child{padding-left:16px}
   .tbl th:last-child,.tbl td:last-child{padding-right:16px}
   .tbl .s{display:none}
-  .pf{grid-template-columns:minmax(0,1fr);gap:4px;padding:12px 16px}
 }
 @media (max-width:360px){.tbl th{overflow-wrap:anywhere;letter-spacing:.04em}}

@@ -2,9 +2,9 @@ package main
 
 // The Network panel of the visitor's page and of a lookup page: the network
 // (AS) of the address, as a grid of cells. The panel exists only when the ASN
-// data is loaded and has the network. Organisation, country, prefix counts and
-// addresses come from the in-memory record; type, role and domain are read
-// with one parameterised query per page view under the read lock of asnFile.
+// data is loaded and has the network. Country, prefix counts and addresses
+// come from the in-memory record; type and role are read with one
+// parameterised query per page view under the read lock of asnFile.
 
 import (
 	"context"
@@ -19,13 +19,11 @@ import (
 
 type netPanel struct {
 	ASN, Href            string // "AS2856" and its page
-	Org, OrgHref         string
 	Type                 string
 	Country, CountryHref string
 	Role                 string
 	N4, N6               string
-	Addr, AddrTitle      string
-	Domain               string
+	Addr                 string
 }
 
 // words turns a metadata value such as education_research into "Education
@@ -63,7 +61,7 @@ func compactCount(n int64) string {
 	units := []struct {
 		size   int64
 		suffix string
-	}{{1e3, "K"}, {1e6, "M"}, {1e9, "B"}}
+	}{{1e3, "K"}, {1e6, "M"}, {1e9, "B"}, {1e12, "T"}}
 	i := 0
 	for i+1 < len(units) && n >= units[i+1].size {
 		i++
@@ -98,10 +96,10 @@ func (s *server) netPanelFor(ctx context.Context, a netip.Addr) *netPanel {
 		return nil
 	}
 	var (
-		nw             *network
-		found          bool
-		cname          string
-		cat, role, dom string
+		nw        *network
+		found     bool
+		cname     string
+		cat, role string
 	)
 	loaded := s.asnf.read(func(db *sql.DB, d *asnData) {
 		if nw, found = d.find(num); !found || nw == nil {
@@ -109,32 +107,23 @@ func (s *server) netPanelFor(ctx context.Context, a netip.Addr) *netPanel {
 			return
 		}
 		cname = d.countryName(nw.cc)
-		var c, r, dm sql.NullString
+		var c, r sql.NullString
 		err := db.QueryRowContext(ctx, `SELECT CASE WHEN json_valid(json) THEN json_extract(json, '$.metadata.category') END,
  CASE WHEN json_valid(json) THEN json_extract(json, '$.metadata.networkRole') END FROM asn WHERE asn = ?`, int64(num)).Scan(&c, &r)
 		if err == nil {
 			cat, role = clip(c.String, 120), clip(r.String, 120)
-		}
-		// A missing domain, or a file without that table, only means unknown.
-		if err := db.QueryRowContext(ctx, `SELECT domain FROM asn_domain WHERE asn = ?`, int64(num)).Scan(&dm); err == nil {
-			dom = clip(dm.String, 120)
 		}
 	})
 	if !loaded || !found {
 		return nil
 	}
 	p := &netPanel{
-		ASN:    "AS" + strconv.FormatUint(uint64(num), 10),
-		Href:   asnHref(num),
-		Org:    orDash(clip(firstNonEmpty(nw.org, nw.handle), 120)),
-		Type:   orDash(words(cat)),
-		Role:   orDash(roleText(role)),
-		N4:     dash,
-		N6:     dash,
-		Domain: orDash(dom),
-	}
-	if validSlug(nw.slug) && p.Org != dash {
-		p.OrgHref = orgPathPrefix + nw.slug
+		ASN:  "AS" + strconv.FormatUint(uint64(num), 10),
+		Href: asnHref(num),
+		Type: orDash(words(cat)),
+		Role: orDash(roleText(role)),
+		N4:   dash,
+		N6:   dash,
 	}
 	p.Country = dash
 	if nw.cc != "" {
@@ -144,7 +133,7 @@ func (s *server) netPanelFor(ctx context.Context, a netip.Addr) *netPanel {
 	if nw.hasPfxes {
 		p.N4, p.N6 = fmtInt(int64(nw.n4)), fmtInt(int64(nw.n6))
 	}
-	p.Addr, p.AddrTitle = compactCount(nw.v4), fmtInt(nw.v4)
+	p.Addr = fmtInt(nw.v4) // in full, like every IPv4 count of the site
 	return p
 }
 

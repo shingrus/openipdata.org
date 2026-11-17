@@ -41,15 +41,15 @@ type pageBudget struct {
 var pageBudgets = []pageBudget{
 	{"/", 13000, 4700, 110000, 2000 * time.Microsecond},                                    // 11426, 4199, 67537, 25µs
 	{"/download", 21000, 6900, 40000, 2000 * time.Microsecond},                             // 18649, 6240, 25772, 3µs
-	{"/as64500", 15500, 5300, 140000, 2000 * time.Microsecond},                             // 13980, 4751, 88552, 68µs
-	{"/as64503", 79000, 12000, 1490000, 19000 * time.Microsecond},                          // 71472, 10830, 991941, 1824µs
-	{"/as64600", 29500, 6400, 490000, 7000 * time.Microsecond},                             // 26433, 5738, 325387, 605µs
-	{"/asn-example-net", 15000, 5100, 130000, 2000 * time.Microsecond},                     // 13412, 4575, 80363, 47µs
-	{"/asn-huge-net", 112500, 12300, 2530000, 41000 * time.Microsecond},                    // 101928, 11143, 1682261, 4090µs
-	{"/prefix/203.0.113.0/24", 17000, 6000, 150000, 2000 * time.Microsecond},               // 15685, 5546, 97560, 40µs (lowered with the coarse land of the map)
-	{"/prefix/198.18.0.0/24", 15500, 5200, 130000, 2000 * time.Microsecond},                // 13769, 4652, 86304, 58µs
+	{"/as64500", 16100, 5330, 130000, 2000 * time.Microsecond},                             // 14611, 4842, 104124, 77µs (name band and cells, no map, 2026-11-17; limits were 17900 raw, 6350 gz, 140000 alloc; before 16249, 5778, 124460)
+	{"/as64503", 79000, 12000, 1290000, 19000 * time.Microsecond},                          // 71991, 10877, 1028954, 1797µs (name band and cells, no map, 2026-11-17; gz limit was 13300, alloc 1490000; before 74125, 12086, 1060929)
+	{"/as64600", 32200, 6670, 490000, 7000 * time.Microsecond},                             // 29253, 6065, 389413, 712µs (name band and cells, no map, 2026-11-17; limits were 36600 raw, 8750 gz; before 33292, 7956, 434588)
+	{"/asn-example-net", 15900, 5240, 130000, 2000 * time.Microsecond},                     // 14448, 4767, 103532, 72µs (name band and cells, no map, 2026-11-17; limits were 17700 raw, 6270 gz; before 16086, 5701, 123286)
+	{"/asn-huge-net", 125700, 14100, 2440000, 41000 * time.Microsecond},                    // 114294, 12808, 1947549, 4481µs (name band and cells, no map, 2026-11-17; limits were 131800 raw, 17000 gz, 2530000 alloc; before 119843, 15460, 2092884)
+	{"/prefix/203.0.113.0/24", 15800, 5240, 130000, 2000 * time.Microsecond},               // 14395, 4767, 102611, 67µs (name band and cells, no map, 2026-11-17; limits were 17000 raw, 6000 gz, 150000 alloc; before 15685, 5546, 97560)
+	{"/prefix/198.18.0.0/24", 16200, 5320, 130000, 2000 * time.Microsecond},                // 14767, 4834, 106093, 71µs (name band and cells, no map, 2026-11-17; limits were 15500 raw, 5200 gz; before 13769, 4652, 86304; the Places table grew with the new cells)
 	{"/?203.0.113.5", 20700, 7100, 190000, 2000 * time.Microsecond},                        // 19099, 6550, 125837, 65µs (lowered with the coarse land of the map)
-	{"/top-asn-by-ip-address", 27000, 6200, 50000, 2000 * time.Microsecond},                // 24474, 5596, 30922, 3µs
+	{"/top-asn-by-ip-address", 30200, 6200, 50000, 2000 * time.Microsecond},                // 27444, 5634, 35018, 2µs (organizations linked, 2026-11-17; raw limit was 27000)
 	{"/list-of-countries-by-ipv4-allocation", 14500, 4900, 30000, 2000 * time.Microsecond}, // 12884, 4377, 19946, 2µs
 	{"/as64500/prefixes.txt", 100, 100, 30000, 2000 * time.Microsecond},                    // 45, 60, 16020, 7µs
 	{"/asn-huge-net/prefixes.txt", 100, 70, 60000, 2000 * time.Microsecond},                // 13, 34, 35956, 24µs

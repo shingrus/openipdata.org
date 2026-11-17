@@ -163,7 +163,7 @@ func (s *server) serveShare(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	p := s.panelFor("", a)
+	p := s.panelFor(r.Context(), "", a)
 	if p.snap == nil {
 		reply(http.StatusBadRequest, struct{}{})
 		return
@@ -277,7 +277,7 @@ func (s *server) reportPanel(sn *snapshot, created time.Time) panel {
 			}
 		}
 	}
-	p.Rows = append(p.Rows, row{K: "Network", Parts: sn.Network.parts()}, dns)
+	p.Rows = append(append(p.Rows, sn.Network.rows()...), dns)
 	return p
 }
 
@@ -319,7 +319,7 @@ func (s *server) serveReport(w http.ResponseWriter, r *http.Request) {
 	}
 	p := s.reportPanel(&sn, created)
 	base := s.asnBase("Shared report · openipdata.org", true)
-	css := styleCSS
+	css := styleCSS + placeCSS + rowsCSS
 	if p.Map != "" {
 		css += mapCSS
 	}

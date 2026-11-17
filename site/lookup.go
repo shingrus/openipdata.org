@@ -4,6 +4,8 @@ package main
 // two MMDBs know about it, and how that is shown. Nothing here logs an address.
 
 import (
+	"context"
+	"database/sql"
 	"html/template"
 	"log"
 	"math"
@@ -344,6 +346,7 @@ type asnRecord struct {
 type part struct {
 	Text, Href string
 	Ext        bool
+	Sp         bool // joined to the part before it by a space, not by " · "
 }
 
 type row struct {
@@ -464,7 +467,7 @@ func (s *server) addrData(a netip.Addr) (g geoRecord, n asnRecord, info netSnap)
 // panelFor builds the panel for a public or non-public address: the family
 // row, the Network row and the Prefix row, in this order (the visitor's own
 // page rearranges them, see visitorRows).
-func (s *server) panelFor(title string, a netip.Addr) panel {
+func (s *server) panelFor(ctx context.Context, title string, a netip.Addr) panel {
 	p := panel{Title: title}
 	if !s.public(a) {
 		p.Addr, p.Msg = a.String(), "Not a public address"
@@ -483,7 +486,10 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 	if a.Is4() {
 		family, fam = "IPv4", 4
 	}
-	p.Rows = []row{{K: family, V: a.String(), Own: true, Copy: true}, {K: "Network", Parts: info.parts()}}
+	if info.InData { // the network is in the ASN data: its domain, one read (unknown stays empty)
+		s.asnf.read(func(db *sql.DB, _ *asnData) { info.Domain = clip(asnDomain(ctx, db, info.ASN), 253) })
+	}
+	p.Rows = append([]row{{K: family, V: a.String(), Own: true, Copy: true}}, info.rows()...)
 	p.Copy = true
 	p.snap = &snapshot{Created: s.now().UTC().Format(time.RFC3339), IP: a.String(), Family: fam, Network: info}
 	if g.CityName != "" || g.CountryCode != "" || g.CountryName != "" {
@@ -550,7 +556,10 @@ func (s *server) addDNS(p *panel) bool {
 	if s.zone == "" || p.Msg != "" {
 		return false
 	}
-	i := slices.IndexFunc(p.Rows, func(r row) bool { return r.K == "Network" }) + 1 // after the Network row
+	i := slices.IndexFunc(p.Rows, func(r row) bool { return r.K == "Network" }) + 1
+	for i > 0 && i < len(p.Rows) && (p.Rows[i].K == "Prefix" || p.Rows[i].K == "Domain") { // after the network rows (netSnap.rows)
+		i++
+	}
 	if i == 0 {
 		i = len(p.Rows)
 	}

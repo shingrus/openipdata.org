@@ -6,9 +6,11 @@ package main
 // built per request (never kept); they are noindex, the HTML page ranks.
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"html/template"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -91,6 +93,36 @@ func (x *pfxIndex) prefixList(set *asnSet, sizeHint int) []byte {
 		buf = append(buf, '\n')
 	}
 	return buf
+}
+
+// firstOf gives the first limit IPv4 and the first limit IPv6 prefixes of one
+// network, in address order, without skip (the prefix of the page). A family
+// stops as soon as it has enough; a network with fewer prefixes of a family
+// costs one pass over that family's index (about a millisecond on the real file).
+func (x *pfxIndex) firstOf(asn uint32, skip netip.Prefix, limit int) (v4, v6 []string) {
+	for i := range x.v4 {
+		if len(v4) == limit {
+			break
+		}
+		if e := x.v4[i]; e.asn == asn {
+			var b [4]byte
+			binary.BigEndian.PutUint32(b[:], e.addr)
+			if p := netip.PrefixFrom(netip.AddrFrom4(b), int(e.bits)); p != skip {
+				v4 = append(v4, p.String())
+			}
+		}
+	}
+	for i := range x.v6 {
+		if len(v6) == limit {
+			break
+		}
+		if e := x.v6[i]; e.asn == asn {
+			if p := netip.PrefixFrom(join6(e.hi, e.lo), int(e.bits)); p != skip {
+				v6 = append(v6, p.String())
+			}
+		}
+	}
+	return v4, v6
 }
 
 // servePrefixList answers GET/HEAD <path>/prefixes.txt when path is a network or

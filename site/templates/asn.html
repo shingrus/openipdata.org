@@ -1,16 +1,14 @@
-{{define "val"}}{{if .Href}}<a href="{{.Href}}">{{.V}}</a>{{else}}{{.V}}{{end}}{{if .A}}{{if .V}} {{end}}<a href="{{.AHref}}">{{.A}}</a>{{end}}{{end}}{{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
+{{define "val"}}{{if .Href}}<a href="{{.Href}}"{{if .Ext}} rel="nofollow noopener"{{end}}>{{.V}}</a>{{else}}{{.V}}{{end}}{{if .A}}{{if .V}} {{end}}<a href="{{.AHref}}">{{.A}}</a>{{end}}{{end}}{{define "cells"}}{{range .}}<td{{if .Class}} class="{{.Class}}"{{end}}>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</td>{{end}}{{end}}
 {{template "top" .}}{{with .Notice}}<section class="panel">
 <div class="head"><h1>{{$.NoticeHead}}</h1>{{with $.NoticeRight}}<span class="r">{{.}}</span>{{end}}</div>
 <p class="msg">{{.}}</p>
 </section>
 {{end}}{{with .Place}}<section class="panel">
 <div class="head">{{if .Ent}}<h2>{{.Title}}</h2>{{else}}<h1>{{.Title}}</h1>{{end}}{{if .JSON}}<a class="r" href="{{.JSON}}">JSON</a>{{end}}{{if .Txt}}<a class="r" href="{{.Txt}}">prefixes.txt</a>{{end}}</div>
-<div class="conn w">
-<div class="place{{if .None}} none{{end}}{{if .Small}} s{{end}}{{if .Mono}} m{{end}}{{if .Map}} mapped{{end}}">{{.Map}}{{if .Ent}}<h1>{{.Big}}</h1>{{else}}<h2>{{.Big}}</h2>{{end}}{{if .Sub}}<p{{if .SubNone}} class="none"{{end}}>{{.Sub}}</p>{{end}}</div>
-<dl>
-{{range .Rows}}<div><dt>{{.K}}</dt><dd>{{template "val" .}}{{range .Extra}}<br>{{template "val" .}}{{end}}</dd></div>
-{{end}}</dl>
-</div>
+<div class="w band"><div class="place s{{if .None}} none{{end}}{{if .Mono}} m{{end}}">{{if .Ent}}<h1>{{.Big}}</h1>{{else}}<h2>{{.Big}}</h2>{{end}}{{if .Sub}}<p{{if .SubNone}} class="none"{{end}}>{{.SubPre}}{{if .SubHref}}<a href="{{.SubHref}}">{{.Sub}}</a>{{else}}{{.Sub}}{{end}}</p>{{end}}</div></div>
+<div class="cells">
+{{range .Rows}}<div><span>{{.K}}</span><b{{if .Title}} title="{{.Title}}"{{end}}>{{template "val" .}}{{range .Extra}}<br>{{template "val" .}}{{end}}</b></div>
+{{end}}</div>
 </section>
 {{end}}{{range .Tables}}<section class="panel">
 <div class="head">{{if .H1}}<h1>{{.Title}}</h1>{{else}}<h2>{{.Title}}</h2>{{end}}{{if .Right}}<span class="r">{{.Right}}</span>{{end}}</div>
@@ -29,7 +27,7 @@
 {{end}}</dl>
 </section>
 {{end}}{{with .Pfx}}<section class="panel">
-<div class="head"><h2>Prefixes</h2>{{if .TxtHref}}<a class="r" href="{{.TxtHref}}">prefixes.txt</a>{{end}}</div>
+<div class="head"><h2>{{or .Title "Prefixes"}}</h2>{{if .TxtHref}}<a class="r" href="{{.TxtHref}}">prefixes.txt</a>{{end}}</div>
 {{range .Groups}}<div class="pf"><h3>{{.Family}}</h3><ul>{{range .List}}<li>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</ul></div>
 {{end}}{{if .Note}}<p class="note">{{.Note}} <a href="{{.NoteHref}}">{{.NoteLink}}</a></p>
 {{end}}</section>

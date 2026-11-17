@@ -1,0 +1,11 @@
+/* The place block (the name on the soft glow): a page that has one (home, lookup, report; network, organization, prefix). */
+.place{
+  position:relative;min-width:0;min-height:240px;padding:24px 20px;
+  display:flex;flex-direction:column;justify-content:flex-end;
+  border-right:1px solid var(--line);
+  background:radial-gradient(420px 260px at 78% 30%,var(--glow),transparent 70%); /* a soft glow, no grid (owner, 2026-11-17) */
+}
+.place p{position:relative;margin-top:10px;font-size:20px;color:var(--muted);overflow-wrap:anywhere}
+@media (max-width:700px){
+  .place{min-height:170px;border-right:0;border-bottom:1px solid var(--line);padding:20px 16px}
+}

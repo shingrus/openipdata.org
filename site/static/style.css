@@ -6,7 +6,7 @@
   --line:#222830; --line-2:#363e49;
   --text:#eef1f4; --muted:#909aa6; --faint:#5d6672;
   --accent:#ff7d1f; --accent-ink:#150a02; --accent-soft:rgba(255,125,31,.16);
-  --grid:rgba(255,255,255,.05); --glow:rgba(255,125,31,.10);
+  --glow:rgba(255,125,31,.10);
 }
 /* The two light blocks (this one and [data-theme="light"]) must stay identical. */
 @media (prefers-color-scheme: light){
@@ -16,7 +16,7 @@
     --line:#dfe2df; --line-2:#c6cbc6;
     --text:#0e1216; --muted:#55606b; --faint:#8b949c;
     --accent:#d4500a; --accent-ink:#ffffff; --accent-soft:rgba(212,80,10,.14);
-    --grid:rgba(14,18,22,.065); --glow:rgba(212,80,10,.07);
+    --glow:rgba(212,80,10,.07);
   }
 }
 /* Must stay identical to the light block in the media query above. */
@@ -26,7 +26,7 @@
   --line:#dfe2df; --line-2:#c6cbc6;
   --text:#0e1216; --muted:#55606b; --faint:#8b949c;
   --accent:#d4500a; --accent-ink:#ffffff; --accent-soft:rgba(212,80,10,.14);
-  --grid:rgba(14,18,22,.065); --glow:rgba(212,80,10,.07);
+  --glow:rgba(212,80,10,.07);
 }
 *{box-sizing:border-box;margin:0}
 body{
@@ -80,22 +80,6 @@ a:hover{color:var(--accent)}
 .head h2{font:inherit;color:var(--text);min-width:0}
 .head .r{letter-spacing:0;text-transform:none;font-size:13px;white-space:nowrap}
 
-.conn{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr)}
-.place{
-  position:relative;min-width:0;min-height:240px;padding:24px 20px;
-  display:flex;flex-direction:column;justify-content:flex-end;
-  border-right:1px solid var(--line);
-  background:
-    radial-gradient(420px 260px at 78% 30%,var(--glow),transparent 70%),
-    linear-gradient(var(--grid) 1px,transparent 1px) 0 0/24px 24px,
-    linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/24px 24px;
-}
-.place h1{position:relative;font-size:clamp(40px,7vw,72px);font-weight:600;line-height:1;letter-spacing:-.035em;overflow-wrap:anywhere}
-.place p{position:relative;margin-top:10px;font-size:20px;color:var(--muted);overflow-wrap:anywhere}
-.place.none h1{color:var(--faint);font-size:clamp(30px,5vw,48px)}
-dl{min-width:0;display:grid;grid-auto-rows:1fr} /* equal rows beside the place block; phone width resets it */
-dl div{display:grid;grid-template-columns:96px minmax(0,1fr);align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
-dl div:last-child{border-bottom:0}
 dt,.cells span{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 dd,.cells b{min-width:0;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
 .msg{padding:20px;font-size:16px;color:var(--muted);overflow-wrap:anywhere}
@@ -108,10 +92,6 @@ dd,.cells b{min-width:0;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,M
   .lookup{margin-top:18px;height:54px;padding-left:14px;gap:8px}
   .lookup input,.lookup b{font-size:17px}
   .lookup button{height:38px;padding:0 14px}
-  .conn{grid-template-columns:minmax(0,1fr)}
-  .place{min-height:170px;border-right:0;border-bottom:1px solid var(--line);padding:20px 16px}
-  dl{grid-auto-rows:auto}
-  dl div{padding:13px 16px;grid-template-columns:84px minmax(0,1fr)}
   dd{font-size:15px}
   .msg{padding:16px}
   .head,.note{padding-inline:16px}

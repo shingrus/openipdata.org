@@ -44,7 +44,9 @@ var rankings = []struct{ path, title, desc string }{
 type kv struct {
 	K, V, Href string
 	A, AHref   string
-	None       bool // V is "unknown" or "not loaded": shown grey
+	None       bool   // V is "unknown" or "not loaded": shown grey
+	Ext        bool   // Href leaves the site: rel="nofollow noopener"
+	Title      string // the full value, shown on hover, when V is a shortened number
 	Extra      []kv
 }
 
@@ -67,13 +69,13 @@ type place struct {
 	Title   string
 	Big     string
 	None    bool
-	Small   bool   // a long name: smaller type, less height
 	Mono    bool   // the big line is data (a prefix), set in the mono face
 	Ent     bool   // the big line is the page's h1 (prefix, organization); the head label is an h2
 	Txt     string // link to the prefixes.txt list, right of the head
 	Sub     string
-	SubNone bool          // Sub is "Location unknown": shown grey
-	Map     template.HTML // the outline map behind the place (see worldmap.go), or empty
+	SubPre  string // text before Sub ("London, ")
+	SubHref string // Sub is a link (the country page of a prefix page's place)
+	SubNone bool   // Sub is "Location unknown": shown grey
 	Rows    []kv
 	JSON    string
 }
@@ -86,6 +88,7 @@ type pfxGroup struct {
 }
 
 type pfxPanel struct {
+	Title    string // the head; empty = "Prefixes"
 	Groups   []pfxGroup
 	Note     string
 	NoteHref string
@@ -112,8 +115,14 @@ func (s *server) asnBase(title string, noindex bool) pageBase {
 }
 
 func (s *server) renderASN(v *asnView) ([]byte, error) {
-	if v.Place != nil && v.Place.Map != "" {
-		v.CSS += template.CSS(mapCSS) // only a page with a map (a prefix page)
+	if v.Place != nil {
+		v.CSS += template.CSS(placeCSS + netCSS) // the band and the cells of the head (network, organization and prefix pages)
+	}
+	if len(v.Facts) > 0 {
+		v.CSS += template.CSS(rowsCSS) // label/value rows (the status page)
+	}
+	if v.Pfx != nil {
+		v.CSS += template.CSS(pfCSS)
 	}
 	return render(s.tmpl, "asn.html", v)
 }
@@ -140,6 +149,26 @@ func asnHref(n uint32) string { return pagePath + strconv.FormatUint(uint64(n), 
 
 func nameOf(n *network) string { return firstNonEmpty(n.org, n.handle) }
 
+// handleCell is the Handle cell of a table row about a network: the handle,
+// linked to the network page like the AS number beside it.
+func handleCell(n *network) cell {
+	if n.handle == "" {
+		return cell{Text: dash, Class: "h"}
+	}
+	return cell{Text: n.handle, Href: asnHref(n.asn), Class: "h"}
+}
+
+// orgCell is the Organization cell of a table row about a network: the name,
+// linked to the organization page when the network has one (a handle standing
+// in for a missing name is not linked).
+func orgCell(n *network) cell {
+	c := cell{Text: orElseDash(nameOf(n))}
+	if n.org != "" && validSlug(n.slug) {
+		c.Href = orgPathPrefix + n.slug
+	}
+	return c
+}
+
 func orElseDash(s string) string { return firstNonEmpty(s, dash) }
 
 func (n *network) countText(c uint32) string {
@@ -161,7 +190,7 @@ func (s *server) renderASNPages(d *asnData) {
 			t.Rows = append(t.Rows, []cell{
 				{Text: strconv.Itoa(i + 1), Class: "r"},
 				{Text: asnText(n.asn), Href: asnHref(n.asn), Class: "a"},
-				{Text: orElseDash(nameOf(n))},
+				orgCell(n),
 				{Text: amount(n), Class: "n"},
 			})
 		}
@@ -198,7 +227,7 @@ func (s *server) renderASNPages(d *asnData) {
 		case 0:
 			t = netTable(r.title, d.topV4, func(n *network) string { return fmtInt(n.v4) }, "IPv4 addresses")
 		case 1:
-			t = netTable(r.title, d.topV6, func(n *network) string { return fmtV6(n.v6) }, "IPv6 /64s")
+			t = netTable(r.title, d.topV6, func(n *network) string { return fmtV6(n.v6) }, "IPv6 /64 networks")
 		case 2:
 			t = orgTable(r.title)
 		default:
@@ -495,13 +524,13 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 	if country == "" {
 		country = cc
 	}
-	cat := strings.ReplaceAll(j.Metadata.Category, "_", " ")
+	cat := words(j.Metadata.Category) // as in the Network panel: ISP, Hosting
 
 	big, sub := firstNonEmpty(row.org, handle), ""
 	if row.org != "" {
 		sub = handle
 	}
-	pl := &place{Title: asnText(n), Big: big, Sub: sub, JSON: "/api/as" + strconv.FormatUint(uint64(n), 10), Small: true}
+	pl := &place{Title: asnText(n), Big: big, Sub: sub, JSON: "/api/as" + strconv.FormatUint(uint64(n), 10)}
 	if big == "" {
 		pl.Big, pl.None = "Name unknown", true
 	}
@@ -511,6 +540,10 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 	org := kv{K: "Organization", V: orElseDash(row.org)}
 	if row.org != "" && validSlug(row.slug) {
 		org.Href = orgPathPrefix + row.slug
+	}
+	hnd := kv{K: "Handle", V: orElseDash(handle)}
+	if handle != "" && validSlug(row.slug) { // like the handle of the connection panel: to the organization page
+		hnd.Href = orgPathPrefix + row.slug
 	}
 	pfxCount := func(l []string) string {
 		if !jsonOK || l == nil { // not JSON, or the list is not in it
@@ -527,11 +560,11 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 		ctry.Href = countryHrefOf(slug)
 	}
 	pl.Rows = []kv{
-		{K: "Handle", V: orElseDash(handle)},
+		hnd,
 		org,
-		{K: "Domain", V: orElseDash(row.domain)},
+		domainKV(row.domain),
 		ctry,
-		{K: "Category", V: orElseDash(cat)},
+		{K: "Type", V: orElseDash(cat)},
 		{K: "IPv4 prefixes", V: pfxCount(j.Prefixes.IPv4)},
 		{K: "IPv6 prefixes", V: pfxCount(j.Prefixes.IPv6)},
 		{K: "IPv4 addresses", V: v4},
@@ -549,31 +582,8 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 		v.LD = s.crumbs("Networks", rankings[0].path, asnText(n), asnHref(n))
 	}
 
-	if validSlug(row.slug) {
-		var others []int32
-		for _, id := range d.org(row.slug) {
-			if d.nets[id].asn != n {
-				others = append(others, id)
-			}
-		}
-		if len(others) > 0 {
-			t := table{Title: "Same organization", Right: fmtInt(int64(len(others))) + " others",
-				Cols: []column{{"AS", ""}, {"Handle", ""}, {"IPv4 prefixes", "n"}, {"IPv6 prefixes", "n s"}}}
-			for _, id := range others[:min(len(others), maxSameOrg)] {
-				o := &d.nets[id]
-				t.Rows = append(t.Rows, []cell{
-					{Text: asnText(o.asn), Href: asnHref(o.asn), Class: "a"},
-					{Text: orElseDash(o.handle), Class: "h"},
-					{Text: o.countText(o.n4), Class: "n"},
-					{Text: o.countText(o.n6), Class: "n s"},
-				})
-			}
-			if len(others) > maxSameOrg {
-				t.Note = fmtInt(int64(len(others)-maxSameOrg)) + " more networks"
-				t.NoteHref, t.NoteLink = orgPathPrefix+row.slug, "All networks"
-			}
-			v.Tables = append(v.Tables, t)
-		}
+	if t, ok := sameOrgTable(d, row.slug, n); ok {
+		v.Tables = append(v.Tables, t)
 	}
 
 	if len(j.Prefixes.IPv4)+len(j.Prefixes.IPv6) > 0 {
@@ -635,16 +645,6 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 			name = n.org
 		}
 	}
-	pl := &place{Title: "Organization", Big: name, Small: true, Ent: true, Rows: []kv{
-		{K: "IPv4 addresses", V: fmtInt(total)},
-		{K: "Networks", V: fmtInt(int64(len(ids)))},
-	}}
-	if name == "" {
-		pl.Big, pl.None = "Name unknown", true
-	}
-	if npfx > 0 {
-		pl.Txt = prefixesHref(orgPathPrefix + slug)
-	}
 	sorted := slices.Clone(ids)
 	slices.SortFunc(sorted, func(a, b int32) int {
 		x, y := d.nets[a].v4, d.nets[b].v4
@@ -656,6 +656,25 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 		}
 		return int(d.nets[a].asn) - int(d.nets[b].asn)
 	})
+	pl := &place{Title: "Organization", Big: name, Ent: true, Rows: s.orgFacts(r.Context(), d, sorted, total)}
+	if name == "" {
+		pl.Big, pl.None = "Name unknown", true
+	}
+	// d.orgs is sorted by IPv4 addresses (most first), then slug: the place is found by that order.
+	if i, ok := slices.BinarySearchFunc(d.orgs, slug, func(o orgRow, s string) int {
+		if o.v4 != total {
+			if o.v4 > total {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(o.slug, s)
+	}); ok && total > 0 {
+		pl.Sub = "#" + fmtInt(int64(i+1)) + " by IPv4 addresses" // the place in the organization ranking
+	}
+	if npfx > 0 {
+		pl.Txt = prefixesHref(orgPathPrefix + slug)
+	}
 	t := table{Title: "Networks", Right: fmtInt(int64(len(ids))),
 		Cols: []column{{"AS", ""}, {"Handle", ""}, {"Country", "s"}, {"IPv4 addresses", "n"}, {"IPv4 prefixes", "n s"}, {"IPv6 prefixes", "n s"}}}
 	for _, id := range sorted[:min(len(sorted), maxOrgNets)] {
@@ -666,7 +685,7 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 		}
 		t.Rows = append(t.Rows, []cell{
 			{Text: asnText(n.asn), Href: asnHref(n.asn), Class: "a"},
-			{Text: orElseDash(n.handle), Class: "h"},
+			handleCell(n),
 			{Text: cc, Class: "s"},
 			{Text: fmtInt(n.v4), Class: "n"},
 			{Text: n.countText(n.n4), Class: "n s"},
@@ -688,6 +707,134 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 	pageHeaders(w.Header(), s.csp)
 	w.Header().Set("Cache-Control", asnCache)
 	writeBody(w, r, http.StatusOK, "text/html; charset=utf-8", body)
+}
+
+// mainCountry is the country code holding most of the IPv4 addresses of these
+// networks (ties: more networks, then the code), or "" when none has a country.
+func mainCountry(d *asnData, ids []int32) string {
+	type sum struct {
+		v4 int64
+		n  int
+	}
+	by := map[string]sum{}
+	for _, id := range ids {
+		if n := &d.nets[id]; n.cc != "" {
+			c := by[n.cc]
+			by[n.cc] = sum{c.v4 + n.v4, c.n + 1}
+		}
+	}
+	best := ""
+	for cc, c := range by {
+		if b := by[best]; best == "" || c.v4 > b.v4 || c.v4 == b.v4 && (c.n > b.n || c.n == b.n && cc < best) {
+			best = cc
+		}
+	}
+	return best
+}
+
+// sameOrgTable is the table "Same organization" of a network or prefix page:
+// the other networks of the organization slug (not asn), by number, at most
+// maxSameOrg. False when there is none.
+func sameOrgTable(d *asnData, slug string, asn uint32) (table, bool) {
+	if !validSlug(slug) {
+		return table{}, false
+	}
+	var others []int32
+	for _, id := range d.org(slug) {
+		if d.nets[id].asn != asn {
+			others = append(others, id)
+		}
+	}
+	if len(others) == 0 {
+		return table{}, false
+	}
+	t := table{Title: "Same organization", Right: fmtInt(int64(len(others))) + " others",
+		Cols: []column{{"AS", ""}, {"Handle", ""}, {"IPv4 prefixes", "n"}, {"IPv6 prefixes", "n s"}}}
+	for _, id := range others[:min(len(others), maxSameOrg)] {
+		o := &d.nets[id]
+		t.Rows = append(t.Rows, []cell{
+			{Text: asnText(o.asn), Href: asnHref(o.asn), Class: "a"},
+			handleCell(o),
+			{Text: o.countText(o.n4), Class: "n"},
+			{Text: o.countText(o.n6), Class: "n s"},
+		})
+	}
+	if len(others) > maxSameOrg {
+		t.Note = fmtInt(int64(len(others)-maxSameOrg)) + " more networks"
+		t.NoteHref, t.NoteLink = orgPathPrefix+slug, "All networks"
+	}
+	return t, true
+}
+
+// v6KV is the "IPv6 addresses" row of an organization: the number of /64
+// networks, short like the Addresses row of an IPv6 prefix, the full number on hover.
+func v6KV(v6 float64) kv {
+	n := v6 / (1 << 64)
+	switch {
+	case n >= 1 && n < 2:
+		return kv{K: "IPv6 addresses", V: "1 /64 network"}
+	case n >= 1000 && n < 1e15: // above that the short form would need more units; the full number stays
+		return kv{K: "IPv6 addresses", V: compactCount(int64(n)) + " /64 networks", Title: fmtV6(v6) + " /64 networks"}
+	}
+	return kv{K: "IPv6 addresses", V: fmtV6(v6) + " /64 networks"}
+}
+
+// orgFacts are the rows of an organization page's head, the same kind of facts
+// as a network page has: its largest network, how many networks, a domain, the
+// country, then the prefix counts and the address space of all its networks.
+// sorted is the organization's networks, most IPv4 addresses first.
+func (s *server) orgFacts(ctx context.Context, d *asnData, sorted []int32, total int64) []kv {
+	top := &d.nets[sorted[0]]
+	largest := kv{K: "Largest network", V: firstNonEmpty(top.handle, asnText(top.asn)), Href: asnHref(top.asn)}
+	// The domain of the largest network that has one (the first few are tried).
+	domain := kv{K: "Domain", V: dash}
+	s.asnf.read(func(db *sql.DB, _ *asnData) {
+		for _, id := range sorted[:min(len(sorted), maxNetworkRows)] {
+			if dom := asnDomain(ctx, db, d.nets[id].asn); dom != "" {
+				domain = domainKV(dom)
+				return
+			}
+		}
+	})
+	// The country with most of the IPv4 addresses (mainCountry); "+N" = other countries.
+	ccs := map[string]bool{}
+	var n4, n6 uint64
+	var v6 float64
+	pfx := false
+	for _, id := range sorted {
+		n := &d.nets[id]
+		n4, n6, v6 = n4+uint64(n.n4), n6+uint64(n.n6), v6+n.v6
+		pfx = pfx || n.hasPfxes
+		if n.cc != "" {
+			ccs[n.cc] = true
+		}
+	}
+	country, best := kv{K: "Country", V: dash}, mainCountry(d, sorted)
+	if best != "" {
+		country.V = d.countryName(best)
+		if slug := d.cslug[best]; slug != "" {
+			country.Href = countryHrefOf(slug)
+		}
+		if more := len(ccs) - 1; more > 0 {
+			country.V += " +" + strconv.Itoa(more)
+		}
+	}
+	count := func(n uint64) string {
+		if !pfx { // no network of it has the prefix lists
+			return dash
+		}
+		return fmtInt(int64(n))
+	}
+	return []kv{
+		largest,
+		{K: "Networks", V: fmtInt(int64(len(sorted)))},
+		domain,
+		country,
+		{K: "IPv4 prefixes", V: count(n4)},
+		{K: "IPv6 prefixes", V: count(n6)},
+		{K: "IPv4 addresses", V: fmtInt(total)},
+		v6KV(v6),
+	}
 }
 
 // asnLink is the page of AS number digits (as the ip2asn MMDB writes it) when

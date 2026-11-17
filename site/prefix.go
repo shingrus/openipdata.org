@@ -7,6 +7,7 @@ package main
 // the request is echoed except the canonical prefix.
 
 import (
+	"database/sql"
 	"math"
 	"net/http"
 	"net/netip"
@@ -15,11 +16,12 @@ import (
 )
 
 const (
-	maxPrefixText  = 64    // longest prefix text that is parsed at all
-	maxNetworkRows = 5     // networks and covering prefixes in the head
-	maxInside      = 100   // more specific prefixes in the table
-	maxPlaceRows   = 20    // places in the table
-	placeRecords   = 20000 // most MMDB records read for the places of one prefix
+	maxPrefixText    = 64    // longest prefix text that is parsed at all
+	maxNetworkRows   = 5     // networks and covering prefixes in the head
+	maxInside        = 100   // more specific prefixes in the table
+	maxOtherPrefixes = 100   // other prefixes of the network per family on a prefix page
+	maxPlaceRows     = 20    // places in the table
+	placeRecords     = 20000 // most MMDB records read for the places of one prefix
 )
 
 // parseCIDR reads a prefix. An IPv4-mapped IPv6 prefix (at least /96) comes
@@ -169,14 +171,15 @@ func (s *server) locate(p netip.Prefix, pl *place, v *asnView) {
 		pl.Sub, pl.SubNone = "Location unknown", true
 	case k == 1 && !sum.partial:
 		g := &sum.places[0].rec
-		pl.Sub = countryText(g)
+		pl.Sub, pl.SubHref = countryText(g), s.countryHref(g.CountryCode) // the country links to its page, as on the lookup page
 		if g.CityName != "" {
-			pl.Sub = g.CityName + ", " + pl.Sub
+			pl.SubPre = g.CityName + ", "
 		}
-		pl.Map = s.world.placeMap(g)
 	default:
 		if cc := sum.places[0].rec.CountryCode; cc != "" && !slices.ContainsFunc(sum.places, func(a placeAmt) bool { return a.rec.CountryCode != cc }) {
-			pl.Map = s.world.placeMap(&geoRecord{CountryCode: cc})
+			if !sum.partial { // several cities of one country, nothing unknown: the country is the place
+				pl.Sub, pl.SubHref = countryText(&sum.places[0].rec), s.countryHref(cc)
+			}
 		}
 		t := table{Title: "Places", Right: fmtInt(int64(k)),
 			Cols: []column{{"City", ""}, {"Country", ""}, {"Share", "n"}}}
@@ -197,12 +200,13 @@ func (s *server) locate(p netip.Prefix, pl *place, v *asnView) {
 	}
 }
 
-// netName is the name of a network for the tables, or a dash.
-func netName(d *asnData, asn uint32) string {
+// orgOf is the Organization cell of a network by number (a dash when the
+// network is not in the data).
+func orgOf(d *asnData, asn uint32) cell {
 	if n, ok := d.find(asn); ok {
-		return orElseDash(nameOf(n))
+		return orgCell(n)
 	}
-	return dash
+	return cell{Text: dash}
 }
 
 // asnItem is the head value of a network: its name and a link to its page.
@@ -214,19 +218,34 @@ func asnItem(d *asnData, asn uint32) kv {
 	return it
 }
 
-// netItem is asnItem for the Network row: the name links to the organization
-// page when the network has a slug.
-func netItem(d *asnData, asn uint32) kv {
-	it := asnItem(d, asn)
-	if n, ok := d.find(asn); ok && n.slug != "" && it.V != "" {
-		it.Href = orgPathPrefix + n.slug
+// addrKV is the Addresses row of a prefix. IPv4: the number of addresses. IPv6:
+// the number of /64 networks, shortened (549.8B) with the full number on hover;
+// a prefix longer than /64 has less than one, so its addresses are counted.
+func addrKV(p netip.Prefix) kv {
+	const k = "Addresses"
+	bits := p.Bits()
+	switch {
+	case p.Addr().Is4():
+		return kv{K: k, V: fmtInt(1 << (32 - bits))}
+	case bits == 64:
+		return kv{K: k, V: "1 /64 network"}
+	case bits < 64:
+		n := int64(1) << (64 - bits)
+		it := kv{K: k, V: compactCount(n) + " /64 networks"}
+		if full := fmtInt(n); full != compactCount(n) {
+			it.Title = full + " /64 networks"
+		}
+		return it
+	case bits == 65:
+		return kv{K: k, V: "9,223,372,036,854,775,808"} // 2^63 does not fit int64
 	}
-	return it
+	return kv{K: k, V: fmtInt(1 << (128 - bits))}
 }
 
 // prefixView builds the page of p, or nil when p is not announced, not covered
 // and has nothing announced inside.
-func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
+// domainOf gives the domain of a network ("" = unknown).
+func (s *server) prefixView(d *asnData, p netip.Prefix, domainOf func(asn uint32) string) *asnView {
 	exact := d.idx.exact(p)
 	cover := d.idx.covering(p)
 	inside, nInside := d.idx.inside(p, maxInside)
@@ -235,25 +254,53 @@ func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
 	}
 	var asn0 uint32
 	var name0 string
-	pl := &place{Title: "Prefix", Big: p.String(), Mono: true, Small: true, Ent: true}
+	pl := &place{Title: "Prefix", Big: p.String(), Mono: true, Ent: true}
 	v := &asnView{Place: pl}
 	if len(exact) > 0 {
 		asn0 = exact[0]
 		if n, ok := d.find(asn0); ok {
 			name0 = nameOf(n)
 		}
-		row := netItem(d, exact[0])
-		row.K = "Network"
-		for _, a := range exact[1:min(len(exact), maxNetworkRows)] {
-			row.Extra = append(row.Extra, netItem(d, a))
+		// Organization: each organization once; Network: each announcing network.
+		var orgs, nets []kv
+		seen := map[string]bool{}
+		for _, a := range exact[:min(len(exact), maxNetworkRows)] {
+			it := kv{A: asnText(a), AHref: asnHref(a)}
+			if n, ok := d.find(a); ok {
+				if it.V = n.handle; it.V != "" {
+					it.Href = asnHref(a)
+				}
+				key := firstNonEmpty(n.slug, n.org) // one organization can be spelled two ways; two can share a name
+				if o := (kv{V: n.org}); n.org != "" && !seen[key] {
+					seen[key] = true
+					if validSlug(n.slug) {
+						o.Href = orgPathPrefix + n.slug
+					}
+					orgs = append(orgs, o)
+				}
+			}
+			nets = append(nets, it)
 		}
+		if row, ok := joinKV(orgs); ok {
+			row.K = "Organization"
+			pl.Rows = append(pl.Rows, row)
+		}
+		row, _ := joinKV(nets)
+		row.K = "Network"
 		pl.Rows = append(pl.Rows, row)
+		// Domain: the domain of each of those networks, each once, when known.
+		var doms []kv
+		for _, a := range exact[:min(len(exact), maxNetworkRows)] {
+			if domain := domainOf(a); domain != "" && !seen["."+domain] {
+				seen["."+domain] = true // a slug has no dot, so the keys cannot meet
+				doms = append(doms, domainKV(domain))
+			}
+		}
+		if row, ok := joinKV(doms); ok {
+			pl.Rows = append(pl.Rows, row)
+		}
 	}
-	if p.Addr().Is4() {
-		pl.Rows = append(pl.Rows, kv{K: "Addresses", V: fmtInt(1 << (32 - p.Bits()))})
-	} else {
-		pl.Rows = append(pl.Rows, kv{K: "/64s", V: fmtV6(math.Ldexp(1, 128-p.Bits()))})
-	}
+	pl.Rows = append(pl.Rows, addrKV(p))
 	var part []kv // the covering prefixes, most specific first, each once
 	var last netip.Prefix
 	for _, c := range cover {
@@ -287,7 +334,7 @@ func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
 			}
 			t.Rows = append(t.Rows, []cell{pc,
 				{Text: asnText(r.ASN), Href: asnHref(r.ASN), Class: "a"},
-				{Text: netName(d, r.ASN)}})
+				orgOf(d, r.ASN)})
 		}
 		if nInside > len(inside) {
 			t.Note = fmtInt(int64(nInside-len(inside))) + " more prefixes"
@@ -295,9 +342,35 @@ func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
 		v.Tables = append(v.Tables, t)
 	}
 	s.locate(p, pl, v)
+	// Announced exactly: the other networks of the organization and the other
+	// prefixes of the (first) network, as its own page lists them.
+	if n, ok := d.find(asn0); ok && len(exact) > 0 {
+		if t, ok := sameOrgTable(d, n.slug, asn0); ok {
+			v.Tables = append(v.Tables, t)
+		}
+		v4, v6 := d.idx.firstOf(asn0, p, maxOtherPrefixes+1) // one more, to know whether the list is cut
+		cut := len(v4) > maxOtherPrefixes || len(v6) > maxOtherPrefixes
+		v4, v6 = v4[:min(len(v4), maxOtherPrefixes)], v6[:min(len(v6), maxOtherPrefixes)]
+		if len(v4)+len(v6) > 0 {
+			pp := &pfxPanel{Title: "Other prefixes of " + asnText(asn0), TxtHref: prefixesHref(asnHref(asn0))}
+			for _, g := range []struct {
+				fam  string
+				list []string
+			}{{"IPv4", v4}, {"IPv6", v6}} {
+				if len(g.list) > 0 {
+					pp.Groups = append(pp.Groups, pfxGroup{Family: g.fam, List: pfxItems(g.list)})
+				}
+			}
+			if cut {
+				pp.Note = "Showing the first " + strconv.Itoa(maxOtherPrefixes) + " per family."
+				pp.NoteHref, pp.NoteLink = asnHref(asn0), "All prefixes of "+asnText(asn0)
+			}
+			v.Pfx = pp
+		}
+	}
 	place := ""
 	if !pl.SubNone {
-		place = pl.Sub
+		place = pl.SubPre + pl.Sub
 	}
 	title, desc := prefixMeta(p.String(), asn0, name0, place)
 	v.pageBase = s.asnBase(title, len(exact) == 0)
@@ -331,7 +404,10 @@ func (s *server) servePrefix(w http.ResponseWriter, r *http.Request) {
 		s.notLoaded(w, r)
 		return
 	}
-	v := s.prefixView(d, p)
+	v := s.prefixView(d, p, func(asn uint32) (domain string) {
+		s.asnf.read(func(db *sql.DB, _ *asnData) { domain = asnDomain(r.Context(), db, asn) })
+		return
+	})
 	if v == nil {
 		s.asnNotice(w, r, http.StatusNotFound, "Not found", "Not announced", asnCache)
 		return

@@ -43,6 +43,15 @@ var netSrc string
 //go:embed static/api.css
 var apiSrc string
 
+//go:embed static/place.css
+var placeSrc string
+
+//go:embed static/rows.css
+var rowsSrc string
+
+//go:embed static/pf.css
+var pfSrc string
+
 var (
 	styleCSS   = cssText(styleSrc)
 	liveCSS    = cssText(liveSrc)
@@ -52,6 +61,9 @@ var (
 	visitorCSS = cssText(visitorSrc)
 	netCSS     = cssText(netSrc)
 	apiCSS     = cssText(apiSrc)
+	placeCSS   = cssText(placeSrc)
+	rowsCSS    = cssText(rowsSrc)
+	pfCSS      = cssText(pfSrc)
 )
 
 // homeCSS is the style of a home or lookup page: only the parts this view
@@ -59,6 +71,9 @@ var (
 func (v *view) homeCSS() template.CSS {
 	css := styleCSS
 	if p := v.Panel; p != nil {
+		if p.Msg == "" { // a full panel: the place block and the rows
+			css += placeCSS + rowsCSS
+		}
 		if p.Map != "" {
 			css += mapCSS
 		}

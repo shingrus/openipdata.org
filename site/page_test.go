@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"net/netip"
 	"regexp"
 	"strings"
 	"testing"
@@ -106,22 +107,30 @@ func TestLightBlocksIdentical(t *testing.T) {
 func TestStylePartsFollowThePage(t *testing.T) {
 	s := fixtureServer(t)
 	parts := []struct{ mark, rule string }{
-		{`<svg class="map"`, ".place svg.map{"},
+		{`<svg class="map"`, ".place svg.map{position:absolute"},
 		{`class="cp"`, ".cp{"},
 		{`<dd class="br"`, "dd.br{"},
 		{`class="acc"`, ".acc{"},
-		{`class="cells"`, ".cells{"},
+		{`<div class="cells">`, ".cells{display:grid"}, // the ASN pages (band and cells) and the Network panel of the home and lookup page
 		{`class="apip"`, ".apip{"},
+		{`<div class="place`, ".place{position:relative"}, // place.css: a page with a place block
+		{`<dl>`, "dl{min-width:0"},                        // rows.css: label/value rows (home, lookup, report panels; the status page)
+		{`<div class="pf">`, ".pf{display:grid"},          // pf.css: the prefix lists
 	}
+	as, _ := asnServer(t) // the network, organization and prefix pages are real pages only with ASN data
+	as.public = func(a netip.Addr) bool { return true }
 	pages := map[string]string{
 		"visitor":      fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(),
 		"unknown":      get(s, "GET", "/").Body.String(),
 		"lookup":       get(s, "GET", "/?203.0.113.9").Body.String(),
 		"lookup, none": get(s, "GET", "/?198.51.100.200").Body.String(),
 		"bad query":    get(s, "GET", "/?1.2.3").Body.String(),
-		"network":      get(s, "GET", "/as64500").Body.String(),
-		"prefix":       get(s, "GET", "/prefix/203.0.113.0/24").Body.String(),
+		"network":      get(as, "GET", "/as64500").Body.String(),
+		"organization": get(as, "GET", "/asn-example-net").Body.String(),
+		"prefix":       get(as, "GET", "/prefix/203.0.113.0/24").Body.String(),
 		"download":     get(s, "GET", "/download").Body.String(),
+		"ranking":      get(as, "GET", "/top-asn-by-ip-address").Body.String(),
+		"status":       get(as, "GET", "/status").Body.String(),
 	}
 	seen := map[string]bool{}
 	for name, b := range pages {
@@ -141,7 +150,7 @@ func TestStylePartsFollowThePage(t *testing.T) {
 		}
 	}
 	for _, p := range parts {
-		if !seen[p.mark] && p.rule != ".cells{" { // the fixture of this test has no Network panel (see netpanel_test.go)
+		if !seen[p.mark] {
 			t.Errorf("no test page has %s", p.mark)
 		}
 	}

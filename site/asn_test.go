@@ -172,13 +172,13 @@ func TestASNRoutes(t *testing.T) {
 	}{
 		{"network", "/as64500", 200, "", []string{
 			"<title>AS64500 Example Net: IP ranges and prefixes</title>", "<h2>Example Net</h2>", "<p>#138 by IPv4 addresses</p>",
-			"<dt>Handle</dt><dd>EXAMPLE-NET</dd>", `<dd><a href="/asn-example-net">Example Net</a></dd>`,
-			"<dt>Domain</dt><dd>example.net</dd>", `<dt>Country</dt><dd><a href="/portugal-asn-list">Portugal</a></dd>`, "<dt>Category</dt><dd>isp</dd>",
-			"<dt>IPv4 prefixes</dt><dd>2</dd>", "<dt>IPv6 prefixes</dt><dd>1</dd>", "<dt>IPv4 addresses</dt><dd>512</dd>",
-			`href="/api/as64500"`, "Same organization", `<a href="/as64501">AS64501</a>`, "EXAMPLE-TWO",
+			`<span>Handle</span><b><a href="/asn-example-net">EXAMPLE-NET</a></b>`, `<span>Organization</span><b><a href="/asn-example-net">Example Net</a></b>`,
+			`<span>Domain</span><b><a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></b>`, `<span>Country</span><b><a href="/portugal-asn-list">Portugal</a></b>`, "<span>Type</span><b>ISP</b>",
+			"<span>IPv4 prefixes</span><b>2</b>", "<span>IPv6 prefixes</span><b>1</b>", "<span>IPv4 addresses</span><b>512</b>",
+			`href="/api/as64500"`, "Same organization", `<a href="/as64501">AS64501</a>`, `<td class="h"><a href="/as64501">EXAMPLE-TWO</a></td>`, `<div class="w band"><div class="place s"><h2>Example Net</h2><p>#138 by IPv4 addresses</p></div></div>` + "\n" + `<div class="cells">`,
 			`<li><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a>`, `<li><a href="/prefix/2001:db8::/32">2001:db8::/32</a>`, `value=""`,
 			`href="/top-asn-by-ip-address"`, `href="/top-asn-by-ipv6"`, `href="/top-organizations-by-ip-address"`, `href="/list-of-countries-by-ipv4-allocation"`,
-		}, []string{"AS64500</a>", "more networks", "Showing the first"}},
+		}, []string{"AS64500</a>", "more networks", "Showing the first", `<svg class="map"`, "mapped", "<dl>", "<dt>", `class="conn w"`}},
 		{"upper case", "/AS64500", 301, "/as64500", nil, nil},
 		{"lower mixed", "/As64500", 301, "/as64500", nil, nil},
 		{"leading zeros", "/as0064500", 301, "/as64500", nil, nil},
@@ -191,16 +191,16 @@ func TestASNRoutes(t *testing.T) {
 		{"not digits", "/as64x", 404, "", []string{"not found"}, []string{"<form"}},
 		{"just as", "/as", 404, "", []string{"not found"}, nil},
 		{"null fields", "/as64502", 200, "", []string{
-			"<title>AS64502: IP ranges and prefixes</title>", "Name unknown", `class="place none s"`,
-			"<dt>Handle</dt><dd>—</dd>", "<dt>Organization</dt><dd>—</dd>", "<dt>Domain</dt><dd>—</dd>", "<dt>Country</dt><dd>—</dd>",
-			"<dt>Category</dt><dd>—</dd>", "<dt>IPv4 prefixes</dt><dd>—</dd>", "<dt>IPv6 prefixes</dt><dd>—</dd>", "<dt>IPv4 addresses</dt><dd>0</dd>",
+			"<title>AS64502: IP ranges and prefixes</title>", "Name unknown", `<div class="w band"><div class="place s none">`, `<div class="cells">`,
+			"<span>Handle</span><b>—</b>", "<span>Organization</span><b>—</b>", "<span>Domain</span><b>—</b>", "<span>Country</span><b>—</b>",
+			"<span>Type</span><b>—</b>", "<span>IPv4 prefixes</span><b>—</b>", "<span>IPv6 prefixes</span><b>—</b>", "<span>IPv4 addresses</span><b>0</b>",
 		}, []string{"Same organization", "<h2>Prefixes</h2>"}},
-		{"json not json", "/as64504", 200, "", []string{">Broken Net</a>", "<dt>IPv4 prefixes</dt><dd>—</dd>", "<dt>Handle</dt><dd>BROKEN-NET</dd>"}, nil},
-		{"odd slug is not linked", "/as64505", 200, "", []string{"<dt>Organization</dt><dd>Odd Net</dd>"}, []string{"/asn-Odd_Net"}},
+		{"json not json", "/as64504", 200, "", []string{">Broken Net</a>", "<span>IPv4 prefixes</span><b>—</b>", `<span>Handle</span><b><a href="/asn-broken-net">BROKEN-NET</a></b>`}, nil},
+		{"odd slug is not linked", "/as64505", 200, "", []string{"<span>Organization</span><b>Odd Net</b>"}, []string{"/asn-Odd_Net"}},
 		{"org", "/asn-example-net", 200, "", []string{
 			"<title>Example Net IP ranges and networks</title>", "<h2>Organization</h2>", "<h1>Example Net</h1>",
-			"<dt>IPv4 addresses</dt><dd>768</dd>", "<dt>Networks</dt><dd>2</dd>", `<a href="/as64500">AS64500</a>`, `<a href="/as64501">AS64501</a>`, `<td class="s">Portugal</td>`,
-		}, []string{"more networks"}},
+			"<span>IPv4 addresses</span><b>768</b>", "<span>Networks</span><b>2</b>", `<span>Largest network</span><b><a href="/as64500">EXAMPLE-NET</a></b>`, `<span>Country</span><b><a href="/portugal-asn-list">Portugal</a></b>`, "by IPv4 addresses</p>", "<span>IPv6 addresses</span>", `<div class="w band"><div class="place s"><h1>Example Net</h1>`, `<div class="cells">`, `<td class="h"><a href="/as64500">EXAMPLE-NET</a></td>`, `<a href="/as64500">AS64500</a>`, `<a href="/as64501">AS64501</a>`, `<td class="s">Portugal</td>`,
+		}, []string{"more networks", `<svg class="map"`, "mapped", "<dl>", "<dt>", `class="conn w"`}},
 		{"org unknown", "/asn-nope", 404, "", []string{"Organization not found", "<h1>Not found</h1>"}, nil},
 		{"org upper case", "/asn-Example-Net", 301, "/asn-example-net", nil, nil},
 		{"org bad char", "/asn-example_net", 404, "", []string{"Organization not found"}, nil},
@@ -208,7 +208,7 @@ func TestASNRoutes(t *testing.T) {
 		{"org too long", "/asn-" + strings.Repeat("a", 300), 404, "", []string{"Organization not found"}, nil},
 		{"org percent", "/asn-example%2dnet", 200, "", []string{"<h1>Example Net</h1>"}, nil},
 		{"top v4", "/top-asn-by-ip-address", 200, "", []string{"<title>Top networks by IPv4 addresses · openipdata.org</title>", "<h1>Top networks by IPv4 addresses</h1>", "Top 100", `<a href="/as64719">AS64719</a>`}, nil},
-		{"top v6", "/top-asn-by-ipv6", 200, "", []string{"<h1>Top networks by IPv6 space</h1>", "<th class=\"n\">IPv6 /64s</th>", "65,536", `<a href="/as64500">AS64500</a>`}, nil},
+		{"top v6", "/top-asn-by-ipv6", 200, "", []string{"<h1>Top networks by IPv6 space</h1>", "<th class=\"n\">IPv6 /64 networks</th>", "65,536", `<a href="/as64500">AS64500</a>`}, nil},
 		{"top orgs", "/top-organizations-by-ip-address", 200, "", []string{"<h1>Top organizations by IPv4 addresses</h1>", `<a href="/asn-huge-net">Huge Net</a>`, `<a href="/asn-many-net">Many Net</a>`}, nil},
 		{"countries", "/list-of-countries-by-ipv4-allocation", 200, "", []string{"<h1>Countries by IPv4 addresses</h1>", `<td><a href="/germany-asn-list">Germany</a></td>`, `<td><a href="/france-asn-list">France</a></td>`, `<td><a href="/portugal-asn-list">Portugal</a></td>`, `<td><a href="/spain-asn-list">Spain</a></td>`}, nil},
 		{"top trailing slash", "/top-asn-by-ip-address/", 301, "/top-asn-by-ip-address", nil, nil},
@@ -291,7 +291,7 @@ func TestASNCaps(t *testing.T) {
 	if strings.Contains(body, `<li><a href="/prefix/198.18.1.244/32">`) {
 		t.Error("prefix 501 is on the page")
 	}
-	if !strings.Contains(body, "<dt>IPv4 prefixes</dt><dd>600</dd>") {
+	if !strings.Contains(body, "<span>IPv4 prefixes</span><b>600</b>") {
 		t.Error("the readout does not show the real count")
 	}
 	// The JSON always has all of them.
@@ -426,10 +426,18 @@ func TestASNLookupRedirectAndLink(t *testing.T) {
 		}
 	}
 
-	// The Network row of the panel links the handle to the organisation page when the network is in the data.
+	// The panel rows: the organization links to its page, the Network row links
+	// the handle and the AS number to the network page, then Prefix and Domain.
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
-	if !strings.Contains(body, `<dd><a href="/asn-example-net">EXAMPLE-NET</a> · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) {
-		t.Errorf("no link in the panel: %s", body)
+	for _, x := range []string{
+		`<dt>Organization</dt><dd><a href="/asn-example-net">Example Net</a></dd>`,
+		`<dt>Network</dt><dd><a href="/as64500">EXAMPLE-NET</a> <a href="/as64500">AS64500</a></dd>`,
+		`<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`,
+		`<dt>Domain</dt><dd><a href="https://example.net/?utm_source=openipdata.org" rel="nofollow noopener">example.net</a></dd>`,
+	} {
+		if !strings.Contains(body, x) {
+			t.Errorf("panel lacks %s", x)
+		}
 	}
 }
 
@@ -444,8 +452,11 @@ func TestASNLinkNeedsTheNetwork(t *testing.T) {
 	s.public = func(netip.Addr) bool { return true }
 	s.useASN(path)
 	body := get(s, "GET", "/?203.0.113.9").Body.String()
-	if !strings.Contains(body, `<dt>Network</dt><dd>Example Net · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) || strings.Contains(body, `href="/as64500"`) {
-		t.Error("a link to a network that is not in the data")
+	if !strings.Contains(body, `<dt>Organization</dt><dd>Example Net</dd>`) ||
+		!strings.Contains(body, `<dt>Network</dt><dd>AS64500</dd>`) ||
+		!strings.Contains(body, `<dt>Prefix</dt><dd><a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) ||
+		strings.Contains(body, `href="/as64500"`) || strings.Contains(body, `<dt>Domain`) {
+		t.Error("a link to a network that is not in the data, or a domain without data")
 	}
 }
 
@@ -483,7 +494,7 @@ func TestASNNotLoaded(t *testing.T) {
 		if w := get(s, "GET", "/"); w.Code != 200 {
 			t.Errorf("%s: home %d", name, w.Code)
 		}
-		if body := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(body, `<dt>Network</dt><dd>Example Net · <a href="/prefix/203.0.113.0/24">203.0.113.0/24</a></dd>`) || strings.Contains(body, `href="/as64500"`) {
+		if body := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(body, `<dt>Organization</dt><dd>Example Net</dd>`) || !strings.Contains(body, `<dt>Network</dt><dd>AS64500</dd>`) || strings.Contains(body, `href="/as64500"`) || strings.Contains(body, `<dt>Domain`) {
 			t.Errorf("%s: the AS text is not plain", name)
 		}
 		if w := get(s, "GET", "/healthz"); w.Code != 200 {
@@ -659,10 +670,10 @@ func TestASNPageHygieneAndSize(t *testing.T) {
 		target   string
 		max, gzm int
 	}{
-		{"/as64500", 20 << 10, 7 << 10},
-		{"/as64503", 80 << 10, 13 << 10}, // 1,200 prefixes, each a link to its page
-		{"/as64600", 30 << 10, 9 << 10},
-		{"/asn-huge-net", 110 << 10, 14 << 10},
+		{"/as64500", 16 << 10, 5632},           // 14,611 bytes, 4,842 gzipped: name band and cells, no map (2026-11-17; limits were 20 KB, 7 KB)
+		{"/as64503", 80 << 10, 12 << 10},       // 1,200 prefixes, each a link to its page; 71,991 bytes, 10,877 gzipped (2026-11-17; gz limit was 13 KB)
+		{"/as64600", 32 << 10, 6656},           // 29,253 bytes, 6,065 gzipped: name band and cells, no map (2026-11-17; limits were 36 KB, 9 KB)
+		{"/asn-huge-net", 126 << 10, 14 << 10}, // 114,294 bytes, 12,808 gzipped: name band and cells, no map (2026-11-17; limits were 129 KB, 17 KB)
 		{"/top-asn-by-ip-address", 40 << 10, 9 << 10},
 		{"/top-asn-by-ipv6", 40 << 10, 9 << 10},
 		{"/top-organizations-by-ip-address", 40 << 10, 9 << 10},
@@ -678,7 +689,7 @@ func TestASNPageHygieneAndSize(t *testing.T) {
 		text = ldRe.ReplaceAllString(text, "") // the breadcrumb data block is not a script that runs, and holds only the page's own URLs
 		clean := strings.ReplaceAll(text, "http://www.w3.org/2000/svg", "")
 		for _, m := range regexp.MustCompile(`https?://[^\s"'<>]+`).FindAllString(clean, -1) {
-			if m != "https://github.com/shingrus/openipdata.org" && m != "https://openipdata.org"+c.target { // the canonical link
+			if m != "https://github.com/shingrus/openipdata.org" && m != "https://openipdata.org"+c.target && !strings.HasSuffix(m, domainLinkQ) { // the canonical link; the network's own site (Domain)
 				t.Errorf("%s: unexpected URL %s", c.target, m)
 			}
 		}
@@ -740,8 +751,11 @@ func TestASNNoCountryDash(t *testing.T) {
 	if !strings.Contains(body, `<td class="s">Portugal</td>`) || !strings.Contains(body, `<td class="s">—</td>`) {
 		t.Errorf("organization table cells: %s", body)
 	}
-	if body := get(s, "GET", "/as64701").Body.String(); !strings.Contains(body, "<dt>Country</dt><dd>—</dd>") {
-		t.Errorf("network page of a network with no country: %s", body)
+	if body := get(s, "GET", "/as64701").Body.String(); !strings.Contains(body, "<span>Country</span><b>—</b>") || strings.Contains(body, `<svg class="map"`) || strings.Contains(body, `class="place s mapped"`) {
+		t.Errorf("network page of a network with no country (a dash, and no map): %s", body)
+	}
+	if body := get(s, "GET", "/as64700").Body.String(); strings.Contains(body, `<svg class="map"`) || strings.Contains(body, "mapped") || !strings.Contains(body, `<span>Country</span><b><a href="/portugal-asn-list">Portugal</a></b>`) {
+		t.Error("network page of a network with a country has a map, or no country link")
 	}
 }
 

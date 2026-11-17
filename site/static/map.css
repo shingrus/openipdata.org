@@ -1,5 +1,4 @@
 /* The outline map behind the place name: only a page that has a map. */
-.place.mapped{background:radial-gradient(420px 260px at 78% 30%,var(--glow),transparent 70%)} /* a map replaces the grid */
 /* The map never gets wider than 3.4 times its height: in a wide, short block the frame would be scaled to the width
    and lose its lower half (the country with it), so there the map keeps to the right and shows 13.5 of its 18.2 units. */
 .place svg.map{position:absolute;top:0;right:0;height:100%;max-width:100%;aspect-ratio:3.4;pointer-events:none;

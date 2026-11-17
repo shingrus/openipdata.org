@@ -58,14 +58,12 @@ func TestNetworkPanelLookup(t *testing.T) {
 	want := `<section class="panel">
 <div class="head"><h2>Network</h2><a class="r" href="/as64500">AS64500 &rarr;</a></div>
 <div class="cells">
-<div><span>Organisation</span><b><a href="/asn-example-net">Example Net</a></b></div>
 <div><span>Type</span><b>ISP</b></div>
 <div><span>Country</span><b><a href="/portugal-asn-list">Portugal</a></b></div>
 <div><span>Role</span><b>Tier 1 transit</b></div>
 <div><span>IPv4 prefixes</span><b>2</b></div>
 <div><span>IPv6 prefixes</span><b>1</b></div>
-<div><span>Addresses</span><b title="1,250,000">1.3M</b></div>
-<div><span>Domain</span><b>example.net</b></div>
+<div><span>IPv4 addresses</span><b>1,250,000</b></div>
 </div>
 </section>`
 	if !strings.Contains(b, want) {
@@ -84,17 +82,15 @@ func TestNetworkPanelLookup(t *testing.T) {
 }
 
 func TestNetworkPanelUnknowns(t *testing.T) {
-	// No category, role, domain, prefix lists or country, and no slug.
+	// No category, role, prefix lists or country, and no slug.
 	s := netServer(t, []fixtureRow{{asn: 64500, handle: "EXAMPLE-NET", noMetadata: true, noPrefixKeys: true}})
 	b := get(s, "GET", "/?203.0.113.9").Body.String()
-	want := `<div><span>Organisation</span><b>EXAMPLE-NET</b></div>
-<div><span>Type</span><b>—</b></div>
+	want := `<div><span>Type</span><b>—</b></div>
 <div><span>Country</span><b>—</b></div>
 <div><span>Role</span><b>—</b></div>
 <div><span>IPv4 prefixes</span><b>—</b></div>
 <div><span>IPv6 prefixes</span><b>—</b></div>
-<div><span>Addresses</span><b title="0">0</b></div>
-<div><span>Domain</span><b>—</b></div>`
+<div><span>IPv4 addresses</span><b>0</b></div>`
 	if !strings.Contains(b, want) {
 		t.Errorf("unknown cells:\n%s", b)
 	}
@@ -124,7 +120,7 @@ func TestNetworkPanelAbsent(t *testing.T) {
 		t.Error("Network panel for an unknown visitor")
 	}
 	// Not on the other pages.
-	if b := get(s, "GET", "/as64500").Body.String(); strings.Contains(b, `class="cells"`) {
+	if b := get(s, "GET", "/as64500").Body.String(); strings.Contains(b, `<h2>Network</h2>`) { // its own head is a grid of cells too
 		t.Error("Network panel on the network page")
 	}
 }
