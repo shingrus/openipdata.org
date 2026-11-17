@@ -53,9 +53,10 @@ func isGuessSource(source string) bool { return slices.Contains(guessSources, so
 // noSampleSources are the city_sources whose city is weak evidence: a /24 whose city comes
 // from one of them still counts as having no city in the gap list (mmdbbuilder gaps), so
 // sample-names keeps sampling customer PTR names there (a customer name is far more precise).
-// They are the four guesses (guessSources), the BGP community layer (25-bgp) and the M-Lab
-// hop layer (36-mlab). lookup -in keeps only the guesses out (isGuessSource).
-var noSampleSources = slices.Concat(guessSources, []string{"25-bgp", "36-mlab"})
+// They are the four guesses (guessSources), the BGP community layer (25-bgp), the M-Lab hop
+// layer (36-mlab) and the whois text layer (37-whois-text: right about 68% of the time, a
+// customer name about 82%). lookup -in keeps only the guesses out (isGuessSource).
+var noSampleSources = slices.Concat(guessSources, []string{"25-bgp", "36-mlab", "37-whois-text"})
 
 // isWeakCitySource reports whether a city_source is one of noSampleSources.
 func isWeakCitySource(source string) bool { return slices.Contains(noSampleSources, source) }

@@ -269,7 +269,6 @@ Suomi
 Italia
 Hellas
 Magyarorszag
-Romania
 Ceska Republika
 Slovensko
 Hrvatska
@@ -341,6 +340,10 @@ destek
 orange
 
 # Found in the measurement on RIPE Atlas.
+saint gobain
+sejong
+melita
+trac
 ulus
 bilgi
 villa
@@ -361,3 +364,103 @@ goes
 best
 pila
 kolo
+
+# Country names in local and neighbouring languages (the English ones are above).
+mocambique
+brasil
+algerie
+maroc
+tunisie
+cameroun
+misr
+rossiya
+rossija
+ukraina
+bielarus
+lietuva
+latvija
+eesti
+slovenija
+srbija
+crna gora
+shqiperia
+shqiperi
+makedonija
+bulgariya
+balgariya
+ellada
+kypros
+kibris
+azerbaycan
+sakartvelo
+hayastan
+qazaqstan
+kazakstan
+ozbekiston
+tojikiston
+lubnan
+suriya
+urdun
+filastin
+yisrael
+kuwayt
+bahrayn
+yaman
+libiya
+cesko
+cechy
+luxemburg
+letzebuerg
+belgien
+niederlande
+frankreich
+spanien
+italien
+grossbritannien
+irland
+eire
+danemark
+schweden
+norwegen
+finnland
+polen
+tschechien
+ungarn
+rumanien
+bulgarien
+griechenland
+turkei
+russland
+allemagne
+espagne
+italie
+royaume uni
+pays bas
+autriche
+pologne
+roumanie
+grece
+turquie
+russie
+alemania
+francia
+reino unido
+paises bajos
+belgica
+suiza
+suecia
+noruega
+dinamarca
+finlandia
+polonia
+rumania
+grecia
+turquia
+rusia
+germania
+regno unito
+paesi bassi
+spagna
+svezia
+norvegia
+danimarca

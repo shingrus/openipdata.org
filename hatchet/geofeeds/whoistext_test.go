@@ -30,6 +30,11 @@ func TestNormWords(t *testing.T) {
 		{"NET_ACME-ROUTER", []string{"net", "acme", "router"}, false},
 		{"a\u0301bc", []string{"abc"}, false}, // a combining mark is dropped
 		{"Москва Moscow", []string{"moscow"}, true},
+		{"Gəncə", []string{"gence"}, false},
+		{"Haarlem Việt Zeist", []string{"haarlem", "zeist"}, false}, // a Latin letter we cannot fold spoils its word only
+		{"Hà Nội Zeist", []string{"ha", "zeist"}, false},            // "Nội" leaves no partial word
+		{"Kijk Ĳssel", []string{"kijk", "ijssel"}, false},
+		{"Zeist Яндекс", []string{"zeist"}, true},
 		{"Αθήνα", nil, true},
 		{"  ... 123 ", nil, false},
 		{"", nil, false},
@@ -66,7 +71,16 @@ func TestWhoisIgnoreList(t *testing.T) {
 			t.Errorf("entry %q is not in the ignore set", e)
 		}
 	}
-	for _, want := range []string{"luxembourg", "united kingdom", "cote d ivoire", "centre", "ulus", "kolo"} {
+	seen := map[string]string{}
+	for _, e := range entries {
+		words, _ := normWords(e)
+		key := strings.Join(words, " ")
+		if first, ok := seen[key]; ok {
+			t.Errorf("entry %q is the same as %q", e, first)
+		}
+		seen[key] = e
+	}
+	for _, want := range []string{"saint gobain", "sejong", "melita", "trac", "brasil", "reino unido", "luxembourg", "united kingdom", "cote d ivoire", "centre", "ulus", "kolo"} {
 		if !whoisIgnore[want] {
 			t.Errorf("%q is not ignored", want)
 		}
@@ -102,6 +116,7 @@ func testNames() *nameIndex {
 		{"CH", "Genève", "Geneve", "Genf,Geneva", 200000},
 		{"CH", "Sankt Gallen", "Sankt Gallen", "St. Gallen", 75000},
 		{"CH", "Zürich", "Zurich", "", 400000},
+		{"FR", "Saint-Gobain", "Saint-Gobain", "", 1500},
 		{"US", "Spring", "Spring", "", 50000},
 	} {
 		x.add(r.cc, r.name, r.ascii, r.alt, r.pop)
@@ -138,6 +153,7 @@ func TestTextCity(t *testing.T) {
 		{"not in another country", "FR", []string{"Amsterdam"}, ""},
 		{"country name", "NL", []string{"Luxembourg"}, ""},
 		{"ignore list word", "NL", []string{"Centre"}, ""},
+		{"a holder named like a village", "FR", []string{"Saint-Gobain Glass France"}, ""},
 		{"three letters", "NL", []string{"Ede"}, ""},
 		{"two short words", "NL", []string{"Te Ko"}, ""},
 		{"lone saint", "NL", []string{"Saint"}, ""},
@@ -203,6 +219,15 @@ func TestNameIndexFromGeoNames(t *testing.T) {
 	}
 	if id, ok := z.textCity("MT", linesOf("Il-Belt office")); !ok || z.places[id].name != "Valletta" {
 		t.Error("an alternate name of a big place is not found")
+	}
+	// A name with a letter we cannot fold is not indexed under the words that are left.
+	v := newNameIndex()
+	v.add("VN", "B\u1eafc Ninh", "Bac Ninh", "", 500000)
+	if _, ok := v.ids["VN|ninh"]; ok {
+		t.Error("a name that lost a word is indexed under the rest")
+	}
+	if _, ok := v.ids["VN|bac ninh"]; !ok {
+		t.Error("the asciiname is not indexed")
 	}
 	// Ties go to the smaller name.
 	y := newNameIndex()
@@ -396,5 +421,28 @@ func TestUploadWhoisTextGate(t *testing.T) {
 	os.Chtimes(path, past, past)
 	if out := p.uploadWhoisText(context.Background(), upload, false); out.Uploaded || !strings.Contains(out.Skipped, "not rebuilt") {
 		t.Errorf("an old file: %+v", out)
+	}
+}
+
+// The geoloc layer and the text layer read country: the same way: the first one, upper
+// case, cut at a space, a tab or "#".
+func TestWhoisCountry(t *testing.T) {
+	tests := map[string]string{"NL": "NL", "nl": "NL", "NL # moved": "NL", "NL\t# moved": "NL", " nl\t": "NL", "NL#x": "NL", "": ""}
+	for in, want := range tests {
+		o := obj("inetnum", "192.0.2.0 - 192.0.2.255", "country", in, "country", "DE")
+		if got := whoisCountry(o); got != want {
+			t.Errorf("whoisCountry(%q) = %q, want %q", in, got, want)
+		}
+		if b, ok := geolocBlockOf(append(o, attr{"geoloc", "52.37 4.9"}), "ripe"); !ok || b.country != want {
+			t.Errorf("geoloc layer %q: %q, %v", in, b.country, ok)
+		}
+		var r textReader
+		r.read(obj("inetnum", "192.0.2.0 - 192.0.2.255", "descr", "Amsterdam", "country", in), testNames(), 0)
+		if (want == "NL") != (len(r.blocks) == 1) {
+			t.Errorf("text layer %q: %d blocks", in, len(r.blocks))
+		}
+	}
+	if whoisCountry(nil) != "" {
+		t.Error("no object")
 	}
 }

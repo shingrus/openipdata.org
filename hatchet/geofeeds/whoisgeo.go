@@ -88,22 +88,20 @@ func geolocBlockOf(obj []attr, registry string) (b geolocBlock, ok bool) {
 	if len(obj) == 0 || obj[0].key != "inetnum" {
 		return b, false
 	}
-	var haveGeoloc, haveCountry bool
+	var haveGeoloc bool
 	for _, a := range obj[1:] {
-		switch {
-		case a.key == "geoloc" && !haveGeoloc:
+		if a.key == "geoloc" && !haveGeoloc {
 			haveGeoloc = true
 			if b.lat, b.lon, ok = parseGeoloc(a.value); !ok {
 				return b, false
 			}
-		case a.key == "country" && !haveCountry:
-			haveCountry = true
-			b.country = strings.ToUpper(strings.TrimSpace(a.value))
 		}
 	}
 	if !haveGeoloc {
 		return b, false
 	}
+	// A comment after the code ("NL # moved") is cut, as in the text layer.
+	b.country = whoisCountry(obj)
 	from, to, err := parseRange(obj[0].value)
 	if err != nil {
 		return b, false

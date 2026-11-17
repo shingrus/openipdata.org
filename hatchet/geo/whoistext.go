@@ -3,6 +3,7 @@ package geo
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"openipdata.org/hatchet/geofeeds"
@@ -17,8 +18,12 @@ import (
 // only shows where nothing stronger gives a city.
 //
 // whoisTextMaxAge: the text of whois records changes slowly, so a copy up to 14 days old is
-// better than none. A missing or older object, or any fetch error, skips the layer with a
-// warning and never skips the health check ping: the layer is optional.
+// better than none and is still used. But sync-geofeeds renews the object every night, so one
+// older than rowsMaxAge means it is failing: the layer goes into src.StaleLayers (no health
+// check ping, the owner is alerted) while the copy is still used (or, older than 14 days,
+// skipped). A missing object or a fetch error only skips the layer with a warning and never
+// the ping: the layer is optional and may be switched off on purpose. (To switch it off after
+// it was uploaded once, also delete the object: one that is left in R2 turns stale.)
 //
 // The holdout build passes the layer as it is (no code: it takes every file of the layers
 // directory and replaces only the geofeed layer and the layers learned from it). The layer is
@@ -34,7 +39,15 @@ const (
 // (fetchOptionalLayer does the ETag and age rules, in downloads).
 func (p *Pipeline) downloadWhoisText(ctx context.Context, fetch r2Fetch, downloads, layers string, now time.Time, src *Source) error {
 	saved := filepath.Join(downloads, WhoisTextLayer)
-	if ok, err := p.fetchOptionalLayer(ctx, fetch, saved, geofeeds.WhoisTextKey, WhoisTextLayer, "sync-geofeeds", whoisTextMaxAge, now, src); err != nil || !ok {
+	ok, err := p.fetchOptionalLayer(ctx, fetch, saved, geofeeds.WhoisTextKey, WhoisTextLayer, "sync-geofeeds", whoisTextMaxAge, now, src)
+	// R2Uploaded is set only when the object exists, so a missing one or a fetch error is not stale.
+	if up, found := src.R2Uploaded[WhoisTextLayer]; found {
+		if t, perr := time.Parse(time.RFC3339, up); perr == nil && now.Sub(t) > rowsMaxAge && !slices.Contains(src.StaleLayers, WhoisTextLayer) {
+			src.StaleLayers = append(src.StaleLayers, WhoisTextLayer)
+			p.log("download: WARNING %s is from %s; is sync-geofeeds failing?", WhoisTextLayer, up)
+		}
+	}
+	if err != nil || !ok {
 		return err
 	}
 	if err := copyFile(saved, filepath.Join(layers, WhoisTextLayer)); err != nil {

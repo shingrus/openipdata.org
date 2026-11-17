@@ -189,6 +189,7 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 	// The whois dumps are read: name the cities of the geoloc blocks and write the text layer.
 	out.Whois = p.buildWhois(c.geoloc, gn)
 	out.WhoisText = p.buildWhoisText(&c.text, c.registries, gn)
+	c.names, gn = nil, nil // the name index is about 90 MB: free it before the Postgres work
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}

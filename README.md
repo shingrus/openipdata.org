@@ -305,11 +305,13 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   the text of every IPv4 `inetnum` against the GeoNames places of the object's own country, so the 4.1 million objects
   are never kept; only a compact block (range, country, place) is kept for an object with a city. GeoNames is therefore
   loaded before the dumps are read (the same `cities1000` read as for the geoloc layer, one pass). Rules:
-  - the country is the first `country:` value; one that is not a real country is dropped (`bad_country`), and so is
+  - the country is the first `country:` value, upper case and cut at the first space, tab or `#` (`NL # moved` is `NL`; the
+    geoloc layer reads it the same way, `whoisCountry`); one that is not a real country is dropped (`bad_country`), and so is
     a block broader than a /16 (`too_large`; measured, such records are right only 32% of the time);
   - the text is every `descr:` value and the `netname:` value. A line is lower-cased, accents are folded, every
     character that is not a Latin letter separates words, `st` is `saint` and `ste` is `sainte`; a line with a letter
-    of another script is skipped; a value that is not valid UTF-8 is read as Latin-1;
+    of another script is skipped, and a Latin letter the fold table lacks (a Vietnamese vowel) only drops its own word;
+    a value that is not valid UTF-8 is read as Latin-1;
   - a word group of 1 to 3 words within one line is a candidate when it is the normalised name of a GeoNames place of the
     country (main name or asciiname, and for a place of at least 15,000 people also any alternate name written in Latin letters: the alternate names of a village are mostly old or foreign spellings that an ISP or a product also carries; with several places the most populous,
     then the smaller name). The longest group wins, then the more populous place, then the smaller name: one city per
@@ -574,8 +576,10 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   `descr:` and `netname:` lines of a RIPE inetnum name, written by `sync-geofeeds` (above) at `internal/layers/37-whois-text.csv.gz` in the
   private R2 bucket. The description names a place, but the record's country may be the holder's, so it adds cities and never changes a country.
   `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2 layers (saved in `geo/downloads/`) and puts it in the
-  layers dir as it is. The object missing, older than 14 days (the text of whois records changes slowly, so an older copy is better than none)
-  or any fetch error skips the layer (`skipped_layers`, a warning); this never skips the `HC_PING_GEO` ping. It is not one of the layers
+  layers dir as it is. An object older than 14 days, a missing object or any fetch error skips the layer (`skipped_layers`, a warning); a missing
+  object or a fetch error never skips the `HC_PING_GEO` ping (the layer may be off on purpose). An object that exists and is older
+  than 3 days (`rowsMaxAge`: `sync-geofeeds` renews it every night, so it is failing) is still used up to 14 days, but it is in
+  `stale_layers` and skips the ping, so the owner is alerted. It is not one of the layers
   `download` must have (not in the `60-whois`/`70-geofeeds` list). The holdout build passes the layer as it is: it is not learned from the
   geofeed rows, so held-out feeds do not reach it. Measured on RIPE Atlas (build of 2026-11-16): +384 right and -81 lost probes (net +303).
 - The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-text`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
@@ -735,7 +739,7 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
-`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp` or `36-mlab` as no city too (like the four guesses `80-asn-main`, `82-asn-likely`, `84-asn-near` and `86-country-main`), so customer names keep being sampled there.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `36-mlab` or `37-whois-text` as no city too (like the four guesses `80-asn-main`, `82-asn-likely`, `84-asn-near` and `86-country-main`), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
 smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
 hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the
@@ -792,7 +796,7 @@ mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
-mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the four guesses 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main, or from 25-bgp or 36-mlab counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the four guesses 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main, or from 25-bgp, 36-mlab or 37-whois-text counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 

@@ -120,8 +120,10 @@ func sourcesDB(t *testing.T, dir string) string {
 		"20.0.2.0/24,DE,,Munich,mlab\n")
 	l4 := writeFile(t, filepath.Join(dir, "70-geofeeds.csv.gz"), "prefix,country,region,city,source\n"+
 		"20.0.3.0/24,DE,,Berlin,feed\n")
+	l5 := writeFile(t, filepath.Join(dir, "37-whois-text.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.5.0/24,DE,,Bonn,whois-text:ripe\n")
 	db := filepath.Join(dir, "sources.mmdb")
-	if _, err := buildGeo([]string{l1, l2, l3, l4}, "", db, false, nil, nil, nil, nil, ""); err != nil {
+	if _, err := buildGeo([]string{l1, l2, l3, l5, l4}, "", db, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -154,7 +156,21 @@ func TestWriteCitiesSource(t *testing.T) {
 	}
 }
 
-// A /24 whose city comes from 25-bgp or 36-mlab is still a gap; one from a geofeed is not.
+// lookup -in leaves out only the guesses: the city of 37-whois-text stays.
+func TestWriteCitiesKeepsWhoisText(t *testing.T) {
+	dir := t.TempDir()
+	db := sourcesDB(t, dir)
+	in := writeFile(t, filepath.Join(dir, "ips.txt"), "20.0.5.1\n")
+	out := filepath.Join(dir, "c.tsv")
+	if _, err := writeCitiesSource(db, in, out, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(out); string(data) != "20.0.5.1\tDE\tBonn\t37-whois-text\n" {
+		t.Errorf("rows %q", data)
+	}
+}
+
+// A /24 whose city comes from 25-bgp, 36-mlab or 37-whois-text is still a gap (20.0.5.0/24 is inside the last run); one from a geofeed is not.
 func TestGapsWeakSources(t *testing.T) {
 	dir := t.TempDir()
 	db := sourcesDB(t, dir)

@@ -74,7 +74,7 @@ var whoisIgnore = func() map[string]bool {
 
 // foldMap turns Latin letters with marks into plain letters.
 var foldMap = func() map[rune]string {
-	out := map[rune]string{'ß': "ss", 'æ': "ae", 'œ': "oe", 'þ': "th"}
+	out := map[rune]string{'ß': "ss", 'æ': "ae", 'œ': "oe", 'þ': "th", 'ə': "e", 'ĳ': "ij"}
 	for plain, marked := range map[string]string{
 		"a": "àáâãäåāăąǎǻ", "c": "çćĉċč", "d": "ďđð", "e": "èéêëēĕėęě", "g": "ĝğġģ", "h": "ĥħ",
 		"i": "ìíîïĩīĭįıǐ", "j": "ĵ", "k": "ķ", "l": "ĺļľŀł", "n": "ñńņňŉŋ", "o": "òóôõöøōŏőǒǿ",
@@ -91,9 +91,24 @@ var foldMap = func() map[rune]string {
 // folded, every character that is not a Latin letter separates words, "st" is
 // "saint" and "ste" "sainte". other is true when the text has a letter of another
 // script (Cyrillic, Greek, Arabic...): such a line is not about a place we name.
+// A Latin letter the table does not know (a Vietnamese vowel) spoils only its own word:
+// that word is dropped and the rest of the line is still read.
 func normWords(s string) (words []string, other bool) {
+	words, other, _ = normText(s)
+	return words, other
+}
+
+// normText is normWords that also says whether a word was dropped. A place name that
+// lost a word must not be indexed under the words that are left ("Bac Ninh" as "ninh").
+func normText(s string) (words []string, other, dropped bool) {
 	var cur []byte
+	bad := false // the current word holds a Latin letter we cannot fold
 	flush := func() {
+		if bad {
+			bad, dropped = false, true
+			cur = cur[:0]
+			return
+		}
 		if len(cur) == 0 {
 			return
 		}
@@ -119,6 +134,8 @@ func normWords(s string) (words []string, other bool) {
 				cur = append(cur, f...)
 			} else if unicode.Is(unicode.Mn, r) {
 				// A combining mark: dropped, the letter before it stays.
+			} else if unicode.Is(unicode.Latin, r) {
+				bad = true
 			} else if unicode.IsLetter(r) {
 				other = true
 				flush()
@@ -128,7 +145,7 @@ func normWords(s string) (words []string, other bool) {
 		}
 	}
 	flush()
-	return words, other
+	return words, other, dropped
 }
 
 // latin1 reads a value that is not valid UTF-8 as Latin-1 (the RIPE dump has
@@ -179,8 +196,8 @@ func (x *nameIndex) add(country, name, ascii, alternates string, pop int) {
 	id := int32(len(x.places))
 	x.places = append(x.places, textPlace{name, pop})
 	one := func(n string) {
-		words, other := normWords(n)
-		if other || len(words) == 0 || len(words) > maxTextWords {
+		words, other, dropped := normText(n)
+		if other || dropped || len(words) == 0 || len(words) > maxTextWords {
 			return
 		}
 		key := country + "|" + strings.Join(words, " ")
@@ -263,11 +280,17 @@ type textReader struct {
 	blocks  []textBlock
 }
 
-// firstValue returns the first value of an attribute, "" if there is none.
-func firstValue(obj []attr, key string) string {
-	for _, a := range obj[1:] {
-		if a.key == key {
-			return a.value
+// whoisCountry returns the first country: value of an object, upper case, cut at the
+// first space, tab or "#" (a comment may follow the code: "NL # moved"); "" if none.
+// The geoloc and the text layer both read the country this way.
+func whoisCountry(obj []attr) string {
+	for _, a := range obj {
+		if a.key == "country" {
+			v := strings.ToUpper(strings.TrimSpace(a.value))
+			if i := strings.IndexAny(v, " \t#"); i >= 0 {
+				v = v[:i]
+			}
+			return v
 		}
 	}
 	return ""
@@ -289,9 +312,7 @@ func (t *textReader) read(obj []attr, x *nameIndex, registry uint8) {
 		t.drop(dropTooLarge)
 		return
 	}
-	// A comment may follow the code ("NL # moved").
-	country, _, _ := strings.Cut(strings.ToUpper(strings.TrimSpace(firstValue(obj, "country"))), " ")
-	country, _, _ = strings.Cut(country, "#")
+	country := whoisCountry(obj)
 	if !countries[country] {
 		t.drop(dropBadCountry)
 		return

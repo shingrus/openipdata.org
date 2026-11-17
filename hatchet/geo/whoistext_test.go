@@ -35,10 +35,11 @@ func TestDownloadWhoisText(t *testing.T) {
 		src := Source{Rows: map[string]int{}, R2Uploaded: map[string]string{}}
 		return src, p.downloadWhoisText(context.Background(), fakeFetch(objects, &fetched), downloads, layers, now, &src)
 	}
-	skipped := func(src Source, err error, what string) {
+	skipped := func(src Source, err error, what string, stale bool) {
 		t.Helper()
-		// A skipped layer never skips the health check ping (no StaleLayers).
-		if err != nil || !reflect.DeepEqual(src.SkippedLayers, []string{WhoisTextLayer}) || len(src.StaleLayers) != 0 {
+		// A missing object or an R2 error never skips the health check ping (no StaleLayers);
+		// an object that is too old does.
+		if err != nil || !reflect.DeepEqual(src.SkippedLayers, []string{WhoisTextLayer}) || (len(src.StaleLayers) == 1) != stale || len(src.StaleLayers) > 1 {
 			t.Errorf("%s: %+v %v", what, src, err)
 		}
 		if _, err := os.Stat(filepath.Join(layers, WhoisTextLayer)); err == nil {
@@ -67,21 +68,38 @@ func TestDownloadWhoisText(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(layers, WhoisTextLayer)); string(data) != body {
 		t.Errorf("reused layer = %q", data)
 	}
-	// Exactly 14 days is used; older is skipped.
+	// Older than rowsMaxAge: still used, but stale (no ping), with one warning.
 	reset()
-	if src, err = run(good(now.Add(-whoisTextMaxAge))); err != nil || len(src.SkippedLayers) != 0 {
+	src, err = run(good(now.Add(-5 * 24 * time.Hour)))
+	if err != nil || len(src.SkippedLayers) != 0 || !reflect.DeepEqual(src.StaleLayers, []string{WhoisTextLayer}) {
+		t.Errorf("5 days: %+v %v", src, err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(layers, WhoisTextLayer)); string(data) != body {
+		t.Errorf("5 days: layer = %q", data)
+	}
+	if n := strings.Count(strings.Join(logs, "\n"), "WARNING"); n != 1 {
+		t.Errorf("5 days: %d warnings: %q", n, logs)
+	}
+	// Exactly 14 days is used (and stale); older is skipped (and stale).
+	reset()
+	if src, err = run(good(now.Add(-whoisTextMaxAge))); err != nil || len(src.SkippedLayers) != 0 || len(src.StaleLayers) != 1 {
 		t.Errorf("14 days: %+v %v", src, err)
 	}
 	reset()
-	src, err = run(good(now.Add(-whoisTextMaxAge - time.Hour)))
-	skipped(src, err, "old object")
+	src, err = run(good(now.Add(-15 * 24 * time.Hour)))
+	skipped(src, err, "15 days", true)
+	// Exactly rowsMaxAge is not stale.
+	reset()
+	if src, err = run(good(now.Add(-rowsMaxAge))); err != nil || len(src.SkippedLayers) != 0 || len(src.StaleLayers) != 0 {
+		t.Errorf("3 days: %+v %v", src, err)
+	}
 	// Missing, or any other R2 error, skips too.
 	reset()
 	src, err = run(map[string]fakeObject{geofeeds.WhoisTextKey: {err: fmt.Errorf("download: stat: %w", publish.ErrNotFound)}})
-	skipped(src, err, "missing object")
+	skipped(src, err, "missing object", false)
 	reset()
 	src, err = run(map[string]fakeObject{geofeeds.WhoisTextKey: {err: errors.New("boom")}})
-	skipped(src, err, "R2 error")
+	skipped(src, err, "R2 error", false)
 }
 
 // The layer is optional, between 36-mlab and 38-asn-geofeed, has -same-country and is not one of
