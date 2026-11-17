@@ -548,7 +548,7 @@ func drawCase(w *world, c struct {
 }
 
 // Since 2026-11-17 a map at the normal scale draws the other land from the
-// coarse rings: London is 3.5 KB, Germany 4.4 KB (7.1 KB before), the biggest
+// coarse rings: London is 4.6 KB, Germany 5.6 KB (7.1 KB before; tolLand 1.5 gave 3.5 and 4.4 KB and looked too coarse), the biggest
 // map is the zoomed-out Canada, 8.1 KB. The limits stay for the zoomed maps.
 //
 // Limits (raw bytes and gzip, measured 2026-11-15 with static/world.bin made at
@@ -760,16 +760,31 @@ func mustDraw(t *testing.T, w *world, code string) template.HTML {
 // lower half. The map is now never wider than mapAspect times its height, so
 // at least frameW/mapAspect units of the frame's height show in every block.
 func TestCountryShowsInAWideBlock(t *testing.T) {
-	m := regexp.MustCompile(`\.place svg\.map\{[^}]*\bright:0;height:100%;max-width:100%;aspect-ratio:([0-9.]+)[;}]`).FindStringSubmatch(mapCSS)
-	if m == nil {
-		t.Fatal("map.css: the map has no largest width for its height (right:0, height:100%, max-width:100%, aspect-ratio)")
+	i := strings.Index(mapCSS, ".place svg.map{")
+	if i < 0 {
+		t.Fatal("map.css: no .place svg.map rule")
+	}
+	body := mapCSS[i+len(".place svg.map{"):]
+	body = body[:strings.Index(body, "}")]
+	decl := map[string]string{}
+	for _, d := range strings.Split(body, ";") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(d), ":"); ok {
+			decl[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	for k, v := range map[string]string{"right": "0", "height": "100%", "max-width": "100%"} {
+		if decl[k] != v {
+			t.Errorf("map.css: the map has no largest width for its height (%s:%s), got %q", k, v, decl[k])
+		}
+	}
+	for _, k := range []string{"left", "width"} {
+		if _, ok := decl[k]; ok {
+			t.Errorf("map.css: the map must not be stretched to the block (%s): %s", k, body)
+		}
 	}
 	var aspect float64
-	if _, err := fmt.Sscan(m[1], &aspect); err != nil || aspect < frameW/frameH {
-		t.Fatalf("map.css: aspect-ratio %q", m[1])
-	}
-	if strings.Contains(m[0], "left:") || regexp.MustCompile(`[{;]width:`).MatchString(m[0]) {
-		t.Errorf("map.css: the map must not be stretched to the block: %s", m[0])
+	if _, err := fmt.Sscan(decl["aspect-ratio"], &aspect); err != nil || aspect < frameW/frameH {
+		t.Fatalf("map.css: aspect-ratio %q", decl["aspect-ratio"])
 	}
 	shown := frameW / aspect // units of the frame's height that always show, from its top
 	w, err := parseWorld(worldBin)
@@ -838,12 +853,12 @@ func TestCoarseLand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(w.cpts) == 0 || len(w.cpts) > len(w.pts)*65/100 {
-		t.Errorf("%d coarse numbers for %d: not a third lighter", len(w.cpts), len(w.pts))
+	if len(w.cpts) == 0 || len(w.cpts) > len(w.pts)*85/100 {
+		t.Errorf("%d coarse numbers for %d: more than 85%%, the land is not coarse", len(w.cpts), len(w.pts))
 	}
 	for i, p := range w.polys {
 		n := p.cend - p.cstart
-		if n != 0 && n < 3 || n > p.end-p.start {
+		if n < 3 || n > p.end-p.start {
 			t.Fatalf("ring %d: %d coarse points of %d", i, n, p.end-p.start)
 		}
 		// every coarse point is a point of the ring, in order
@@ -870,7 +885,18 @@ func TestCoarseLand(t *testing.T) {
 	if a, b := here.FindStringSubmatch(string(m)), here.FindStringSubmatch(string(f)); a == nil || b == nil || a[1] != b[1] {
 		t.Error("DE: the highlighted country is not drawn from all its points")
 	}
-	if len(m) > 4800 || len(m)*10 > len(f)*7 {
+	if len(m) > 6000 || len(m)*100 > len(f)*85 {
 		t.Errorf("DE: %d bytes, %d with fine land", len(m), len(f))
+	}
+}
+
+// A long thin ring that the line simplification reduces to its two ends keeps
+// all its points in the coarse land instead of vanishing.
+func TestCoarseKeepsThinRing(t *testing.T) {
+	thin := tpoly{{0, 0}, {300, 2}, {600, 0}, {1000, 2}}
+	w := tiny(t, tcountry{code: "AA", label: [2]int{500, 0}, bbox: [4]int{0, 0, 1000, 2}, polygons: []tpoly{thin}})
+	p := w.polys[0]
+	if n := p.cend - p.cstart; n != 4 {
+		t.Fatalf("%d coarse points, want all 4", n)
 	}
 }

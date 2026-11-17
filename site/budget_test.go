@@ -46,9 +46,9 @@ var pageBudgets = []pageBudget{
 	{"/as64600", 29500, 6400, 490000, 7000 * time.Microsecond},                             // 26433, 5738, 325387, 605µs
 	{"/asn-example-net", 15000, 5100, 130000, 2000 * time.Microsecond},                     // 13412, 4575, 80363, 47µs
 	{"/asn-huge-net", 112500, 12300, 2530000, 41000 * time.Microsecond},                    // 101928, 11143, 1682261, 4090µs
-	{"/prefix/203.0.113.0/24", 17000, 6000, 150000, 2000 * time.Microsecond},               // 15386, 5441, 97507, 43µs (lowered with the coarse land of the map)
+	{"/prefix/203.0.113.0/24", 17000, 6000, 150000, 2000 * time.Microsecond},               // 15685, 5546, 97560, 40µs (lowered with the coarse land of the map)
 	{"/prefix/198.18.0.0/24", 15500, 5200, 130000, 2000 * time.Microsecond},                // 13769, 4652, 86304, 58µs
-	{"/?203.0.113.5", 20700, 7100, 190000, 2000 * time.Microsecond},                        // 18800, 6442, 124278, 71µs (lowered with the coarse land of the map)
+	{"/?203.0.113.5", 20700, 7100, 190000, 2000 * time.Microsecond},                        // 19099, 6550, 125837, 65µs (lowered with the coarse land of the map)
 	{"/top-asn-by-ip-address", 27000, 6200, 50000, 2000 * time.Microsecond},                // 24474, 5596, 30922, 3µs
 	{"/list-of-countries-by-ipv4-allocation", 14500, 4900, 30000, 2000 * time.Microsecond}, // 12884, 4377, 19946, 2µs
 	{"/as64500/prefixes.txt", 100, 100, 30000, 2000 * time.Microsecond},                    // 45, 60, 16020, 7µs

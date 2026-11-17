@@ -211,7 +211,7 @@ func (d *mapDrawer) country(w *world, c *wcountry) {
 	// At the normal scale the other land is drawn from the coarse rings.
 	coarse := d.zoom <= 1 && c != d.highlight
 	for _, p := range w.polys[c.first : c.first+c.count] {
-		if p.maxY < d.latLo || p.minY > d.latHi || coarse && p.cstart == p.cend {
+		if p.maxY < d.latLo || p.minY > d.latHi {
 			continue
 		}
 		// The world repeats every 360 degrees: a polygon at -179 is a
@@ -284,11 +284,11 @@ func (d *mapDrawer) poly(pts []int16, shift float64, dst *[]byte) {
 // the land that is not the highlighted country. minRingZoom scales the
 // minimum ring area with the square of the zoom. At the normal scale nothing is
 // simplified while drawing: the land that is not highlighted is drawn from the
-// coarse rings made once at start with tolLand (world.coarsen), about a pixel
-// and a half, which makes a map a third lighter and quicker to draw; the
-// highlighted country keeps every point.
+// coarse rings made once at start with tolLand (world.coarsen), about a pixel,
+// which makes a map about a fifth lighter (1.5 was tried and looked too
+// coarse); the highlighted country keeps every point.
 const (
-	tolLand      = 1.5
+	tolLand      = 1.0
 	tolHere      = 0.45
 	tolOther     = 2.0
 	minRingZoom  = 1.5

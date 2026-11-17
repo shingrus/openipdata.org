@@ -42,7 +42,7 @@ const worldUnit = 100.0 // file units per degree
 // file units) and its bounding box in degrees.
 type wpoly struct {
 	start, end       int32
-	cstart, cend     int32 // the coarse ring, world.cpts[cstart:cend]; empty when too small to draw
+	cstart, cend     int32 // the coarse ring, world.cpts[cstart:cend]; every ring has one, at least 3 points
 	minX, minY, maxX float64
 	maxY             float64
 }
@@ -313,11 +313,12 @@ func (w *world) mainExtent(c *wcountry) {
 // simplification of the drawing (Douglas-Peucker, tolLand) with longitude
 // scaled by the cosine of the ring's latitude nearest the equator, the
 // largest scale a normal map draws it at or close to it. A map at the normal
-// scale draws the land that is not highlighted from these rings. A ring left
-// with fewer than 3 points is too small to see and gets none.
+// scale draws the land that is not highlighted from these rings. A ring that
+// the simplification leaves with fewer than 3 points is long and thin; it
+// keeps all its points, so it is drawn as before (it is tiny, a few points).
 func (w *world) coarsen() {
 	d := &mapDrawer{}
-	w.cpts = make([]int16, 0, len(w.pts)/2)
+	w.cpts = make([]int16, 0, len(w.pts))
 	for i := range w.polys {
 		p := &w.polys[i]
 		pts := w.pts[p.start*2 : p.end*2]
@@ -347,6 +348,8 @@ func (w *world) coarsen() {
 			}
 		}
 		if kept < 3 {
+			w.cpts = append(w.cpts, pts...)
+			p.cend += int32(len(pts) / 2)
 			continue
 		}
 		for j, k := range d.keep {
