@@ -1,6 +1,8 @@
 /* The outline map behind the place name: only a page that has a map. */
 .place.mapped{background:radial-gradient(420px 260px at 78% 30%,var(--glow),transparent 70%)} /* a map replaces the grid */
-.place svg.map{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;
+/* The map never gets wider than 3.4 times its height: in a wide, short block the frame would be scaled to the width
+   and lose its lower half (the country with it), so there the map keeps to the right and shows 13.5 of its 18.2 units. */
+.place svg.map{position:absolute;top:0;right:0;height:100%;max-width:100%;aspect-ratio:3.4;pointer-events:none;
   -webkit-mask:linear-gradient(#000 55%,transparent);mask:linear-gradient(#000 55%,transparent)} /* decorative; the fade keeps the name readable */
 .place svg.map path,.place svg.map circle{vector-effect:non-scaling-stroke}
 .place svg.map .land{fill:var(--raised);stroke:var(--line-2);stroke-width:1px;stroke-linejoin:round}

@@ -97,11 +97,16 @@ func (w *world) drawMap(lat, lon float64, highlight string, aim bool) (template.
 const (
 	fitW = 0.9 // the zoomed-out map keeps the whole frame in view (preserveAspectRatio meet), so the frame is used well
 	fitH = 0.84
+	// A country at the normal scale keeps this many units between its main extent
+	// and the top and bottom of the frame: the label point alone does not say
+	// where the outline ends (Japan's is far south of its middle).
+	fitEdge = 1.0
 )
 
 // countryMap draws the country alone (no aim). A country whose main extent
 // fits the frame at the normal scale keeps the label point at the point of the
-// frame; a bigger one is shown whole, zoomed out, its extent centred.
+// frame, moved north or south only as far as its main extent needs to stay
+// inside the frame; a bigger one is shown whole, zoomed out, its extent centred.
 func (w *world) countryMap(code string) (template.HTML, bool) {
 	c := w.country(code)
 	if c == nil {
@@ -109,12 +114,27 @@ func (w *world) countryMap(code string) (template.HTML, bool) {
 	}
 	zoom, cs := c.fit()
 	if zoom <= 1 {
-		return w.drawMap(c.labelY, c.labelX, code, false)
+		return w.drawMap(c.pointLat(), c.labelX, code, false)
 	}
 	// The point of the frame is (pointX-0.5, pointY-0.5) of it away from the centre.
 	lon := c.extLon + (pointX-0.5)*frameW*zoom/cs
 	lat := c.extLat + (0.5-pointY)*frameH*zoom
 	return w.draw(lat, lon, cs, zoom, code, false)
+}
+
+// pointLat is the latitude to put at the point of the frame for a country at
+// the normal scale: the label point, or the nearest latitude that keeps the
+// main extent fitEdge inside the top and the bottom of the frame (the top wins).
+func (c *wcountry) pointLat() float64 {
+	lat := c.labelY
+	top, bottom := c.extLat+c.extLatSpan/2, c.extLat-c.extLatSpan/2
+	if below := (1-pointY)*frameH - fitEdge; lat-bottom > below {
+		lat = bottom + below
+	}
+	if above := pointY*frameH - fitEdge; top-lat > above {
+		lat = top - above
+	}
+	return lat
 }
 
 // fit returns the zoom (1 = the normal scale) at which the main extent fits
@@ -188,8 +208,10 @@ func (d *mapDrawer) country(w *world, c *wcountry) {
 	if c == d.highlight {
 		target = &d.here
 	}
+	// At the normal scale the other land is drawn from the coarse rings.
+	coarse := d.zoom <= 1 && c != d.highlight
 	for _, p := range w.polys[c.first : c.first+c.count] {
-		if p.maxY < d.latLo || p.minY > d.latHi {
+		if p.maxY < d.latLo || p.minY > d.latHi || coarse && p.cstart == p.cend {
 			continue
 		}
 		// The world repeats every 360 degrees: a polygon at -179 is a
@@ -198,7 +220,11 @@ func (d *mapDrawer) country(w *world, c *wcountry) {
 			if p.maxX+shift < d.lonLo || p.minX+shift > d.lonHi {
 				continue
 			}
-			d.poly(w.pts[p.start*2:p.end*2], shift, target)
+			if coarse {
+				d.poly(w.cpts[p.cstart*2:p.cend*2], shift, target)
+			} else {
+				d.poly(w.pts[p.start*2:p.end*2], shift, target)
+			}
 		}
 	}
 }
@@ -256,8 +282,13 @@ func (d *mapDrawer) poly(pts []int16, shift float64, dst *[]byte) {
 // Zoomed-out maps (zoom > 1) drop points instead of coarsening the grid:
 // Douglas-Peucker with a tolerance of tol * zoom SVG units, a larger one for
 // the land that is not the highlighted country. minRingZoom scales the
-// minimum ring area with the square of the zoom.
+// minimum ring area with the square of the zoom. At the normal scale nothing is
+// simplified while drawing: the land that is not highlighted is drawn from the
+// coarse rings made once at start with tolLand (world.coarsen), about a pixel
+// and a half, which makes a map a third lighter and quicker to draw; the
+// highlighted country keeps every point.
 const (
+	tolLand      = 1.5
 	tolHere      = 0.45
 	tolOther     = 2.0
 	minRingZoom  = 1.5
@@ -270,10 +301,23 @@ const (
 // point farthest from it, each half is simplified. The result is only good
 // until the next call.
 func (d *mapDrawer) simplify(r []point, tol2 float64) []point {
-	n := len(r)
-	if n < 4 {
+	if len(r) < 4 {
 		return r
 	}
+	d.mark(r, tol2)
+	out := d.s1[:0]
+	for i, k := range d.keep {
+		if k {
+			out = append(out, r[i])
+		}
+	}
+	d.s1 = out
+	return out
+}
+
+// mark sets d.keep[i] for the points of the ring (at least 4) that simplify keeps.
+func (d *mapDrawer) mark(r []point, tol2 float64) {
+	n := len(r)
 	d.sx = d.sx[:0]
 	for _, p := range r {
 		d.sx = append(d.sx, p.x*mapScale, p.y*mapScale)
@@ -317,14 +361,6 @@ func (d *mapDrawer) simplify(r []point, tol2 float64) []point {
 			d.stack = append(d.stack, [2]int{s[0], bi}, [2]int{bi, s[1]})
 		}
 	}
-	out := d.s1[:0]
-	for i, k := range d.keep {
-		if k {
-			out = append(out, r[i])
-		}
-	}
-	d.s1 = out
-	return out
 }
 
 // clip cuts the ring to the clip rectangle (Sutherland-Hodgman, edge by edge,

@@ -492,7 +492,7 @@ func TestMapLayoutStable(t *testing.T) {
 		t.Errorf("place classes: %q %q", re.FindString(with), re.FindString(without))
 	}
 	css := styleCSS + mapCSS
-	for _, x := range []string{".place svg.map{position:absolute;", "width:100%;height:100%", "pointer-events:none", "mask:linear-gradient", "vector-effect:non-scaling-stroke"} {
+	for _, x := range []string{".place svg.map{position:absolute;", "height:100%;max-width:100%", "pointer-events:none", "mask:linear-gradient", "vector-effect:non-scaling-stroke"} {
 		if !strings.Contains(css, x) {
 			t.Errorf("style.css lacks %q", x)
 		}
@@ -547,6 +547,10 @@ func drawCase(w *world, c struct {
 	return string(m), ok
 }
 
+// Since 2026-11-17 a map at the normal scale draws the other land from the
+// coarse rings: London is 3.5 KB, Germany 4.4 KB (7.1 KB before), the biggest
+// map is the zoomed-out Canada, 8.1 KB. The limits stay for the zoomed maps.
+//
 // Limits (raw bytes and gzip, measured 2026-11-15 with static/world.bin made at
 // tolerance 0.08): a map is at most 9 KB raw (the biggest, London, is about 7.8
 // KB; a typical city 4 to 5 KB) and 4 KB gzipped (the biggest is about 2.9 KB).
@@ -562,7 +566,7 @@ func drawCase(w *world, c struct {
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 43008, 14336 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42595 and 14100 now, CA; it has every part, so the split of the style files saves nothing here; 41148 and 13745 with the one-line API hint before)
+	pageMapMaxRaw, pageMapMaxGz = 43008, 14336 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42617 and 14111 now, CA, a zoomed-out map the coarse land does not change; it has every part, so the split of the style files saves nothing here; 41148 and 13745 with the one-line API hint before)
 	pageMaxRaw, pageMaxGz       = 12288, 4608  // 11494 and 4221 now: it gets only the styles of its parts (homeCSS); 15271 and 5154 before the split
 	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
 	visitorMapMaxRaw, visitorMapMaxGz = 21504, 7424 // 21270 and 7335 now with the API panel
@@ -702,13 +706,14 @@ func TestCountryMapZoomsOut(t *testing.T) {
 			t.Errorf("%s: placeMap differs from countryMap", code)
 		}
 	}
-	// Countries that fit keep today's picture: the label point at the point of the frame.
+	// Countries that fit are drawn at the normal scale around their label point
+	// (Japan a little north of it: TestCountryStaysInTheFrame).
 	for _, code := range []string{"PT", "DE", "SG", "GB", "FR", "JP"} {
 		c := w.country(code)
 		if zoom, _ := c.fit(); zoom != 1 {
 			t.Errorf("%s: zoom %v, want 1", code, zoom)
 		}
-		old, _ := w.drawMap(c.labelY, c.labelX, code, false)
+		old, _ := w.drawMap(c.pointLat(), c.labelX, code, false)
 		got, _ := w.countryMap(code)
 		if old != got {
 			t.Errorf("%s: the map changed", code)
@@ -748,4 +753,124 @@ func TestZoomedMapMeets(t *testing.T) {
 func mustDraw(t *testing.T, w *world, code string) template.HTML {
 	t.Helper()
 	return w.placeMap(&geoRecord{CountryCode: code})
+}
+
+// A wide, short place block (a prefix page in a window of 500 to 700 px) used to
+// scale the frame to its width and show only the top of it: Germany lost its
+// lower half. The map is now never wider than mapAspect times its height, so
+// at least frameW/mapAspect units of the frame's height show in every block.
+func TestCountryShowsInAWideBlock(t *testing.T) {
+	m := regexp.MustCompile(`\.place svg\.map\{[^}]*\bright:0;height:100%;max-width:100%;aspect-ratio:([0-9.]+)[;}]`).FindStringSubmatch(mapCSS)
+	if m == nil {
+		t.Fatal("map.css: the map has no largest width for its height (right:0, height:100%, max-width:100%, aspect-ratio)")
+	}
+	var aspect float64
+	if _, err := fmt.Sscan(m[1], &aspect); err != nil || aspect < frameW/frameH {
+		t.Fatalf("map.css: aspect-ratio %q", m[1])
+	}
+	if strings.Contains(m[0], "left:") || regexp.MustCompile(`[{;]width:`).MatchString(m[0]) {
+		t.Errorf("map.css: the map must not be stretched to the block: %s", m[0])
+	}
+	shown := frameW / aspect // units of the frame's height that always show, from its top
+	w, err := parseWorld(worldBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, code := range []string{"DE", "FR", "PL", "IT", "GB", "NL", "ES", "JP"} {
+		c := w.country(code)
+		if zoom, _ := c.fit(); zoom > 1 {
+			t.Errorf("%s: zoomed out, not a country for this test", code)
+			continue
+		}
+		bottom := pointY*frameH + c.pointLat() - (c.extLat - c.extLatSpan/2)
+		if bottom > shown {
+			t.Errorf("%s: its south end is %.1f units below the top of the frame, a wide block shows %.1f", code, bottom, shown)
+		}
+	}
+}
+
+// A country at the normal scale used to be placed by its label point alone, so
+// one that reaches far north of it (Japan, Finland, Iran) was cut at the top
+// of the frame. Its main extent now stays inside the frame, top and bottom.
+func TestCountryStaysInTheFrame(t *testing.T) {
+	w, err := parseWorld(worldBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := 0
+	for i := range w.countries {
+		c := &w.countries[i]
+		if zoom, _ := c.fit(); c.code == "" || zoom > 1 {
+			continue
+		}
+		lat := c.pointLat()
+		above, below := c.extLat+c.extLatSpan/2-lat, lat-(c.extLat-c.extLatSpan/2)
+		if above > pointY*frameH-fitEdge+1e-9 || below > (1-pointY)*frameH-fitEdge+1e-9 {
+			t.Errorf("%s: %.1f units above the point and %.1f below, the frame has %.1f and %.1f", c.code, above, below, pointY*frameH, (1-pointY)*frameH)
+		}
+		if lat != c.labelY {
+			moved++
+		}
+		m, ok := w.countryMap(c.code)
+		want, _ := w.drawMap(lat, c.labelX, c.code, false)
+		if !ok || m != want {
+			t.Errorf("%s: the map is not drawn at its point", c.code)
+		}
+	}
+	// Most countries fit around their label point and keep it.
+	if moved == 0 || moved > 40 {
+		t.Errorf("%d countries moved off their label point", moved)
+	}
+	for _, code := range []string{"DE", "FR", "PL", "GB", "NL", "ES", "IT"} {
+		if c := w.country(code); c.pointLat() != c.labelY {
+			t.Errorf("%s: moved off its label point", code)
+		}
+	}
+	if c := w.country("JP"); c.pointLat() <= c.labelY {
+		t.Error("JP: not moved north")
+	}
+}
+
+// The land that is not highlighted is drawn from coarse rings made at start;
+// the highlighted country keeps every point of the data.
+func TestCoarseLand(t *testing.T) {
+	w, err := parseWorld(worldBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(w.cpts) == 0 || len(w.cpts) > len(w.pts)*65/100 {
+		t.Errorf("%d coarse numbers for %d: not a third lighter", len(w.cpts), len(w.pts))
+	}
+	for i, p := range w.polys {
+		n := p.cend - p.cstart
+		if n != 0 && n < 3 || n > p.end-p.start {
+			t.Fatalf("ring %d: %d coarse points of %d", i, n, p.end-p.start)
+		}
+		// every coarse point is a point of the ring, in order
+		j := p.start
+		for k := p.cstart; k < p.cend; k++ {
+			for ; j < p.end && (w.pts[2*j] != w.cpts[2*k] || w.pts[2*j+1] != w.cpts[2*k+1]); j++ {
+			}
+			if j == p.end {
+				t.Fatalf("ring %d: coarse point %d is not in the ring", i, k-p.cstart)
+			}
+			j++
+		}
+	}
+	here := regexp.MustCompile(`class="here" d="([^"]*)"`)
+	m, _ := w.countryMap("DE")
+	// The same frame with every country's fine rings: the highlighted path is the same, the land is bigger.
+	fine := *w
+	fine.polys = append([]wpoly(nil), w.polys...)
+	for i := range fine.polys {
+		fine.polys[i].cstart, fine.polys[i].cend = fine.polys[i].start, fine.polys[i].end
+	}
+	fine.cpts = fine.pts
+	f, _ := fine.countryMap("DE")
+	if a, b := here.FindStringSubmatch(string(m)), here.FindStringSubmatch(string(f)); a == nil || b == nil || a[1] != b[1] {
+		t.Error("DE: the highlighted country is not drawn from all its points")
+	}
+	if len(m) > 4800 || len(m)*10 > len(f)*7 {
+		t.Errorf("DE: %d bytes, %d with fine land", len(m), len(f))
+	}
 }

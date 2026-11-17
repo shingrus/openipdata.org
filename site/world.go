@@ -42,6 +42,7 @@ const worldUnit = 100.0 // file units per degree
 // file units) and its bounding box in degrees.
 type wpoly struct {
 	start, end       int32
+	cstart, cend     int32 // the coarse ring, world.cpts[cstart:cend]; empty when too small to draw
 	minX, minY, maxX float64
 	maxY             float64
 }
@@ -63,6 +64,7 @@ type world struct {
 	countries []wcountry
 	polys     []wpoly
 	pts       []int16
+	cpts      []int16        // the coarse rings (coarsen), same layout as pts
 	byCode    [26 * 26]int32 // index in countries plus 1; 0 = none
 	cache     *mapCache      // drawn maps, least recently used first out (mapcache.go)
 }
@@ -214,6 +216,7 @@ func parseWorld(b []byte) (*world, error) {
 	for i := range w.countries {
 		w.mainExtent(&w.countries[i])
 	}
+	w.coarsen()
 	if r.err != nil {
 		return nil, fmt.Errorf("%w: damaged data", errWorld)
 	}
@@ -304,4 +307,53 @@ func (w *world) mainExtent(c *wcountry) {
 	}
 	c.extLon, c.extLat = centre-180, (minY+maxY)/2
 	c.extLonSpan, c.extLatSpan = span, maxY-minY
+}
+
+// coarsen makes the coarse copy of every ring, once at start: the line
+// simplification of the drawing (Douglas-Peucker, tolLand) with longitude
+// scaled by the cosine of the ring's latitude nearest the equator, the
+// largest scale a normal map draws it at or close to it. A map at the normal
+// scale draws the land that is not highlighted from these rings. A ring left
+// with fewer than 3 points is too small to see and gets none.
+func (w *world) coarsen() {
+	d := &mapDrawer{}
+	w.cpts = make([]int16, 0, len(w.pts)/2)
+	for i := range w.polys {
+		p := &w.polys[i]
+		pts := w.pts[p.start*2 : p.end*2]
+		p.cstart = int32(len(w.cpts) / 2)
+		p.cend = p.cstart
+		if len(pts) < 8 {
+			w.cpts = append(w.cpts, pts...)
+			p.cend += int32(len(pts) / 2)
+			continue
+		}
+		lat := 0.0
+		if p.minY > 0 {
+			lat = p.minY
+		} else if p.maxY < 0 {
+			lat = p.maxY
+		}
+		c := math.Max(math.Cos(lat*math.Pi/180), minCos)
+		d.a = d.a[:0]
+		for j := 0; j < len(pts); j += 2 {
+			d.a = append(d.a, point{float64(pts[j]) / worldUnit * c, float64(pts[j+1]) / worldUnit})
+		}
+		d.mark(d.a, tolLand*tolLand)
+		kept := 0
+		for _, k := range d.keep {
+			if k {
+				kept++
+			}
+		}
+		if kept < 3 {
+			continue
+		}
+		for j, k := range d.keep {
+			if k {
+				w.cpts = append(w.cpts, pts[2*j], pts[2*j+1])
+			}
+		}
+		p.cend += int32(kept)
+	}
 }
