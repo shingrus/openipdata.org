@@ -69,6 +69,7 @@ type asnData struct {
 	bySlug    []int32   // indexes into nets of the networks that have a slug, by (slug, number)
 	country   map[string]string
 	topV4     []int32
+	rank4     []int32 // per network (index of nets): place by IPv4 addresses from 1, 0 = none (no addresses)
 	topV6     []int32
 	topOrgs   []orgRow
 	orgs      []orgRow         // every organization (valid slug), most IPv4 addresses first, ties by slug; the name search walks it
@@ -215,8 +216,9 @@ func loadASN(ctx context.Context, db *sql.DB) (*asnData, error) {
 	for i := range idx {
 		idx[i] = int32(i)
 	}
-	d.topV4 = top(d, idx, func(n *network) float64 { return float64(n.v4) })
-	d.topV6 = top(d, idx, func(n *network) float64 { return n.v6 })
+	d.rank4 = make([]int32, len(d.nets))
+	d.topV4 = top(d, idx, func(n *network) float64 { return float64(n.v4) }, d.rank4)
+	d.topV6 = top(d, idx, func(n *network) float64 { return n.v6 }, nil)
 
 	var orgs []orgRow
 	for lo := 0; lo < len(d.bySlug); {
@@ -300,7 +302,9 @@ func loadASN(ctx context.Context, db *sql.DB) (*asnData, error) {
 
 // top returns the indexes of the topCount networks with the largest positive
 // amount, ties by number. idx is not changed.
-func top(d *asnData, idx []int32, amount func(*network) float64) []int32 {
+// rank, when not nil, gets the place (from 1) of every network with a positive
+// amount; it costs one pass over the order top sorts anyway.
+func top(d *asnData, idx []int32, amount func(*network) float64, rank []int32) []int32 {
 	c := slices.Clone(idx)
 	slices.SortFunc(c, func(a, b int32) int {
 		x, y := amount(&d.nets[a]), amount(&d.nets[b])
@@ -312,6 +316,14 @@ func top(d *asnData, idx []int32, amount func(*network) float64) []int32 {
 		}
 		return int(d.nets[a].asn) - int(d.nets[b].asn) // numbers are below 2^32, so the difference fits an int
 	})
+	if rank != nil {
+		for i, id := range c {
+			if amount(&d.nets[id]) <= 0 {
+				break
+			}
+			rank[id] = int32(i + 1)
+		}
+	}
 	n := 0
 	for n < len(c) && n < topCount && amount(&d.nets[c[n]]) > 0 {
 		n++
@@ -447,4 +459,22 @@ func (f *asnFile) read(fn func(db *sql.DB, d *asnData)) bool {
 	}
 	fn(f.cur.db, f.cur.data)
 	return true
+}
+
+// rankV4 is the place of a network by IPv4 addresses (1 = most), or 0 when it
+// has none or is not in the data.
+func (d *asnData) rankV4(asn uint32) int32 {
+	i, ok := slices.BinarySearchFunc(d.nets, asn, func(n network, a uint32) int {
+		switch {
+		case n.asn < a:
+			return -1
+		case n.asn > a:
+			return 1
+		}
+		return 0
+	})
+	if !ok || i >= len(d.rank4) {
+		return 0
+	}
+	return d.rank4[i]
 }

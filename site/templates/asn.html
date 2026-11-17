@@ -4,9 +4,9 @@
 <p class="msg">{{.}}</p>
 </section>
 {{end}}{{with .Place}}<section class="panel">
-<div class="head"><h1>{{.Title}}</h1>{{if .JSON}}<a class="r" href="{{.JSON}}">JSON</a>{{end}}</div>
+<div class="head">{{if .Ent}}<h2>{{.Title}}</h2>{{else}}<h1>{{.Title}}</h1>{{end}}{{if .JSON}}<a class="r" href="{{.JSON}}">JSON</a>{{end}}{{if .Txt}}<a class="r" href="{{.Txt}}">prefixes.txt</a>{{end}}</div>
 <div class="conn w">
-<div class="place{{if .None}} none{{end}}{{if .Small}} s{{end}}{{if .Mono}} m{{end}}{{if .Map}} mapped{{end}}">{{.Map}}<h2>{{.Big}}</h2>{{if .Sub}}<p{{if .SubNone}} class="none"{{end}}>{{.Sub}}</p>{{end}}</div>
+<div class="place{{if .None}} none{{end}}{{if .Small}} s{{end}}{{if .Mono}} m{{end}}{{if .Map}} mapped{{end}}">{{.Map}}{{if .Ent}}<h1>{{.Big}}</h1>{{else}}<h2>{{.Big}}</h2>{{end}}{{if .Sub}}<p{{if .SubNone}} class="none"{{end}}>{{.Sub}}</p>{{end}}</div>
 <dl>
 {{range .Rows}}<div><dt>{{.K}}</dt><dd>{{template "val" .}}{{range .Extra}}<br>{{template "val" .}}{{end}}</dd></div>
 {{end}}</dl>
@@ -29,7 +29,7 @@
 {{end}}</dl>
 </section>
 {{end}}{{with .Pfx}}<section class="panel">
-<div class="head"><h2>Prefixes</h2></div>
+<div class="head"><h2>Prefixes</h2>{{if .TxtHref}}<a class="r" href="{{.TxtHref}}">prefixes.txt</a>{{end}}</div>
 {{range .Groups}}<div class="pf"><h3>{{.Family}}</h3><ul>{{range .List}}<li>{{if .Href}}<a href="{{.Href}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}{{end}}</ul></div>
 {{end}}{{if .Note}}<p class="note">{{.Note}} <a href="{{.NoteHref}}">{{.NoteLink}}</a></p>
 {{end}}</section>

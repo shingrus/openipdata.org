@@ -75,6 +75,8 @@ jobs:
           fi
           go vet ./...
           go test -race ./...
+          # Page budgets (size, memory and time per page); the race run above checks only the sizes.
+          go test -count=1 -run TestPageBudgets .
 
       - name: Check and test beacon
         shell: bash

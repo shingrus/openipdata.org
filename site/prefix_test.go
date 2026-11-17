@@ -355,8 +355,8 @@ func TestPrefixPages(t *testing.T) {
 		want, not    []string
 	}{
 		{"exact, two networks", "/prefix/203.0.113.0/24", true, []string{
-			"<title>203.0.113.0/24 Example Net AS64500</title>", "<h1>Prefix</h1>", `<div class="place s m mapped">`, "<h2>203.0.113.0/24</h2>", "<p>Lisbon, Portugal</p>",
-			`<dd>Example Net <a href="/as64500">AS64500</a><br>Example Two <a href="/as64501">AS64501</a></dd>`,
+			"<title>203.0.113.0/24 Example Net AS64500</title>", "<h2>Prefix</h2>", `<div class="place s m mapped">`, "<h1>203.0.113.0/24</h1>", "<p>Lisbon, Portugal</p>",
+			`<dd><a href="/asn-example-net">Example Net</a> <a href="/as64500">AS64500</a><br><a href="/asn-example-two">Example Two</a> <a href="/as64501">AS64501</a></dd>`,
 			"<dt>Addresses</dt><dd>256</dd>", `class="aim"`,
 			"More specific prefixes", `<td class="a"><a href="/prefix/203.0.113.128/25">203.0.113.128/25</a></td><td class="a"><a href="/as64501">AS64501</a></td><td>Example Two</td>`,
 			`value=""`, `href="/top-asn-by-ip-address"`,
@@ -367,21 +367,21 @@ func TestPrefixPages(t *testing.T) {
 			"<dt>Addresses</dt><dd>128</dd>",
 		}, []string{"<dt>Network</dt>", "More specific", "Places"}},
 		{"IPv6 exact", "/prefix/2001:db8::/32", true, []string{
-			"<h2>2001:db8::/32</h2>", "<dt>/64s</dt><dd>4,294,967,296</dd>", "<p>Lisbon, Portugal</p>", `class="aim"`,
+			"<h1>2001:db8::/32</h1>", "<dt>/64s</dt><dd>4,294,967,296</dd>", "<p>Lisbon, Portugal</p>", `class="aim"`,
 			`<a href="/prefix/2001:db8:1::/48">2001:db8:1::/48</a>`, `<a href="/prefix/2001:db8:ffff::/48">`, "<dt>Network</dt>",
 		}, []string{"<dt>Addresses</dt>", "Part of"}},
 		{"IPv6 leaf with a parent", "/prefix/2001:db8:1::/48", true, []string{
-			"<dt>/64s</dt><dd>65,536</dd>", `<dt>Part of</dt><dd><a href="/prefix/2001:db8::/32">2001:db8::/32</a> <a href="/as64500">AS64500</a></dd>`, "<dt>Network</dt><dd>Big Net",
+			"<dt>/64s</dt><dd>65,536</dd>", `<dt>Part of</dt><dd><a href="/prefix/2001:db8::/32">2001:db8::/32</a> <a href="/as64500">AS64500</a></dd>`, `<dt>Network</dt><dd><a href="/asn-big-net">Big Net</a>`,
 		}, []string{"More specific"}},
 		{"IPv6 longer than /64", "/prefix/2001:db8:1::/96", false, []string{"<dt>/64s</dt><dd>&lt;1</dd>", "Part of"}, nil},
-		{"IPv6 /128", "/prefix/2001:db8:1::5/128", false, []string{"<h2>2001:db8:1::5/128</h2>", "<dt>/64s</dt><dd>&lt;1</dd>", `<a href="/prefix/2001:db8:1::/48"`}, nil},
+		{"IPv6 /128", "/prefix/2001:db8:1::5/128", false, []string{"<h1>2001:db8:1::5/128</h1>", "<dt>/64s</dt><dd>&lt;1</dd>", `<a href="/prefix/2001:db8:1::/48"`}, nil},
 		{"announced only inside", "/prefix/198.18.0.0/21", false, []string{"<dt>Addresses</dt><dd>2,048</dd>", "More specific prefixes"}, []string{"Part of", "<dt>Network</dt>"}},
 		{"a piece of a prefix with a smaller piece announced", "/prefix/198.18.0.0/23", false, []string{"198.18.0.0/22", `href="/prefix/198.18.0.0/25"`}, nil},
 		{"many networks, one prefix", "/prefix/198.18.8.0/24", true, []string{
-			`href="/as64550">AS64550</a>`, `href="/as64554">AS64554</a>`, "Net One <a",
+			`href="/as64550">AS64550</a>`, `href="/as64554">AS64554</a>`, `<a href="/asn-net-one">Net One</a> <a`,
 		}, []string{`href="/as64555"`, `href="/as64556"`}},
 		{"more specific prefixes are capped", "/prefix/203.0.114.0/24", true, []string{
-			">120</span>", "20 more prefixes", `<td class="a"><a href="/prefix/203.0.114.99/32">`, "<td>Small Net</td>", "Wide Net <a",
+			">120</span>", "20 more prefixes", `<td class="a"><a href="/prefix/203.0.114.99/32">`, "<td>Small Net</td>", `<a href="/asn-wide-net">Wide Net</a> <a`,
 		}, []string{`href="/prefix/203.0.114.100/32"`}},
 		{"odd data is skipped", "/prefix/9.9.9.0/24", true, []string{"Odd Net"}, nil},
 	} {
@@ -613,7 +613,7 @@ func TestPrefixPagesHaveNoVisitorData(t *testing.T) {
 		if strings.Contains(w.Body.String(), "203.0.113.77") || strings.Contains(w.Header().Get("Cache-Control"), "private") {
 			t.Errorf("%s: visitor data or private cache", target)
 		}
-		if w.Code == 200 && (!strings.Contains(w.Body.String(), `value=""`) || strings.Count(w.Body.String(), "<script") != 2) {
+		if w.Code == 200 && (!strings.Contains(w.Body.String(), `value=""`) || strings.Count(w.Body.String(), "<script") != 3) {
 			t.Errorf("%s: lookup bar or scripts", target)
 		}
 	}

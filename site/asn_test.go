@@ -171,7 +171,7 @@ func TestASNRoutes(t *testing.T) {
 		want, not    []string
 	}{
 		{"network", "/as64500", 200, "", []string{
-			"<title>AS64500 Example Net: IP ranges and prefixes</title>", "<h2>Example Net</h2>", "<p>EXAMPLE-NET</p>",
+			"<title>AS64500 Example Net: IP ranges and prefixes</title>", "<h2>Example Net</h2>", "<p>#138 by IPv4 addresses</p>",
 			"<dt>Handle</dt><dd>EXAMPLE-NET</dd>", `<dd><a href="/asn-example-net">Example Net</a></dd>`,
 			"<dt>Domain</dt><dd>example.net</dd>", `<dt>Country</dt><dd><a href="/portugal-asn-list">Portugal</a></dd>`, "<dt>Category</dt><dd>isp</dd>",
 			"<dt>IPv4 prefixes</dt><dd>2</dd>", "<dt>IPv6 prefixes</dt><dd>1</dd>", "<dt>IPv4 addresses</dt><dd>512</dd>",
@@ -198,7 +198,7 @@ func TestASNRoutes(t *testing.T) {
 		{"json not json", "/as64504", 200, "", []string{">Broken Net</a>", "<dt>IPv4 prefixes</dt><dd>—</dd>", "<dt>Handle</dt><dd>BROKEN-NET</dd>"}, nil},
 		{"odd slug is not linked", "/as64505", 200, "", []string{"<dt>Organization</dt><dd>Odd Net</dd>"}, []string{"/asn-Odd_Net"}},
 		{"org", "/asn-example-net", 200, "", []string{
-			"<title>Example Net IP ranges and networks</title>", "<h1>Organization</h1>", "<h2>Example Net</h2>",
+			"<title>Example Net IP ranges and networks</title>", "<h2>Organization</h2>", "<h1>Example Net</h1>",
 			"<dt>IPv4 addresses</dt><dd>768</dd>", "<dt>Networks</dt><dd>2</dd>", `<a href="/as64500">AS64500</a>`, `<a href="/as64501">AS64501</a>`, `<td class="s">Portugal</td>`,
 		}, []string{"more networks"}},
 		{"org unknown", "/asn-nope", 404, "", []string{"Organization not found", "<h1>Not found</h1>"}, nil},
@@ -206,7 +206,7 @@ func TestASNRoutes(t *testing.T) {
 		{"org bad char", "/asn-example_net", 404, "", []string{"Organization not found"}, nil},
 		{"org empty", "/asn-", 404, "", []string{"Organization not found"}, nil},
 		{"org too long", "/asn-" + strings.Repeat("a", 300), 404, "", []string{"Organization not found"}, nil},
-		{"org percent", "/asn-example%2dnet", 200, "", []string{"<h2>Example Net</h2>"}, nil},
+		{"org percent", "/asn-example%2dnet", 200, "", []string{"<h1>Example Net</h1>"}, nil},
 		{"top v4", "/top-asn-by-ip-address", 200, "", []string{"<title>Top networks by IPv4 addresses · openipdata.org</title>", "<h1>Top networks by IPv4 addresses</h1>", "Top 100", `<a href="/as64719">AS64719</a>`}, nil},
 		{"top v6", "/top-asn-by-ipv6", 200, "", []string{"<h1>Top networks by IPv6 space</h1>", "<th class=\"n\">IPv6 /64s</th>", "65,536", `<a href="/as64500">AS64500</a>`}, nil},
 		{"top orgs", "/top-organizations-by-ip-address", 200, "", []string{"<h1>Top organizations by IPv4 addresses</h1>", `<a href="/asn-huge-net">Huge Net</a>`, `<a href="/asn-many-net">Many Net</a>`}, nil},
@@ -675,6 +675,7 @@ func TestASNPageHygieneAndSize(t *testing.T) {
 			t.Errorf("%s: %d bytes (limit %d), %d gzipped (limit %d)", c.target, len(body), c.max, gzipped(body), c.gzm)
 		}
 		text := w.Body.String()
+		text = ldRe.ReplaceAllString(text, "") // the breadcrumb data block is not a script that runs, and holds only the page's own URLs
 		clean := strings.ReplaceAll(text, "http://www.w3.org/2000/svg", "")
 		for _, m := range regexp.MustCompile(`https?://[^\s"'<>]+`).FindAllString(clean, -1) {
 			if m != "https://github.com/shingrus/openipdata.org" && m != "https://openipdata.org"+c.target { // the canonical link

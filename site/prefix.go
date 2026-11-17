@@ -214,6 +214,16 @@ func asnItem(d *asnData, asn uint32) kv {
 	return it
 }
 
+// netItem is asnItem for the Network row: the name links to the organization
+// page when the network has a slug.
+func netItem(d *asnData, asn uint32) kv {
+	it := asnItem(d, asn)
+	if n, ok := d.find(asn); ok && n.slug != "" && it.V != "" {
+		it.Href = orgPathPrefix + n.slug
+	}
+	return it
+}
+
 // prefixView builds the page of p, or nil when p is not announced, not covered
 // and has nothing announced inside.
 func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
@@ -225,17 +235,17 @@ func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
 	}
 	var asn0 uint32
 	var name0 string
-	pl := &place{Title: "Prefix", Big: p.String(), Mono: true, Small: true}
+	pl := &place{Title: "Prefix", Big: p.String(), Mono: true, Small: true, Ent: true}
 	v := &asnView{Place: pl}
 	if len(exact) > 0 {
 		asn0 = exact[0]
 		if n, ok := d.find(asn0); ok {
 			name0 = nameOf(n)
 		}
-		row := asnItem(d, exact[0])
+		row := netItem(d, exact[0])
 		row.K = "Network"
 		for _, a := range exact[1:min(len(exact), maxNetworkRows)] {
-			row.Extra = append(row.Extra, asnItem(d, a))
+			row.Extra = append(row.Extra, netItem(d, a))
 		}
 		pl.Rows = append(pl.Rows, row)
 	}
@@ -293,6 +303,7 @@ func (s *server) prefixView(d *asnData, p netip.Prefix) *asnView {
 	v.pageBase = s.asnBase(title, len(exact) == 0)
 	if len(exact) > 0 {
 		v.Desc, v.Canon = desc, s.canon(prefixHref(p))
+		v.LD = s.crumbs("Networks", rankings[0].path, asnText(asn0), asnHref(asn0), p.String(), prefixHref(p))
 	}
 	return v
 }

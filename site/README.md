@@ -107,6 +107,7 @@ The data is the SQLite file the worker builds (`asn-openipdata.sqlite3`: tables 
 |-----|------|
 | `/as15169` | one network: name and handle, a readout (handle, organization, domain, country, category, prefix counts, IPv4 addresses), the other networks of the organization (100 at most), the prefixes (500 per family at most, one line with the total and a link to the JSON when there are more), and the links to the four rankings |
 | `/asn-google-llc` | one organization: total IPv4 addresses and number of networks, then its networks, biggest first (500 at most) |
+| `/as<number>/prefixes.txt`, `/asn-<slug>/prefixes.txt` | every announced prefix of the network or organization, one per line, IPv4 then IPv6 (plain text, noindex, canonical spelling only) |
 | `/top-asn-by-ip-address`, `/top-asn-by-ipv6` | the 100 networks with the most IPv4 addresses or IPv6 /64 networks |
 | `/top-organizations-by-ip-address` | the 100 organizations with the most IPv4 addresses (summed over their networks) |
 | `/list-of-countries-by-ipv4-allocation` | all countries with their IPv4 addresses and number of networks; each name links to its country page |

@@ -67,8 +67,10 @@ type place struct {
 	Title   string
 	Big     string
 	None    bool
-	Small   bool // a long name: smaller type, less height
-	Mono    bool // the big line is data (a prefix), set in the mono face
+	Small   bool   // a long name: smaller type, less height
+	Mono    bool   // the big line is data (a prefix), set in the mono face
+	Ent     bool   // the big line is the page's h1 (prefix, organization); the head label is an h2
+	Txt     string // link to the prefixes.txt list, right of the head
 	Sub     string
 	SubNone bool          // Sub is "Location unknown": shown grey
 	Map     template.HTML // the outline map behind the place (see worldmap.go), or empty
@@ -88,6 +90,7 @@ type pfxPanel struct {
 	Note     string
 	NoteHref string
 	NoteLink string
+	TxtHref  string // prefixes.txt list, right of the head
 }
 
 // asnView is the data of every ASN page; the template asn.html lays it out.
@@ -301,6 +304,8 @@ func (s *server) serveASN(w http.ResponseWriter, r *http.Request) bool {
 	case strings.HasPrefix(p, prefixPath):
 		s.servePrefix(w, r)
 		return true
+	case strings.HasSuffix(p, prefixesTxt) && s.servePrefixList(w, r, p):
+		return true
 	case strings.HasPrefix(p, orgPathPrefix):
 		s.serveOrg(w, r, p[len(orgPathPrefix):])
 		return true
@@ -500,6 +505,9 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 	if big == "" {
 		pl.Big, pl.None = "Name unknown", true
 	}
+	if r := d.rankV4(n); r > 0 {
+		pl.Sub = "#" + fmtInt(int64(r)) + " by IPv4 addresses" // the place in the ranking; the handle has its own row
+	}
 	org := kv{K: "Organization", V: orElseDash(row.org)}
 	if row.org != "" && validSlug(row.slug) {
 		org.Href = orgPathPrefix + row.slug
@@ -535,6 +543,11 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 	title, desc := networkMeta(n, firstNonEmpty(row.org, handle), country, n4, n6, jsonOK && j.Prefixes.IPv4 != nil && j.Prefixes.IPv6 != nil)
 	v := &asnView{pageBase: s.asnBase(title, false), Place: pl}
 	v.Desc, v.Canon = desc, s.canon(asnHref(n))
+	if validSlug(row.slug) && row.org != "" {
+		v.LD = s.crumbs("Networks", rankings[0].path, row.org, orgPathPrefix+row.slug, asnText(n), asnHref(n))
+	} else {
+		v.LD = s.crumbs("Networks", rankings[0].path, asnText(n), asnHref(n))
+	}
 
 	if validSlug(row.slug) {
 		var others []int32
@@ -584,6 +597,7 @@ func (s *server) networkView(d *asnData, n uint32, row netRow) *asnView {
 			pp.Note = "Showing the first " + strconv.Itoa(maxPrefixes) + " per family. Total: " + strings.Join(capped, ", ") + "."
 			pp.NoteHref, pp.NoteLink = api, "All prefixes in JSON"
 		}
+		pp.TxtHref = prefixesHref(asnHref(n))
 		v.Pfx = pp
 	}
 	return v
@@ -604,20 +618,25 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 		return
 	}
 	var total int64
+	var npfx uint64
 	name := ""
 	for _, id := range ids {
 		n := &d.nets[id]
 		total += n.v4
+		npfx += uint64(n.n4) + uint64(n.n6)
 		if name == "" {
 			name = n.org
 		}
 	}
-	pl := &place{Title: "Organization", Big: name, Small: true, Rows: []kv{
+	pl := &place{Title: "Organization", Big: name, Small: true, Ent: true, Rows: []kv{
 		{K: "IPv4 addresses", V: fmtInt(total)},
 		{K: "Networks", V: fmtInt(int64(len(ids)))},
 	}}
 	if name == "" {
 		pl.Big, pl.None = "Name unknown", true
+	}
+	if npfx > 0 {
+		pl.Txt = prefixesHref(orgPathPrefix + slug)
 	}
 	sorted := slices.Clone(ids)
 	slices.SortFunc(sorted, func(a, b int32) int {
@@ -653,6 +672,7 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 	title, desc := orgMeta(firstNonEmpty(name, slug), int64(len(ids)), total)
 	v := &asnView{pageBase: s.asnBase(title, false), Place: pl, Tables: []table{t}}
 	v.Desc, v.Canon = desc, s.canon(orgPathPrefix+slug)
+	v.LD = s.crumbs("Organizations", rankings[2].path, firstNonEmpty(name, slug), orgPathPrefix+slug)
 	body, err := s.renderASN(v)
 	if err != nil {
 		plain(w, http.StatusInternalServerError, "error\n")

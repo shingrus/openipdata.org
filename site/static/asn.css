@@ -1,9 +1,9 @@
 /* The ASN pages: added to style.css on those pages only. */
 .head h1{font:inherit;color:var(--text);min-width:0}
 .place.s{min-height:150px}
-.place h2{position:relative;font-size:clamp(26px,4.5vw,40px);font-weight:600;line-height:1.08;letter-spacing:-.03em;overflow-wrap:anywhere}
-.place.none h2{color:var(--faint)}
-.place.m h2{font:500 clamp(20px,3.6vw,30px)/1.15 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.02em}
+.w .place>:is(h1,h2){position:relative;font-size:clamp(26px,4.5vw,40px);font-weight:600;line-height:1.08;letter-spacing:-.03em;overflow-wrap:anywhere}
+.w .place.none>:is(h1,h2){color:var(--faint)}
+.w .place.m>:is(h1,h2){font:500 clamp(20px,3.6vw,30px)/1.15 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.02em}
 .place p.none{color:var(--faint)}
 .place.s p{font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
 .conn.w dl div,.fact dl div{grid-template-columns:132px minmax(0,1fr)}

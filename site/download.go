@@ -242,6 +242,8 @@ func (s *server) llmsText() string {
 	b.WriteString("\n## URL patterns\n\n")
 	b.WriteString("- " + o + "/?<ip>: one address\n")
 	b.WriteString("- " + o + "/as<number>: one network\n")
+	b.WriteString("- " + o + "/as<number>/prefixes.txt: the prefixes of one network, one per line\n")
+	b.WriteString("- " + o + "/asn-<slug>/prefixes.txt: the prefixes of one organization, one per line\n")
 	b.WriteString("- " + o + "/prefix/<cidr>: one announced prefix\n")
 	b.WriteString("- " + o + "/api/as<number>: one network as JSON\n")
 	b.WriteString("- " + o + "/json: your own address as JSON (country, city, coordinates, network)\n")
