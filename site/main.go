@@ -333,6 +333,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Content-Length", strconv.Itoa(len(b)))
 		w.Write(b)
+	case s.serveMoved(w, r):
 	default:
 		plain(w, http.StatusNotFound, "not found\n")
 	}

@@ -614,6 +614,13 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 		ids = d.org(slug)
 	}
 	if len(ids) == 0 {
+		// An older spelling (capitals, spaces, other characters): one hop to the canonical slug.
+		if c := cleanOrgSlug(slug); c != slug && validSlug(c) && len(d.org(c)) > 0 {
+			w.Header().Set("Cache-Control", asnCache)
+			w.Header().Set("Location", orgPathPrefix+c)
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
 		s.asnNotice(w, r, http.StatusNotFound, "Not found", "Organization not found", asnCache)
 		return
 	}

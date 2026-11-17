@@ -202,7 +202,7 @@ func TestASNRoutes(t *testing.T) {
 			"<dt>IPv4 addresses</dt><dd>768</dd>", "<dt>Networks</dt><dd>2</dd>", `<a href="/as64500">AS64500</a>`, `<a href="/as64501">AS64501</a>`, `<td class="s">Portugal</td>`,
 		}, []string{"more networks"}},
 		{"org unknown", "/asn-nope", 404, "", []string{"Organization not found", "<h1>Not found</h1>"}, nil},
-		{"org upper case", "/asn-Example-Net", 404, "", []string{"Organization not found"}, nil},
+		{"org upper case", "/asn-Example-Net", 301, "/asn-example-net", nil, nil},
 		{"org bad char", "/asn-example_net", 404, "", []string{"Organization not found"}, nil},
 		{"org empty", "/asn-", 404, "", []string{"Organization not found"}, nil},
 		{"org too long", "/asn-" + strings.Repeat("a", 300), 404, "", []string{"Organization not found"}, nil},
@@ -211,7 +211,7 @@ func TestASNRoutes(t *testing.T) {
 		{"top v6", "/top-asn-by-ipv6", 200, "", []string{"<h1>Top networks by IPv6 space</h1>", "<th class=\"n\">IPv6 /64s</th>", "65,536", `<a href="/as64500">AS64500</a>`}, nil},
 		{"top orgs", "/top-organizations-by-ip-address", 200, "", []string{"<h1>Top organizations by IPv4 addresses</h1>", `<a href="/asn-huge-net">Huge Net</a>`, `<a href="/asn-many-net">Many Net</a>`}, nil},
 		{"countries", "/list-of-countries-by-ipv4-allocation", 200, "", []string{"<h1>Countries by IPv4 addresses</h1>", `<td><a href="/germany-asn-list">Germany</a></td>`, `<td><a href="/france-asn-list">France</a></td>`, `<td><a href="/portugal-asn-list">Portugal</a></td>`, `<td><a href="/spain-asn-list">Spain</a></td>`}, nil},
-		{"top trailing slash", "/top-asn-by-ip-address/", 404, "", nil, nil},
+		{"top trailing slash", "/top-asn-by-ip-address/", 301, "/top-asn-by-ip-address", nil, nil},
 		{"top other", "/top-asn", 404, "", nil, nil},
 	} {
 		w := get(s, "GET", c.target)

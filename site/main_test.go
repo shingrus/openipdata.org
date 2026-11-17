@@ -144,7 +144,7 @@ func TestRoutes(t *testing.T) {
 	if w := get(s, "GET", "/?8.8.8.8"); w.Code != 200 || !strings.Contains(w.Body.String(), "Accuracy") {
 		t.Errorf("query: %d", w.Code)
 	}
-	for _, p := range []string{"/x", "/index.html", "/fonts/", "/fonts/nope.woff2", "/healthz/"} {
+	for _, p := range []string{"/x", "/index.html", "/fonts/", "/fonts/nope.woff2"} {
 		if w := get(s, "GET", p); w.Code != 404 {
 			t.Errorf("%s: %d", p, w.Code)
 		}
