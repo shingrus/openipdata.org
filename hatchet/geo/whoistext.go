@@ -14,7 +14,7 @@ import (
 // object's own country) and uploads the rows to the fixed R2 key geofeeds.WhoisTextKey.
 // build-geo-data puts the file in as it is, with -same-country: the description names a place,
 // but the record's country may be the holder's, so the layer adds cities and never changes a
-// country. It sits between 36-mlab and 38-asn-geofeed, so the strong layers replace it and it
+// country. It sits between 37-whois-arin and 38-asn-geofeed, so the strong layers replace it and it
 // only shows where nothing stronger gives a city.
 //
 // whoisTextMaxAge: the text of whois records changes slowly, so a copy up to 14 days old is

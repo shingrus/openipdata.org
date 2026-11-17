@@ -9,6 +9,7 @@
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-bgp [-skip-upload | -force-upload] [-mrt file] # sync-bgp (-mrt: read a local dump, no download, no upload)
 //	openipdata-worker run-mlab [-file path] [-skip-upload | -force-upload] # import-mlab (-file: any local CSV instead of the newest in the inbox)
+//	openipdata-worker run-arin [-skip-upload] [-force-upload] [-force-export] # sync-arin-whois
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
 //	openipdata-worker run-rdns-rules [-reject domain,...] # learn-rdns-rules (task learn)
@@ -20,6 +21,7 @@
 // public.visitor_ips (the websites insert them), and writes public.network_traces,
 // public.traced_networks, public.ip_ptr_names, public.customer_name_networks and public.rdns_geo_layer;
 // import-mlab reads public.generated_rules and public.rdns_city_rules and writes public.mlab_hop_names;
+// sync-arin-whois uses no table (its records are files on the VM with a daily copy in R2);
 // learn-rdns-rules reads the names of every traced IP (targets, candidates, hops) and ASNs, and writes public.rdns_city_rules
 // and public.rdns_llm_answers),
 // OPENROUTER_API_KEY (optional, a secret: without it propose-codes is skipped), OPENROUTER_MODEL (default
@@ -49,6 +51,7 @@ import (
 
 	hatchet "github.com/hatchet-dev/hatchet/sdks/go"
 
+	"openipdata.org/hatchet/arin"
 	"openipdata.org/hatchet/asn"
 	"openipdata.org/hatchet/bgp"
 	"openipdata.org/hatchet/domains"
@@ -104,6 +107,16 @@ type ImportMLabInput struct {
 	ForceUpload bool `json:"force_upload"`
 }
 
+// SyncARINWhoisInput is the sync-arin-whois input; cron runs use the zero value.
+type SyncARINWhoisInput struct {
+	// ForceUpload sends the layer even when R2 already holds the same bytes, and copies the records
+	// file to R2 now instead of once a day (a file with less than half the records of the last copy
+	// is still refused).
+	ForceUpload bool `json:"force_upload"`
+	// ForceExport writes the layer even when the file is younger than six hours.
+	ForceExport bool `json:"force_export"`
+}
+
 // BuildGeoInput is the build-geo-data input; cron runs use the zero value.
 type BuildGeoInput struct {
 	// SkipPublish builds and evaluates the MMDB but uploads nothing (for manual test runs).
@@ -112,7 +125,7 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 36-mlab, 37-whois-text, 38-asn-geofeed, 40-hosting, 50-ix, 60-whois,
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 36-mlab, 37-whois-arin, 37-whois-text, 38-asn-geofeed, 40-hosting, 50-ix, 60-whois,
 	// 65-rdns and 67-rdns-names (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
@@ -174,6 +187,8 @@ func main() {
 		err = runBGP(ctx, os.Args[2:])
 	case "run-mlab":
 		err = runMLab(ctx, os.Args[2:])
+	case "run-arin":
+		err = runARIN(ctx, os.Args[2:])
 	case "run-geo":
 		err = runGeo(ctx, os.Args[2:])
 	case "run-rdns":
@@ -181,7 +196,7 @@ func main() {
 	case "run-rdns-rules":
 		err = runRDNSRules(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, version, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-geo, run-rdns, or run-rdns-rules)", command)
+		err = fmt.Errorf("unknown command %q (want serve, version, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-arin, run-geo, run-rdns, or run-rdns-rules)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -217,6 +232,13 @@ func newBGPPipeline(progress func(string)) *bgp.Pipeline {
 func newMLabPipeline(progress func(string)) *mlab.Pipeline {
 	builder, _ := mmdbBuilder()
 	return &mlab.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, MMDBBuilder: builder, R2: env("R2"), PTRResolver: env("PTR_RESOLVER")}
+}
+
+// newARINPipeline reads the environment; progress receives log lines. mmdbbuilder is the binary
+// next to this one (empty when unknown: lookup then skips, it needs the gap list).
+func newARINPipeline(progress func(string)) *arin.Pipeline {
+	builder, _ := mmdbBuilder()
+	return &arin.Pipeline{DataDir: dataDir(), Progress: progress, MMDBBuilder: builder, R2: env("R2")}
 }
 
 // newGeoPipeline reads the environment; progress receives log lines.
@@ -333,6 +355,7 @@ func serve(ctx context.Context) error {
 			syncGeofeedsWorkflow(client),
 			syncBGPWorkflow(client),
 			importMLabWorkflow(client),
+			syncARINWhoisWorkflow(client),
 			buildGeoWorkflow(client),
 			resolveIPsWorkflow(client),
 			learnRDNSRulesWorkflow(client),
@@ -649,6 +672,32 @@ func importMLabWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf.NewTask("upload", func(ctx hatchet.Context, input ImportMLabInput) (mlab.UploadOutput, error) {
 		return newMLabPipeline(taskLog(ctx)).Upload(ctx, input.ForceUpload)
 	}, taskRetry(hatchet.WithParents(locate), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	return wf
+}
+
+// syncARINWhoisWorkflow asks ARIN's RDAP service about the gap /24s in ARIN's space (two lookups a
+// second, a batch at a time), keeps the records in a file on the VM (copied to private R2 once a day) and
+// writes the ip2geo layer 37-whois-arin to private R2, where build-geo-data reads it.
+func syncARINWhoisWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("sync-arin-whois",
+		hatchet.WithWorkflowDescription("ARIN RDAP lookups for the gap /24s (records file on the VM, daily copy in private R2) -> layer 37-whois-arin in private R2"),
+		// Every 30 minutes: a lookup run lasts at most 24 minutes, the next one goes on from the saved position.
+		hatchet.WithWorkflowCron("*/30 * * * *"),
+		hatchet.WithWorkflowConcurrency(oneRunLimit("arin")),
+	)
+	lookup := wf.NewTask("lookup", func(ctx hatchet.Context, _ SyncARINWhoisInput) (arin.LookupOutput, error) {
+		p := newARINPipeline(taskLog(ctx))
+		if err := p.CheckUpload(); err != nil {
+			return arin.LookupOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		return p.Lookup(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
+	export := wf.NewTask("export", func(ctx hatchet.Context, input SyncARINWhoisInput) (arin.ExportOutput, error) {
+		return newARINPipeline(taskLog(ctx)).Export(ctx, input.ForceExport)
+	}, taskRetry(hatchet.WithParents(lookup), hatchet.WithExecutionTimeout(15*time.Minute))...)
+	wf.NewTask("upload", func(ctx hatchet.Context, input SyncARINWhoisInput) (arin.UploadOutput, error) {
+		return newARINPipeline(taskLog(ctx)).Upload(ctx, input.ForceUpload)
+	}, taskRetry(hatchet.WithParents(export), hatchet.WithExecutionTimeout(15*time.Minute))...)
 	return wf
 }
 
@@ -1043,6 +1092,37 @@ func runMLab(ctx context.Context, args []string) error {
 		return nil
 	}
 	_, err = p.Upload(ctx, *forceUpload)
+	return err
+}
+
+// runARIN runs the sync-arin-whois tasks once, in order, without Hatchet. The lookup task works for
+// at most 24 minutes, then the export and the upload follow.
+func runARIN(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-arin", flag.ExitOnError)
+	skipUpload := flags.Bool("skip-upload", false, "write the layer file but do not upload it (the daily copy of the records file to R2 is skipped too)")
+	forceUpload := flags.Bool("force-upload", false, "send the layer even if R2 already holds the same bytes, and copy the records file to R2 now")
+	forceExport := flags.Bool("force-export", false, "write the layer even if the file is younger than six hours")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-arin: unexpected argument %q", flags.Arg(0))
+	}
+
+	p := newARINPipeline(cliLog)
+	// The lookups need the R2 setting (the published MMDB is read from it, the records are copied to it).
+	if err := p.CheckUpload(); err != nil {
+		return err
+	}
+	if _, err := p.Lookup(ctx); err != nil {
+		return err
+	}
+	if _, err := p.Export(ctx, *forceExport); err != nil {
+		return err
+	}
+	if *skipUpload {
+		cliLog("upload: skipped")
+		return nil
+	}
+	_, err := p.Upload(ctx, *forceUpload)
 	return err
 }
 

@@ -85,7 +85,7 @@ installs. To try the same build again (for example after fixing the VM), delete 
 | `/opt/openipdata/bin/mmdbbuilder` | root `0755` | MMDB builder, built from `mmdbbuilder/`; the worker runs it |
 | `/opt/openipdata/bin/scamper` | root `0755` (not setuid) | traceroute tool of `resolve-ips`, built from the pinned upstream tarball without privilege separation; the worker runs it |
 | `/etc/openipdata/worker.env` | root:openipdata `0640` | secrets and config (template: `openipdata-worker.env.example`) |
-| `/var/lib/openipdata/` | openipdata `0750` | worker state: source clones, the last few builds, `rdns/` (the trace batch of `resolve-ips`: visitor IPs, so keep it private), `worker-busy` (exists while a task runs) |
+| `/var/lib/openipdata/` | openipdata `0750` | worker state: source clones, the last few builds, `rdns/` (the trace batch of `resolve-ips`: visitor IPs, so keep it private), `arin/` (the records of `sync-arin-whois`: not a cache, weeks of lookups; copied to private R2 once a day and fetched back from there when the file is missing), `worker-busy` (exists while a task runs) |
 | `/var/cache/openipdata-build/` | root `0700` | Go toolchain and module/build caches for the build |
 | `/etc/systemd/system/openipdata-worker.service` | root | runs the worker as `openipdata`; starts once `HATCHET_CLIENT_TOKEN` is set |
 

@@ -256,6 +256,9 @@ func TestFallbackLadder(t *testing.T) {
 	if !isWeakCitySource("37-whois-text") || isGuessSource("37-whois-text") {
 		t.Error("37-whois-text must be weak and not a guess (lookup -in keeps its city)")
 	}
+	if !isWeakCitySource("37-whois-arin") || isGuessSource("37-whois-arin") {
+		t.Error("37-whois-arin must be weak (the gap list keeps its /24s) and not a guess")
+	}
 	if !isWeakCitySource("25-bgp") || !isWeakCitySource("36-mlab") || isGuessSource("25-bgp") || isWeakCitySource("70-geofeeds") {
 		t.Error("source lists")
 	}

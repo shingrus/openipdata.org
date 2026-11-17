@@ -26,6 +26,11 @@
 //	              by hand): the city of the router hops before each client /24; applied only
 //	              where the earlier layers give the same country; skipped while the object is
 //	              missing or older than 45 days (the health check ping is still sent)
+//	37-whois-arin sync-arin-whois (private R2): the registrant city of the ARIN records of at
+//	              most a /20 that GeoNames places in the record's own state, for the /24s our
+//	              database gives a country but only a weak city; applied only where the earlier
+//	              layers give the same country; skipped while the object is missing or older
+//	              than 14 days (the health check ping is still sent)
 //	37-whois-text sync-geofeeds (private R2): the city that the descr and netname lines of a
 //	              RIPE or AFRINIC inetnum, or the city line of a LACNIC one, name (a GeoNames place of
 //	              the object's country); applied only
@@ -147,6 +152,7 @@ var layerRules = map[string]string{
 	HostingLayer:   "-first-country",
 	WhoisLayer:     "-within-first",
 	MLabLayer:      "-same-country",
+	ARINLayer:      "-same-country",
 	WhoisTextLayer: "-same-country",
 	RDNSLayer:      "-same-country",
 	RDNSNamesLayer: "-same-country",
@@ -159,7 +165,7 @@ var layerRules = map[string]string{
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, WhoisTextLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
+var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -442,7 +448,12 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 		return src, err
 	}
 
-	// 14. The cities named by whois descriptions (sync-geofeeds' layer file in R2), put in as it is.
+	// 14. The ARIN registrant cities (sync-arin-whois's layer file in R2), put in as it is.
+	if err := p.downloadARIN(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
+		return src, err
+	}
+
+	// 15. The cities named by whois descriptions (sync-geofeeds' layer file in R2), put in as it is.
 	if err := p.downloadWhoisText(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
 		return src, err
 	}

@@ -28,7 +28,7 @@ The published data files are CC0 (see [`LICENSE-DATA`](LICENSE-DATA)); the code 
 Shared code in `hatchet/`: `schema/` (Postgres tables), `publish/` (R2 and GitHub
 releases), `rirstats/` (RIR delegated-extended stats parsing, address range to
 prefixes), `download/` (conditional HTTP download) and `outputs/` (pruning old output
-directories, last log lines, file size). `sync-geofeeds`, `sync-bgp`, `import-mlab` and
+directories, last log lines, file size). `sync-geofeeds`, `sync-bgp`, `import-mlab`, `sync-arin-whois` and
 `build-geo-data` share `rirstats` and `download` but keep their own downloaded files.
 
 `hatchet/` and `mmdbbuilder/` are separate Go modules and build separately.
@@ -433,6 +433,70 @@ HAVING client24 IS NOT NULL
 3. Start `import-mlab` in Hatchet (input `{}` takes the newest file of the inbox, or `{"file": "mlab-2026-11.csv"}`), or run `sudo -u openipdata openipdata-worker run-mlab` on the VM (it needs the env file: `PGSQL` and `R2`).
 4. The next `build-geo-data` run uses the layer. The layer is used for 45 days; export again about once a month.
 
+### `sync-arin-whois` (`hatchet/arin/`, cron `*/30 * * * *` UTC)
+
+ARIN has no public whois dump. This workflow asks ARIN's RDAP service about one address of each IPv4 /24 where our
+own published ip2geo database has a country but only a weak city or none (the gap), keeps the network record it gets
+back (range, registrant city, state, country), keeps it in a file on the VM (no table; a copy goes to the private R2 bucket once a day) and writes the optional layer `37-whois-arin`, which `build-geo-data`
+reads from the private R2 bucket. Measured on RIPE Atlas: replacing weak answers with the
+registrant city of ARIN records of at most a /20, keeping only cities that GeoNames places in the record's own state,
+gives +197 right and -37 lost probes (61% of the 531 rows right). Records wider than a /16 hold the head office
+(9% right) and are never stored. Own concurrency limit `arin`.
+
+| Task | Runs after | Does |
+|---|---|---|
+| `lookup` | | Takes the walk position from `progress.json`; when the records file is lost it is restored from R2 first (see below). Reads ARIN's IPv4 space from the delegated-extended stats file (`https://ftp.arin.net/pub/stats/arin/delegated-arin-extended-latest`, asked at most every 24 hours, a failed download uses the saved file; none: `skipped: no ARIN stats`) and the gap list from `mmdbbuilder gaps` on its own copy of the published MMDB (R2, same dated key, ETag and saved-copy rule as `locate` of `resolve-ips`; the list is made again only when the MMDB's ETag changed; no usable MMDB or a failing `gaps`: `skipped` with a fixed reason). Walks the shuffled order of all 2^24 /24 indexes of `sample-names` from the saved position. A /24 is looked up when it is in the gap, inside ARIN's space and public; the address asked is one host (1 to 254) chosen from the /24 index, so a rerun asks the same address. 200 /24s are looked up together by 4 workers that share one rate limit of **two requests a second**, then the records are appended to the journal and synced and only then the new position is written (the position moves only past a stored batch). A run lasts at most 24 minutes from the start of the task (`stopped: time`; a batch that cannot finish in what is left is not started). An answer 429 pauses all workers (Retry-After, or 15 s doubling, at most 5 minutes) and the address is asked again; 5 pauses in a row stop the run (`stopped: rate limited`). 10 failed lookups in a row stop it too (`stopped: failing`), and so does a batch, unless it is the last of the walk, in which at least 5 and more than a fifth of the lookups failed. A stop never stores the unfinished batch, so the next run asks it again. After the last position the cycle is done (`skipped: cycle done`) and the next starts 180 days after the last began. An ARIN, DNS, MMDB or R2 problem never fails the task (it is skipped or stopped with a fixed reason); only an error of the files in `/var/lib/openipdata/arin/` or a cancellation does |
+| `export` | `lookup` | `skipped: recent` when the layer file is younger than 6 hours (input `force_export` overrides). First compacts the records file (below; the records older than 300 days go: `pruned`; `stored_records` = records left). Then takes the records with a country, state and city and at most 4096 addresses (a /20), places each city with GeoNames `cities1000.zip` (its own copy in `/var/lib/openipdata/arin/`, asked at most every 7 days; none: `skipped: no GeoNames`) by exactly the rule of `mmdbbuilder geo -geonames`, drops it when GeoNames has no such place (`unplaced`), when the place is in another state or province (`other_state`: for the US the admin1 code is the state; for Canada a fixed table maps the codes) or when the place's main name would place another place (`ambiguous`), and writes `/var/lib/openipdata/arin/37-whois-arin.csv.gz` (the layer format, source `whois-city:arin`, region = the state, one row per CIDR prefix of each range, sorted by start address then the broader block first, through a `.tmp` file; when two overlapping records give the same prefix the smaller record wins; no rows: `skipped: no rows` and the layer file is removed, so `upload` stops renewing the object and `build-geo-data` drops the layer after 14 days) |
+| `upload` | `export` | puts the layer at the fixed key `internal/layers/37-whois-arin.csv.gz` in the private R2 bucket (sha256 in the object's metadata; an identical object is not sent again, its upload time is renewed; `force_upload` always sends). No layer file yet: `skipped: no layer file`. Then, independent of the layer, the daily copy of the records file (below). No health-check ping |
+
+- The RDAP request: `GET https://rdap.arin.net/registry/ip/<address>` with `Accept: application/rdap+json`, IPv4 only,
+  redirects are not followed (a 3xx means another registry's address: `not_arin`), the body is capped at 1 MB. 404 is
+  `not_found`; 200 is parsed (untrusted input) into `found` (a record of at most a /16), `wide` (wider: not stored) or `bad`
+  (broken JSON, an IPv6 range, or a range that does not contain the address asked); any other status or network error
+  is tried up to 3 times, then the lookup is `failed` and the batch goes on.
+- From a 200 answer only the range, country, state and city are kept (never a handle, a name or another line of the
+  address). The first top-level entity with the role `registrant` gives the `label` of its first `adr` property: the lines
+  of the label, the last is the country name (`United States` or `Canada`, any other country: no city), the first line from the
+  second-last upwards (never the first) that is two upper-case letters is the state, the line before it is the city (empty,
+  over 64 bytes, not UTF-8 or with a control character: no city). A record without a usable city is stored with empty country, state and city.
+- Files in `/var/lib/openipdata/arin/` (no Postgres table: no other workflow reads the records, and the export would otherwise
+  read a million rows from Postgres several times a day): `records.csv.gz` (the base: the first line is
+  `#position <cursor> <cycle_started>`, then CSV `net_start,net_end,country,state,city,looked_up` with `looked_up` in Unix
+  seconds, sorted by start then end; the records are complete up to that walk position), `records.journal.csv` (the rows of the
+  batches stored since the last compaction, appended and synced once per batch; half a row left by a crash is cut off before the next batch is appended and skipped when read),
+  `progress.json` (`{"cursor", "cycle_started"}`, written after the journal is synced: a crash in between only makes the next
+  run ask that batch again) and `backup.json` (`{"uploaded_at", "records"}` of the last copy in R2). `export` compacts: base plus
+  journal, one record per range (the newest wins), records older than 300 days dropped, written again through a `.tmp` file, then
+  the journal is removed (a crash before that applies the same rows again). `export` never makes a base: with none it is
+  `skipped: no records file` (only `lookup` makes one, after R2 said whether it has a copy; a base made from the journal alone could be
+  copied over the good one in R2). A base whose content cannot be read to the end is moved aside as `records.damaged` and the task fails
+  with that message; the next `lookup` restores it from R2 (the file moved aside is removed after a restore and kept when
+  there is no copy and the walk starts again). A base that is there but cannot be opened or read by the disk is an error
+  and is left alone. A `lock` file is held by each task: a task that finds the directory
+  in use (`run-arin` beside the worker) is `skipped: busy`, so two walks never write the files or double the request rate.
+- The daily copy: `upload` sends the base to the fixed key `internal/arin/records.csv.gz` in the private R2 bucket when there is no
+  `backup.json` or its `uploaded_at` is 24 hours old (an identical object is not sent again; `force_upload` skips the wait and always sends). A base
+  with less than half the records of the last copy is always refused, also with `force_upload` (`backup: refused`, a WARNING line with both counts: more likely damage
+  than pruning); to accept a smaller file on purpose, delete `backup.json`. Outputs `backup` (`uploaded`, `unchanged`, `recent`, `refused`, `no records file`) and `backup_records`.
+  This object is the workflow's own backup; nothing else reads it.
+- The restore rule: when the base is missing (lost or cleaned) or its first line does not parse, `lookup` asks R2. The object exists:
+  it is downloaded, read to its end, and becomes the base; `progress.json` is written from ITS first line (before the base is put in place),
+  `backup.json` gets its record count, an existing journal stays, one line says `restored` with counts (`restored` in the output).
+  No object: `lookup` writes an empty first base at position 0; when a position was already saved, a damaged file was moved aside
+  or `backup.json` says a copy was sent once, the walk also starts again at 0, in the same cycle, because those records are gone (a WARNING line).
+  A base that is there but cannot be opened is never treated as lost: the task fails and the file is left alone. R2 cannot be
+  used (no or invalid setting, any error but "no such object", a download that fails on the network, a copy that cannot be read to its end): `skipped: no records file and R2 cannot be read`
+  with a WARNING line; the task succeeds and makes no records file, so the walk never restarts from 0 only because R2 was down
+  (a base with bad content has been moved aside before R2 is asked; a download that fails on the local disk fails the task).
+  A run that stops on `failing` or `rate limited` also logs a WARNING with the position.
+- The task outputs have counts only (ranges, gap /24s, positions, targets, requests, retries, 429s, found, with city, wide,
+  not ARIN, not found, bad, failed, stored, restored; records, stored records, rows, unplaced, other state, ambiguous, pruned, bytes; backup, backup records). No IP, name or
+  secret is logged or returned. Each run goes on where the last one stopped.
+- `run-arin [-skip-upload] [-force-upload] [-force-export]` runs the three tasks once locally (it needs `R2`;
+  the lookup task works for up to 24 minutes). Workflow input: `{"force_upload": true, "force_export": true}`.
+- `build-geo-data` puts the layer in as `37-whois-arin` (see its section). `mmdbbuilder gaps` counts a /24 whose city comes
+  from this layer as no city, so the walk keeps these /24s in the gap list and `sample-names` keeps sampling customer names there.
+
 ### `build-geo-data` (`hatchet/geo/`, cron `0 7,19 * * *` UTC)
 
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
@@ -472,12 +536,12 @@ together +882 right and +1,212 wrong probes (right city of all probes 48.1% to 5
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,
-`36-mlab.csv.gz`, `37-whois-text.csv.gz`, `38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
+`36-mlab.csv.gz`, `37-whois-arin.csv.gz`, `37-whois-text.csv.gz`, `38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
 `/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
 `.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
-layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-text` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-arin`, `37-whois-text` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
 `70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
 
 | Task | Runs after | Does |
@@ -577,7 +641,13 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   skips the layer (`skipped_layers`, a warning); this never skips the `HC_PING_GEO` ping. The holdout build passes the layer as it is: it
   does not learn from the geofeed rows directly, but its MMDB-hop part reads the published MMDB (which holds geofeed cities), like the
   MMDB hop votes of `35-rdns-wide`.
-- `37-whois-text` (optional, `-same-country`, between `36-mlab` and `38-asn-geofeed`, so every later layer replaces it) is the city named by the
+- `37-whois-arin` (optional, `-same-country`, between `36-mlab` and `37-whois-text`, so every later layer replaces it) is the registrant city of the
+  ARIN records of at most a /20 that GeoNames places in the record's own state, written by `sync-arin-whois` (above) at
+  `internal/layers/37-whois-arin.csv.gz` in the private R2 bucket. `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2
+  layers (saved in `geo/downloads/`) and puts it in the layers dir as it is. The object missing, older than 14 days or any fetch error
+  skips the layer (`skipped_layers`, a warning); this never skips the `HC_PING_GEO` ping. The holdout build passes the layer as it is: it is not
+  learned from the geofeed rows. Measured on RIPE Atlas: +197 right and -37 lost probes, the layer's city right for 61% of 531 rows.
+- `37-whois-text` (optional, `-same-country`, between `37-whois-arin` and `38-asn-geofeed`, so every later layer replaces it) is the city named by the
   `descr:` and `netname:` lines of a RIPE or AFRINIC inetnum, or by the `city:` line of a LACNIC one, written by `sync-geofeeds` (above) at `internal/layers/37-whois-text.csv.gz` in the
   private R2 bucket. The description names a place, but the record's country may be the holder's, so it adds cities and never changes a country.
   `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2 layers (saved in `geo/downloads/`) and puts it in the
@@ -587,7 +657,7 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   `stale_layers` and skips the ping, so the owner is alerted. It is not one of the layers
   `download` must have (not in the `60-whois`/`70-geofeeds` list). The holdout build passes the layer as it is: it is not learned from the
   geofeed rows, so held-out feeds do not reach it. Measured on RIPE Atlas (build of 2026-11-16): +384 right and -81 lost probes (net +303).
-- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-text`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
+- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.
@@ -744,7 +814,7 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
-`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `36-mlab` or `37-whois-text` as no city too (like the four guesses `80-asn-main`, `82-asn-likely`, `84-asn-near` and `86-country-main`), so customer names keep being sampled there.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `36-mlab`, `37-whois-arin` or `37-whois-text` as no city too (like the four guesses `80-asn-main`, `82-asn-likely`, `84-asn-near` and `86-country-main`), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
 smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
 hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the
@@ -785,6 +855,8 @@ openipdata-worker run-bgp -skip-upload # same, without uploading the file
 openipdata-worker run-bgp -mrt dump.gz # read a local MRT dump, write the file, upload nothing
 openipdata-worker run-mlab             # run import-mlab once locally (newest file of the inbox)
 openipdata-worker run-mlab -file export.csv -skip-upload # import a local CSV, write the layer, upload nothing
+openipdata-worker run-arin             # run sync-arin-whois once locally (up to 24 minutes of lookups, then export and upload)
+openipdata-worker run-arin -skip-upload # same, without uploading the layer
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet
 openipdata-worker run-geo -skip-publish  # same, without uploading
 openipdata-worker run-geo -force-publish # same, publishing even if the scores dropped more than the gate allows
@@ -801,7 +873,7 @@ mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
-mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the four guesses 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main, or from 25-bgp, 36-mlab or 37-whois-text counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the four guesses 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main, or from 25-bgp, 36-mlab, 37-whois-arin or 37-whois-text counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 

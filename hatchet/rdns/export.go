@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Thin exports for other workflows (import-mlab). They add no behaviour: they hand out the
-// PTR resolver, the production rule decoder and the MMDB copy helper of resolve-ips, so the
-// code is not copied.
+// Thin exports for other workflows (import-mlab, sync-arin-whois). They add no behaviour: they hand out the
+// PTR resolver, the production rule decoder, the MMDB copy helper, the gap list and the walk of
+// resolve-ips, so the code is not copied.
 
 // PTR lookup statuses (the same texts ip_ptr_names uses).
 const (
@@ -163,3 +163,22 @@ func Connect(ctx context.Context, dsn string) (*pgx.Conn, error) { return connec
 // DBError replaces a Postgres error by its code: the message of a failed statement can quote
 // the values it was given.
 func DBError(op string, err error) error { return dbError(op, err) }
+
+// WalkSize is the number of /24 indexes of the walk of sample-names (2^24).
+const WalkSize = walkSize
+
+// WalkAt is the /24 index (address >> 8) at position i of the shuffled walk over all /24s.
+func WalkAt(i uint32) uint32 { return walkAt(i) }
+
+// GapList is the parsed output of mmdbbuilder gaps: the runs of /24s that our MMDB gives a
+// country but no city.
+type GapList struct{ g gapList }
+
+// ParseGaps reads the lines of mmdbbuilder gaps; a line that is not one is skipped.
+func ParseGaps(data []byte) GapList { return GapList{parseGaps(data)} }
+
+// Contains returns the country of the gap run that holds the /24 index idx (address >> 8).
+func (l GapList) Contains(idx uint32) (country string, ok bool) { return l.g.contains(idx) }
+
+// Total is the number of /24s in the list.
+func (l GapList) Total() int { return l.g.total }

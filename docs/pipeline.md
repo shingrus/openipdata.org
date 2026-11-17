@@ -28,6 +28,11 @@ flowchart LR
   ml --> t_ml[(mlab_hop_names)]
   ml --> r2ml[(R2: 36-mlab)]
   r2ml --> geo
+  rdaparin[ARIN RDAP, delegated stats] --> arin[sync-arin-whois<br/>every 30 min]
+  arin --> f_arin[(records file on the VM)]
+  arin --> r2back[(R2: arin records backup)]
+  arin --> r2arin[(R2: 37-whois-arin)]
+  r2arin --> geo
   t_ml --> learn
   rir[RIR stats<br/>ipverse/geo-ip-blocks] --> geo[build-geo-data<br/>07:00, 19:00]
   t_pdb --> geo
@@ -63,6 +68,7 @@ The morning chain runs PeeringDB → domains → ASN build, so the 06:00 ASN bui
 | 06:00, 18:00 | `build-asn-data` | `asn-db` |
 | 07:00, 19:00 | `build-geo-data` (decided: every 4 h, not yet switched) | `geo` |
 | every 30 min | `resolve-ips` | `rdns` |
+| every 30 min | `sync-arin-whois` | `arin` |
 | by hand (about monthly) | `import-mlab` | `mlab` |
 | daily 05:00 | `learn-rdns-rules` | `rdns-rules` |
 
@@ -77,6 +83,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `build-asn-data` | `sync-source` → `ingest` → `build-mmdb` + `export-sqlite` → `publish` | `public.asn` (incl. `seen_at`) | `ip2asn-openipdata.mmdb`, `asn.sqlite3` |
 | `sync-geofeeds` | `rdap-lookups` and `probe-domains` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `37-whois-text`, `60-whois` and `70-geofeeds` to private R2 | nothing |
 | `sync-bgp` | `download` → `extract` → `upload` | the BGP community values of every IPv4 prefix to private R2 (`internal/bgp/communities.csv.gz`) | nothing |
+| `sync-arin-whois` | `lookup` → `export` → `upload` | records file on the VM; layer `37-whois-arin` to private R2 (`internal/layers/37-whois-arin.csv.gz`) and a daily copy of the records (`internal/arin/records.csv.gz`) | nothing |
 | `import-mlab` | `import` → `resolve-names` → `locate` → `upload` | `public.mlab_hop_names`; layer `36-mlab` to private R2 (`internal/layers/36-mlab.csv.gz`) | nothing |
 | `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `ip2geo-openipdata.mmdb` |
 | `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `sample-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.customer_name_networks`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink of the sticky traced rows; candidate, wide and named rows are only counted) | — |
@@ -84,6 +91,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 
 - **`sync-geofeeds`**: finds every geofeed URL (whois, IRR, RDAP, CAIDA, built-in list, ASN websites), fetches and checks each feed, drops rows that fail the ownership check, exports ~6.4M rows (36 MB gz). `discover` also builds the whois geoloc layer.
 - **`sync-bgp`**: reads the community values (standard and large) of every IPv4 prefix of /8 to /24 in the RIPE RIS rrc00 table, drops values every route carries (over 5% of prefixes) or fewer than 3 prefixes carry, and uploads 1.16M rows (28 MB gz). No database is read.
+- **`sync-arin-whois`**: every 30 minutes. ARIN has no public whois dump, so the workflow asks ARIN's RDAP service (two requests a second, a run lasts at most 24 minutes and goes on from a saved position) about one address of each IPv4 /24 where our MMDB has a country but a weak city or none, inside ARIN's address space. It keeps the network record (range, registrant city, state, country; never wider than a /16) in a file on the VM (a copy goes to private R2 once a day; no database table) and writes layer `37-whois-arin` from the records of at most a /20 whose city GeoNames places in the record's own state. A walk over all /24s takes about five weeks; the next one starts 180 days after the last began. Measured on RIPE Atlas: +197 right, -37 lost probes, 61% of 531 rows right.
 - **`import-mlab`**: no cron. M-Lab publishes (CC0) a traceroute from its speed-test server to every client; the owner exports the last 3 router hops before each client /24 from BigQuery by hand (see the README, "M-Lab export") and copies the CSV into `/var/lib/openipdata/mlab/inbox/`. The workflow names the hop IPs (PTR, the `resolve-names` resolver), decodes the names with the production rules, falls back on the hop IP's own city in our published MMDB (strong sources only) and gives each client /24 the city its hops vote for (traces as weights, a tie gives none): layer `36-mlab`. Measured on RIPE Atlas: about +238 right probes (+1.7 points), precision about 41%.
 - **`build-geo-data`**: builds the MMDB from stacked layers (see ip2geo layers), scores it, and publishes only if the scores did not clearly drop.
 - **`resolve-ips`**: for IPv4 /24s that visitors came from (`public.visitor_ips`, filled by external websites), traces three hosts with `scamper` (built without privilege separation, next to the worker), names the last routers (PTR), and gives the /24 the city that a rule of `public.generated_rules` finds in a router name. Visitor IPs never leave Postgres and the VM: tasks report counts only.
@@ -110,11 +118,14 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `sync-bgp` | `download` | fetches the newest RIPE RIS rrc00 table (`latest-bview.gz`, ~430 MB) into its own dir, not again within 6 hours |
 | | `extract` | streams the MRT file in two passes (value counts, then rows) into `bgp-communities.csv.gz` |
 | | `upload` | puts it at the fixed R2 key with the sha256 in the metadata (unchanged: not sent, upload time renewed), pings `HC_PING_BGP` |
+| `sync-arin-whois` | `lookup` | stats file of ARIN (24 h gate) and the gap list (`mmdbbuilder gaps` on our MMDB copy, made again only when its ETag changed); walks the /24 indexes from the saved position (`progress.json`; a lost records file is restored from R2 first, and with R2 down the task is skipped), 200 targets (gap, inside ARIN, public) at a time, one RDAP lookup each at two a second; appends the records to the journal (synced), then moves the position; an answer 429 pauses all workers; stops on the soft budget (24 min from the task start), 5 pauses in a row, 10 failed lookups in a row or a batch with many failed lookups (not stored) |
+| | `export` | compacts the records file (base + journal, newest record of a range wins, records older than 300 days dropped), then takes the records with a city and at most a /20, placed by GeoNames in the record's own state (US admin1 = state, Canada by a code table); writes `37-whois-arin.csv.gz` |
+| | `upload` | the layer to `internal/layers/37-whois-arin.csv.gz` (identical object not sent again); once a day the records file to `internal/arin/records.csv.gz` (refused when it has less than half the records of the last copy) |
 | `import-mlab` | `import` | streams the CSV of the inbox (plain or gz; untrusted: columns by header, public IPv4 only, `from_end` 0 to 2) into `pairs.csv.gz`, one row per client /24 and hop, replacing the last one |
 | | `resolve-names` | PTR of the distinct hop IPs into `public.mlab_hop_names` (answers younger than 60 days are skipped; stored 2000 at a time; a 3-hour budget ends it cleanly with `stopped: time`) |
 | | `locate` | R: hops whose name a rule decodes to a city vote (weight = traces); no winner: M: hops with a city in a strong-source record of our MMDB vote; only the client /24's country counts; writes `36-mlab.csv.gz` |
 | | `upload` | puts it at the fixed R2 key with the sha256 in the metadata (unchanged: not sent); no health-check ping |
-| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `67-rdns-names` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2, then writes `38-asn-geofeed` from the geofeed layer and `25-bgp` from the geofeed layer and the R2 communities file; downloads `36-mlab` and `37-whois-text` from R2 as they are |
+| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `67-rdns-names` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2, then writes `38-asn-geofeed` from the geofeed layer and `25-bgp` from the geofeed layer and the R2 communities file; downloads `36-mlab`, `37-whois-arin` and `37-whois-text` from R2 as they are |
 | | `build-mmdb` | runs `mmdbbuilder geo` on the layers in name order with the rules table → `ip2geo-openipdata-<date>.mmdb` |
 | | `evaluate` | builds the holdout MMDB, scores both with `mmdbbuilder eval` (DB-IP, MaxMind GeoLite2, Atlas probes, GeoNames to place our cities; holdout for ours only), stores a row in `public.geo_eval`, then stamps the scores into the MMDB's metadata (`description.openipdata`; a failure never blocks publish) |
 | | `publish` | applies the 2-point gate, uploads to R2 and the GitHub release, marks the row published, pings the health check |
@@ -148,6 +159,7 @@ Every external input, grouped by what it feeds. Third-party geo databases are us
 | `public.visitor_ips` (external websites insert active users' IPs) | `resolve-ips` | which /24s to trace | every 30 min |
 | `scamper` traceroutes, PTR names (local resolver or system resolver, Cloudflare DoH) | `resolve-ips` | routers near each visitor /24 and their names | per /24 every 60 days; names 30 / 7 days |
 | `public.generated_rules` (regex rules written outside this repo) | `resolve-ips` | router name → city | read as is |
+| ARIN RDAP `https://rdap.arin.net/registry/ip/<address>` (two requests a second) and ARIN's `delegated-arin-extended-latest` stats | `sync-arin-whois` | the network record of one address per gap /24 (range, registrant city, state, country) | every 30 minutes, up to 24 minutes a run; stats at most every 24 hours |
 | RIPE RIS rrc00 routing table `latest-bview.gz` (public MRT dump) | `sync-bgp` | BGP community values per IPv4 prefix | daily, conditional, not within 6 hours |
 | RIR delegated-extended stats (5 RIRs) | `sync-geofeeds`, `build-geo-data` | RDAP block list; country layer | conditional |
 | ipverse/geo-ip-blocks (CC0) | `build-geo-data` | registration country (IPv4) | conditional |
@@ -178,6 +190,8 @@ Each table has exactly one writer; data between workflows goes through these tab
 | R2 private `internal/layers/70-geofeeds.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/bgp/communities.csv.gz` | `sync-bgp` | `build-geo-data` (layer `25-bgp`) |
 | R2 private `internal/layers/36-mlab.csv.gz` | `import-mlab` | `build-geo-data` (layer `36-mlab`) |
+| R2 private `internal/layers/37-whois-arin.csv.gz` | `sync-arin-whois` | `build-geo-data` (layer `37-whois-arin`) |
+| R2 private `internal/arin/records.csv.gz` | `sync-arin-whois` (`upload`, once a day) | `sync-arin-whois` (`lookup`, restores the records file when it is lost); no other workflow |
 | `public.generated_rules` | written outside this repo | `resolve-ips` `locate` (read only) |
 | `hostname_reviews` | written outside this repo | nobody yet |
 
@@ -195,6 +209,7 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | 30 | `30-pdb.csv.gz` | `public.asn_geo_pdb`: ASN's dominant city (≥30% of its presence) | city | same-country (only refines) |
 | 35 | `35-rdns-wide.csv.gz` | `public.rdns_geo_layer`, scope `wide`: the city most traced /24s of an announced prefix (at most /16) got from router names; a trial | city | same-country (only refines) |
 | 36 | `36-mlab.csv.gz` | M-Lab traceroutes (`import-mlab`, R2): the city of the last router hops before each client /24 (a rule-decoded router name first, else the hop IP's own city in our MMDB from `70-geofeeds`, `60-whois`, `40-hosting`, `50-ix` or `38-asn-geofeed`), the largest trace weight wins, a tie gives none; made by hand from a monthly export; sits below `38-asn-geofeed` and everything after it; measured about +238 right Atlas probes at 41% precision | city | same-country (only refines) |
+| 37 | `37-whois-arin.csv.gz` | the registrant city of ARIN RDAP records of at most a /20 for the gap /24s (`sync-arin-whois`, R2), only a city that GeoNames places in the record's own state; records wider than a /16 (head offices) are never stored; measured on RIPE Atlas: +197 right, -37 lost probes, the layer's city right for 61% of 531 rows | city | same-country (only refines) |
 | 37 | `37-whois-text.csv.gz` | RIPE and AFRINIC inetnum `descr:` and `netname:` text, and the `city:` line of LACNIC inetnums, that names a GeoNames place of the object's country (longest word group, then the most populous place; an ignore list, short words and records broader than a /16 are left out; `sync-geofeeds`, R2); measured on RIPE Atlas: +384 right, -81 lost probes (net +303) above the weak layers, the layer's city right for 68% of the 995 probes it answers; the LACNIC rows: +75 right, -33 lost, right for 60% of 324 probes | city | same-country (only refines) |
 | 38 | `38-asn-geofeed.csv.gz` | the ASN's own geofeed rows (`70-geofeeds` attributed by announced prefix, MOAS prefixes ignored): an ASN whose feed rows cover ≥50% of its announced addresses (per address family) and put ≥80% of their addresses (country-only rows count in the total) in one city, from ≥2 rows, gives that city to all its announced prefixes | city | same-country (only refines) |
 | 40 | `40-hosting.csv.gz` | single-city PeeringDB `Content` networks, non-Global scope | city | first-country (only back to the RIR country) |
@@ -208,6 +223,7 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 - `80-asn-main` is a guess, not a layer file: `mmdbbuilder geo -asn-main geo/asn-prefixes.csv.gz` applies it after all layers (it needs their merged result; IPv4 only). For each ASN and country, when one city has at least 90% of the addresses that have a city (and there are at least 256), the ASN's addresses there with no city get it (with GeoNames only cities it places count; others are ignored for the counts) (`city_source` `80-asn-main`). It only fills. The holdout build recomputes it. `download` removes `asn-prefixes.csv.gz` before it reads `public.asn`, so a stale file is never used; without it `build-mmdb` reports `asn_main: skipped: no ASN prefixes` (`skipped: ASN prefixes unreadable` for a bad file; the build goes on). The guessed cities count in `city_pct`, `atlas_city_*` and the holdout city score like any other (`layer_80_asn_main_*` show the fill alone); the gate checks only country scores. `gaps` and `lookup -in` treat these cities as no city.
 - `25-bgp` is computed in `download` from the geofeed layer and the communities file of `sync-bgp` (saved in `geo/downloads/`, not a layer file); the holdout build recomputes it from the kept feeds. A missing, old (over 3 days) or unreadable object only skips it; it never skips the health-check ping.
 - `36-mlab` is put in as it is from the R2 object (saved in `geo/downloads/` with its ETag). A missing object, one older than 45 days (the export is made by hand about monthly) or any fetch error only skips it with a warning; it never skips the health-check ping. The holdout build passes it as it is: it does not learn from the geofeed rows directly, but its MMDB-hop part reads the published MMDB (which holds geofeed cities), like the MMDB votes of `35-rdns-wide`. `gaps` counts a /24 whose city comes from `25-bgp` or `36-mlab` (like the `80-asn-main` guess) as no city, so `sample-names` keeps sampling customer names there.
+- `37-whois-arin` is put in as it is from the R2 object (saved in `geo/downloads/` with its ETag). One older than 14 days, a missing object or any fetch error skips it with a warning; it never skips the health-check ping. The holdout build passes it as it is: it is not learned from the geofeed rows. `gaps` counts a /24 whose city comes from this layer as no city, so `sync-arin-whois` keeps these /24s in its walk and `sample-names` keeps sampling customer names there.
 - `37-whois-text` is put in as it is from the R2 object (saved in `geo/downloads/` with its ETag). One older than 14 days, a missing object or any fetch error skips it with a warning; a missing object or a fetch error never skips the health-check ping. An existing object older than 3 days is still used up to 14 days but skips the ping (`sync-geofeeds` renews it every night). The holdout build passes it as it is: it is not learned from the geofeed rows.
 - Optional layers (25, 35, 36, 37, 38, 40, 50, 60, 65, 67) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
 - `35-rdns-wide` sits right after `30-pdb` and `65-rdns` between whois and geofeeds, so every measured layer overwrites the greedy wide rows. `35-rdns-wide` is kept only if `holdout_city_pct` and the Atlas scores do not drop.

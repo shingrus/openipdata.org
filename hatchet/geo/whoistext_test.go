@@ -102,7 +102,7 @@ func TestDownloadWhoisText(t *testing.T) {
 	skipped(src, err, "R2 error", false)
 }
 
-// The layer is optional, between 36-mlab and 38-asn-geofeed, has -same-country and is not one of
+// The layer is optional, between 37-whois-arin and 38-asn-geofeed, has -same-country and is not one of
 // the layers sync-geofeeds feeds the holdout from.
 func TestWhoisTextLayerRules(t *testing.T) {
 	if WhoisTextLayer != "37-whois-text.csv.gz" || layerRules[WhoisTextLayer] != "-same-country" {
