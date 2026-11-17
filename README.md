@@ -139,13 +139,13 @@ the task output has `ix_kept` with the reason, and the log has a warning. Needs 
 
 Finds every geofeed (RFC 8805) URL it can, checks each feed, and hands the checked rows to the
 geo database build through the private R2 bucket. It also turns the `geoloc:` points of whois
-inetnums, and the cities that the free text of RIPE and AFRINIC inetnums names, into city rows for the same build. Nothing is published.
+inetnums, and the cities that the free text of RIPE and AFRINIC inetnums and the `city:` line of LACNIC inetnums name, into city rows for the same build. Nothing is published.
 
 | Task | Runs after | Does |
 |---|---|---|
 | `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
 | `probe-domains` | | needs `PGSQL` (and checks the R2 settings, unless `skip_upload`); reads the ASN website domains from `public.asn_domain` and probes the due ones for a geofeed at the usual paths, within a budget per run; runs beside the other tasks |
-| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums and the whois text layer from the text of the RIPE ones), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list (and the feed links on its pages), and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them, `out/60-whois.csv.gz` and `out/37-whois-text.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
+| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums and the whois text layer from the text of the RIPE and AFRINIC ones and the `city:` line of the LACNIC ones), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list (and the feed links on its pages), and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them, `out/60-whois.csv.gz` and `out/37-whois-text.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
 | `check-feeds` | `discover` | needs `PGSQL`; fetches every due feed in `public.geofeed_urls`, keeps a checked copy of each working one, stores the results in the table, and writes the lists |
 | `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them as `70-geofeeds.csv.gz` to R2; also uploads `60-whois.csv.gz` and `37-whois-text.csv.gz` (a problem with either never fails the task) |
 
@@ -300,9 +300,9 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   `force_upload` skips it. A refusal or any other problem with this upload is a warning, not a failure: the
   reason is in the task output (`whois.skipped`) and the geofeed rows are not affected.
 - Whois text layer (`37-whois-text.csv.gz`, one of the layers of `build-geo-data`). Many RIPE and AFRINIC `inetnum` objects name a
-  city in their free text. While `discover` reads the RIPE `inetnum` dump and the AFRINIC dump (AFRINIC is on as a live
+  city in their free text, and every LACNIC one has a `city:` line. While `discover` reads the RIPE `inetnum` dump, the AFRINIC dump and the LACNIC dump (AFRINIC is on as a live
   test since 2026-11-17: measured on only 25 RIPE Atlas probes, right for 68%, +5 right and -3 lost; APNIC is off: on 325
-  probes it changed nothing, +54 right and -52 lost; `whoisTextDumps` in `hatchet/geofeeds/whoistext.go` is the one place
+  probes it changed nothing, +54 right and -52 lost; LACNIC is on since 2026-11-17 for the `city:` line its dump has on every inetnum (the holder's city; the dump has no free text and writes an inetnum as a prefix, also a short one like `192.0.2/24`): a `city:` value that is in whole the name of a place of the country names it, also when the name is on the ignore list (`Panama` in Panama is the city; `fieldCity`), otherwise the value is matched like a text line; measured with a real rebuild on RIPE Atlas: 468,740 rows, right for 60% of the 324 probes it answers, +75 right and -33 lost; `whoisTextDumps` in `hatchet/geofeeds/whoistext.go` is the one place
   to switch a registry on or off), it matches
   the text of every IPv4 `inetnum` against the GeoNames places of the object's own country, so the 4.1 million objects
   are never kept; only a compact block (range, country, place) is kept for an object with a city. GeoNames is therefore
@@ -310,7 +310,7 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   - the country is the first `country:` value, upper case and cut at the first space, tab or `#` (`NL # moved` is `NL`; the
     geoloc layer reads it the same way, `whoisCountry`); one that is not a real country is dropped (`bad_country`), and so is
     a block broader than a /16 (`too_large`; measured, such records are right only 32% of the time);
-  - the text is every `descr:` value and the `netname:` value. A line is lower-cased, accents are folded, every
+  - the text is every `descr:` value, the `netname:` value and every `city:` value (only LACNIC has that one). A line is lower-cased, accents are folded, every
     character that is not a Latin letter separates words, `st` is `saint` and `ste` is `sainte`; a line with a letter
     of another script is skipped, and a Latin letter the fold table lacks (a Vietnamese vowel) only drops its own word;
     a value that is not valid UTF-8 is read as Latin-1;
@@ -323,17 +323,20 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
     word on its own line, with `#` for comments, entries may have several words; a test checks every entry survives
     normalisation), a lone `saint` or `sainte`, a single word of 3 letters or fewer, a group of words that all have 2
     letters or fewer.
-  The file has one row per CIDR prefix of each block, region empty, `source` `whois-text:<registry>` (`ripe` or `afrinic`), sorted by start address
+  The file has one row per CIDR prefix of each block, region empty, `source` `whois-text:<registry>` (`ripe`, `afrinic` or `lacnic`), sorted by start address
   (the broader block first); nested blocks are kept, the builder inserts the broader ones first, so the narrower one
   overrides its parent. It is written through a `.tmp` file; no rows, or a GeoNames problem (the two whois layers are then both
   skipped), keeps the previous file. The task output (`whois_text`) has the objects read, the blocks with a city, the dropped
   objects by reason, the rows, bytes, the GeoNames status and `skipped`; never a name, an address or a prefix. `export-rows`
   uploads the file to `internal/layers/37-whois-text.csv.gz` (`whois_text` in its output) with the same gate as the geoloc
   file (not rebuilt since the last upload, more than 10% fewer rows than the last one in `whois-text-upload.json`, or
-  fewer than 200,000 rows on the first upload, is refused; `force_upload` skips it). Measured on RIPE Atlas (build of
+  fewer than 200,000 rows on the first upload, is refused; `force_upload` skips it; the rows of all registries are counted
+  together and the LACNIC rows are about a quarter of the file, so a registry whose rows vanish holds the whole file back). Measured on RIPE Atlas (build of
   2026-11-16, real rebuild), the layer above the weak layers gave +384 right and -81 lost probes (net +303; right city
   54.8% to 57.0%, precision of all answers 56.6% to 58.7%); the layer's own city was right for 68% of the 995 probes it answers.
-  Records broader than a /16 were right 32% of the time and are left out.
+  Records broader than a /16 were right 32% of the time and are left out. The LACNIC rows (468,740, measured 2026-11-17 on top of that)
+  gave +75 right and -33 lost probes (net +42) and were right for 60% of the 324 probes they answer; a `city:` value of 3 letters or
+  fewer is not read (mostly abbreviations such as `MVD` or `SJO`).
   Atlas probes are mostly in the RIPE region, so the worldwide gain is smaller.
 - GeoNames `cities1000.zip` (places with 1,000 or more people, CC BY) is downloaded by `discover` itself
   into `/var/lib/openipdata/geofeeds/dumps/`, with the shared conditional download. GeoNames rebuilds the file
@@ -574,8 +577,8 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   skips the layer (`skipped_layers`, a warning); this never skips the `HC_PING_GEO` ping. The holdout build passes the layer as it is: it
   does not learn from the geofeed rows directly, but its MMDB-hop part reads the published MMDB (which holds geofeed cities), like the
   MMDB hop votes of `35-rdns-wide`.
-- `37-whois-text` (optional, `-same-country`, between `36-mlab` and `38-asn-geofeed`, so every later layer replaces it) is the city that the
-  `descr:` and `netname:` lines of a RIPE or AFRINIC inetnum name, written by `sync-geofeeds` (above) at `internal/layers/37-whois-text.csv.gz` in the
+- `37-whois-text` (optional, `-same-country`, between `36-mlab` and `38-asn-geofeed`, so every later layer replaces it) is the city named by the
+  `descr:` and `netname:` lines of a RIPE or AFRINIC inetnum, or by the `city:` line of a LACNIC one, written by `sync-geofeeds` (above) at `internal/layers/37-whois-text.csv.gz` in the
   private R2 bucket. The description names a place, but the record's country may be the holder's, so it adds cities and never changes a country.
   `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2 layers (saved in `geo/downloads/`) and puts it in the
   layers dir as it is. An object older than 14 days, a missing object or any fetch error skips the layer (`skipped_layers`, a warning); a missing

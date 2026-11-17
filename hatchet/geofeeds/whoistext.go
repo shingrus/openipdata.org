@@ -18,13 +18,14 @@ import (
 	"openipdata.org/hatchet/rirstats"
 )
 
-// The whois text layer: many RIPE inetnum objects name a city in their free text
+// The whois text layer: many RIPE and AFRINIC inetnum objects name a city in their free text
 // (descr: lines, netname:). While discover reads the dump it matches the words of
 // those lines against the GeoNames places of the object's own country and writes
 // WhoisTextFile, a layer file in the same format as RowsFile. export-rows uploads
 // it to WhoisTextKey; build-geo-data applies it as 37-whois-text, below the strong
 // layers. Measured on RIPE Atlas it is a clear gain; records broader than a /16
-// are right only 32% of the time, so they are left out.
+// are right only 32% of the time, so they are left out. The LACNIC dump has no
+// free text but a city: line on every inetnum (the holder's city), read the same way.
 const (
 	WhoisTextFile = "37-whois-text.csv.gz"
 	WhoisTextKey  = "internal/layers/" + WhoisTextFile
@@ -40,11 +41,14 @@ const (
 )
 
 // whoisTextDumps are the whois dumps whose inetnum objects are read for text (by
-// dump name): RIPE and AFRINIC. AFRINIC is on as a live test since 2026-11-17 (measured on
+// dump name): RIPE, AFRINIC and LACNIC. AFRINIC is on as a live test since 2026-11-17 (measured on
 // only 25 RIPE Atlas probes: right for 68%, +5 right and -3 lost). APNIC is off: measured
 // on 325 probes it changed nothing (+54 right, -52 lost; right for 54.5%). Adding a name
-// here is all it takes to read another registry.
-var whoisTextDumps = map[string]bool{"ripe-inetnum": true, "afrinic": true}
+// here is all it takes to read another registry. LACNIC is on since 2026-11-17 for its
+// city: lines (real rebuild: right for 60% of the 324 probes it answers, +75 right and
+// -33 lost). Its rows are about a quarter of the file and the upload gate counts all
+// registries together: if they vanish, the whole file waits for force_upload.
+var whoisTextDumps = map[string]bool{"ripe-inetnum": true, "afrinic": true, "lacnic": true}
 
 // whois-ignore.txt lists words that are also the name of some town but in a
 // network description almost never mean that town (see the file).
@@ -232,6 +236,18 @@ func refused(group []string) bool {
 	return true
 }
 
+// fieldCity returns the place that a whole city: value names. The field says it is a
+// city, so the ignore list does not apply: "Panama" in Panama is the city. The short
+// word rules stay: in the LACNIC dump a value of 3 letters or fewer is mostly an
+// abbreviation (MVD, SJO, DF; POA is Porto Alegre far more often than Poá).
+func (x *nameIndex) fieldCity(country string, words []string) (int32, bool) {
+	if len(words) > maxTextWords || refused(words) {
+		return 0, false
+	}
+	id, ok := x.ids[country+"|"+strings.Join(words, " ")]
+	return id, ok
+}
+
 // textCity returns the place that the lines (word lists, see normWords) of an
 // object of the country name: of all word groups of 1 to 3 words within a line
 // that are the name of a place of the country, the longest wins, then the more
@@ -298,18 +314,41 @@ func whoisCountry(obj []attr) string {
 	return ""
 }
 
+// inetnumRange returns the first and last address of an IPv4 inetnum, written as
+// "first - last" or, by LACNIC, as a prefix that may leave out trailing zero octets
+// ("192.0.2/24").
+func inetnumRange(value string) (from, to uint32, ok bool) {
+	if strings.Contains(value, "-") {
+		a, b, err := parseRange(value)
+		if err != nil {
+			return 0, 0, false
+		}
+		first, last := a.As4(), b.As4()
+		return binary.BigEndian.Uint32(first[:]), binary.BigEndian.Uint32(last[:]), true
+	}
+	p, err := parsePrefix(value)
+	if err != nil || !p.Addr().Is4() {
+		return 0, 0, false
+	}
+	first := p.Addr().As4()
+	from = binary.BigEndian.Uint32(first[:])
+	return from, from | uint32(uint64(1)<<(32-p.Bits())-1), true
+}
+
 // read looks at one RPSL object. All of it is untrusted: a bad object only counts.
+// The text is every descr: value, the first netname: and every city: value (only
+// LACNIC has that one). A city: value that is in whole the name of a place of the
+// country names it; otherwise the lines are matched as text.
 func (t *textReader) read(obj []attr, x *nameIndex, registry uint8) {
 	if len(obj) == 0 || obj[0].key != "inetnum" {
 		return
 	}
 	t.objects++
-	from, to, err := parseRange(obj[0].value)
-	if err != nil {
+	from, to, ok := inetnumRange(obj[0].value)
+	if !ok {
 		return
 	}
-	first, last := from.As4(), to.As4()
-	b := textBlock{from: binary.BigEndian.Uint32(first[:]), to: binary.BigEndian.Uint32(last[:]), registry: registry}
+	b := textBlock{from: from, to: to, registry: registry}
 	if uint64(b.to)-uint64(b.from)+1 > maxGeolocBlock {
 		t.drop(dropTooLarge)
 		return
@@ -320,18 +359,26 @@ func (t *textReader) read(obj []attr, x *nameIndex, registry uint8) {
 		return
 	}
 	var lines [][]string
-	netname := false
+	var id int32
+	netname, found := false, false
 	for _, a := range obj[1:] {
-		if a.key != "descr" && (a.key != "netname" || netname) {
+		if a.key != "descr" && a.key != "city" && (a.key != "netname" || netname) {
 			continue
 		}
 		netname = netname || a.key == "netname"
-		if words, other := normWords(latin1(a.value)); !other && len(words) > 0 {
-			lines = append(lines, words)
+		words, other := normWords(latin1(a.value))
+		if other || len(words) == 0 {
+			continue
 		}
+		if a.key == "city" && !found {
+			id, found = x.fieldCity(country, words)
+		}
+		lines = append(lines, words)
 	}
-	id, ok := x.textCity(country, lines)
-	if !ok {
+	if !found {
+		id, found = x.textCity(country, lines)
+	}
+	if !found {
 		return
 	}
 	b.place = id

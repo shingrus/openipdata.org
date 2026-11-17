@@ -2,8 +2,10 @@ package geofeeds
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -429,6 +431,54 @@ func TestUploadWhoisTextGate(t *testing.T) {
 // case, cut at a space, a tab or "#".
 // Two registries: each row carries the registry of its own dump, also when the first dump
 // names no city at all, and the AFRINIC dump (every object type in one file) gives only its inetnums.
+// LACNIC writes an inetnum as a prefix, may leave out trailing zero octets, and has a
+// city: line and no free text.
+func TestTextReaderLACNIC(t *testing.T) {
+	x := newNameIndex()
+	x.add("PA", "Panamá", "Panama", "", 880000)
+	x.add("BR", "São Paulo", "Sao Paulo", "", 12000000)
+	x.add("BR", "Campinas", "Campinas", "", 1100000)
+	x.add("PE", "Ica", "Ica", "", 280000)
+	if !whoisIgnore["panama"] {
+		t.Fatal("the test needs \"panama\" on the ignore list")
+	}
+	var r textReader
+	r.read(obj("inetnum", "192.0.2/24", "status", "reassigned", "city", "Panama", "country", "PA"), x, 0)   // whole field: the ignore list does not apply
+	r.read(obj("inetnum", "198.51.100.0/25", "city", "S\xe3o Paulo", "country", "BR"), x, 0)                // Latin-1
+	r.read(obj("inetnum", "10.2/16", "city", "Campinas - SP", "country", "BR"), x, 0)                       // not the whole field: matched as text
+	r.read(obj("inetnum", "10.4/15", "city", "Campinas", "country", "BR"), x, 0)                            // broader than a /16
+	r.read(obj("inetnum", "10.8.0.0/24", "city", "Republica de Panama", "country", "PA"), x, 0)             // as text the ignore list applies
+	r.read(obj("inetnum", "10.9.0.0/24", "city", "Ica", "country", "PE"), x, 0)                             // 3 letters
+	r.read(obj("inetnum", "10.10.0.0/24", "city", "", "country", "BR"), x, 0)                               // empty
+	r.read(obj("inetnum", "10.11.0.0/24", "city", "Campinas", "country", "PA"), x, 0)                       // a city of another country
+	r.read(obj("inetnum", "10.12.0.0/33", "city", "Campinas", "country", "BR"), x, 0)                       // bad prefix
+	r.read(obj("inetnum", "::ffff:10.13.0.0/120", "city", "Campinas", "country", "BR"), x, 0)               // not IPv4
+	r.read(obj("inetnum", "10.14.0.77/24", "city", "Sao Paulo", "city", "Campinas", "country", "BR"), x, 0) // host bits masked, first city: wins
+	r.read(obj("inetnum", "10.15.0.0/24", "city", "Centro", "descr", "Campinas", "country", "BR"), x, 0)    // other lines still count
+
+	var got []string
+	for _, b := range r.blocks {
+		got = append(got, fmt.Sprintf("%s-%s %s %s", addrOfU32(b.from), addrOfU32(b.to), b.country[:], x.places[b.place].name))
+	}
+	want := []string{
+		"192.0.2.0-192.0.2.255 PA Panamá",
+		"198.51.100.0-198.51.100.127 BR São Paulo",
+		"10.2.0.0-10.2.255.255 BR Campinas",
+		"10.14.0.0-10.14.0.255 BR São Paulo",
+		"10.15.0.0-10.15.0.255 BR Campinas",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("blocks:\n%q\nwant:\n%q", got, want)
+	}
+	if r.objects != 12 || !reflect.DeepEqual(r.dropped, map[string]int{dropTooLarge: 1}) {
+		t.Errorf("objects %d, dropped %v", r.objects, r.dropped)
+	}
+}
+
+func addrOfU32(v uint32) netip.Addr {
+	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
+}
+
 func TestDiscoverWhoisTextRegistries(t *testing.T) {
 	run := func(ripeText string) string {
 		ripe := gzipped(t, ripeText)
@@ -470,10 +520,49 @@ func TestDiscoverWhoisTextRegistries(t *testing.T) {
 	}
 }
 
-// The text layer reads RIPE and AFRINIC, not APNIC (measured: no gain). Each name must be a dump
-// of the list, or the registry would silently not be read.
+// A LACNIC dump through discover: inetnums written as prefixes (also a short one), a city:
+// line and no free text; other classes with a city: line are not read.
+func TestDiscoverWhoisTextLACNIC(t *testing.T) {
+	ripe := gzipped(t, "inetnum: 192.0.2.0 - 192.0.2.255\ndescr: no place here\ncountry: NL\n")
+	lacnic := gzipped(t, "aut-num: 64500\ncity:    Amsterdam\ncountry: NL\n\n"+
+		"inetnum:    203.0.113/24\nstatus:     reassigned\ncity:       Berlin\ncountry:    DE\n\n"+
+		"inetnum:    198.51.100.0/25\ncity:       Zaandam centrum\ncountry:    NL\n\n"+
+		"inetnum:    198.51.100.128/25\ncity:       \ncountry:    NL\n\n"+
+		"inet6num:   2001:db8::/32\ncity:       Berlin\ncountry:    DE\n")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ripe.gz", func(w http.ResponseWriter, r *http.Request) { w.Write(ripe) })
+	mux.HandleFunc("/lacnic.gz", func(w http.ResponseWriter, r *http.Request) { w.Write(lacnic) })
+	mux.HandleFunc("/cities.zip", func(w http.ResponseWriter, r *http.Request) { w.Write(citiesZip(t, testCities)) })
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	p := &Pipeline{
+		store:     newFakeStore(),
+		DataDir:   t.TempDir(),
+		dumps:     []dump{{"ripe-inetnum", "ripe", server.URL + "/ripe.gz"}, {"lacnic", "lacnic", server.URL + "/lacnic.gz"}},
+		caidaBase: server.URL + "/caida", listPages: []string{},
+		geonames:     server.URL + "/cities.zip",
+		now:          func() time.Time { return time.Date(2026, 11, 17, 5, 0, 0, 0, time.UTC) },
+		allowPrivate: true,
+	}
+	out, err := p.Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Sources["lacnic"].WhoisText != 2 || out.Sources["ripe-inetnum"].WhoisText != 0 {
+		t.Errorf("sources: %+v", out.Sources)
+	}
+	got := readGzip(t, filepath.Join(p.dir(), OutDir, WhoisTextFile))
+	want := "prefix,country,region,city,source\n" +
+		"198.51.100.0/25,NL,,Zaandam,whois-text:lacnic\n203.0.113.0/24,DE,,Berlin,whois-text:lacnic\n"
+	if got != want {
+		t.Errorf("rows:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The text layer reads RIPE, AFRINIC and LACNIC, not APNIC (measured: no gain). Each name must be
+// a dump of the list, or the registry would silently not be read.
 func TestWhoisTextDumps(t *testing.T) {
-	if !whoisTextDumps["ripe-inetnum"] || !whoisTextDumps["afrinic"] || whoisTextDumps["apnic-inetnum"] {
+	if !whoisTextDumps["ripe-inetnum"] || !whoisTextDumps["afrinic"] || !whoisTextDumps["lacnic"] || whoisTextDumps["apnic-inetnum"] {
 		t.Errorf("whoisTextDumps = %v", whoisTextDumps)
 	}
 	for name := range whoisTextDumps {
