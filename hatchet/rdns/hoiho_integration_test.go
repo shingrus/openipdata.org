@@ -57,4 +57,27 @@ func TestIntegrationHoihoRulesDecoderAndFingerprint(t *testing.T) {
 	if err != nil || out.HoihoRules != 1 || out.CandidateRules != 1 {
 		t.Fatalf("locate: %+v %v", out, err)
 	}
+	// The order of the kinds, read from the tables: the LLM rule, then the Hoiho rule, then the
+	// learned one.
+	if err := schema.EnsureRDNSCityRules(ctx, w.conn); err != nil {
+		t.Fatal(err)
+	}
+	w.exec(`INSERT INTO public.rdns_city_rules (domain, rank, pattern, dictionary, places, version, origin) VALUES
+		('example.net', 1, '^[a-z0-9]+\.([a-z]{3})\d+\.[a-z]{2}\.example\.net$', 'iata', '{"ams":["DE","Learned"]}', 'l1', 'learned'),
+		('example.net', 4, '^[a-z0-9]+\.([a-z]{3})\d+\.[a-z]{2}\.example\.net$', 'llm', '{"ams":["BE","Brussels"]}', 'l4', 'llm')`)
+	for _, step := range []struct{ sql, country, city string }{
+		{``, "BE", "Brussels"},
+		{`UPDATE public.rdns_city_rules SET status = 'rejected' WHERE rank = 4`, "NL", "Amsterdam"},
+		{`UPDATE public.rdns_hoiho_rules SET status = 'rejected'`, "DE", "Learned"},
+	} {
+		if step.sql != "" {
+			w.exec(step.sql)
+		}
+		if d, err = LoadDecoder(ctx, w.dsn); err != nil {
+			t.Fatal(err)
+		}
+		if country, city, ok := d.Decode("ae1.ams01.nl.example.net"); !ok || country != step.country || city != step.city {
+			t.Errorf("order: decode = %q %q %v, want %s %s", country, city, ok, step.country, step.city)
+		}
+	}
 }

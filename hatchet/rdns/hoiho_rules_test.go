@@ -120,3 +120,38 @@ func TestHoihoFallsThroughInSeqOrder(t *testing.T) {
 		t.Fatalf("got %+v ok=%v", got, ok)
 	}
 }
+
+// The kinds are tried in this order whatever their suffix: the LLM rule (origin llm), then the
+// Hoiho rules, then the learned ones. A rule with no place for the code lets the next kind decide.
+func TestLLMBeforeHoihoBeforeLearned(t *testing.T) {
+	const pattern = `^[a-z0-9]+\.([a-z]+)\d*\.[a-z]+\.example\.net$`
+	const name = "ae1.ams01.nl.example.net"
+	row := func(domain string, rank int, origin, places string) cityRuleRow {
+		return cityRuleRow{Domain: domain, Rank: rank, Origin: origin, Pattern: pattern, PlacesJSON: places, Status: "candidate"}
+	}
+	learned := row("example.net", 1, "learned", `{"ams":["DE","Learned"]}`)
+	hoiho := hoihoRow("nl.example.net", 1, pattern, `{"ams":["NL","Hoiho"]}`, "candidate")
+	for _, tc := range []struct {
+		what     string
+		llm      cityRuleRow
+		city     string
+		ruleName string
+	}{
+		{"llm decides, on a shorter suffix than hoiho", row("example.net", 4, "llm", `{"ams":["BE","LLM"]}`), "LLM", "example.net#4"},
+		{"llm decides, on a longer suffix than hoiho", row("ams01.nl.example.net", 4, "llm", `{"ams":["BE","LLM"]}`), "LLM", "ams01.nl.example.net#4"},
+		{"llm without this code: hoiho", row("example.net", 4, "llm", `{"fra":["DE","Frankfurt"]}`), "Hoiho", "nl.example.net#h1"},
+		{"llm rejected: hoiho", cityRuleRow{Domain: "example.net", Rank: 4, Origin: "llm", Pattern: pattern, PlacesJSON: `{"ams":["BE","LLM"]}`, Status: "rejected"}, "Hoiho", "nl.example.net#h1"},
+		{"rank 4 with another origin is not an LLM rule", row("example.net", 4, "manual", `{"ams":["BE","Manual"]}`), "Hoiho", "nl.example.net#h1"},
+	} {
+		rules, _ := compileCityRules([]cityRuleRow{learned, tc.llm, hoiho})
+		got, rule, ok := firstCityRuleMatchRule(indexCityRules(rules), name)
+		if !ok || got.City != tc.city || candidateRuleName(rule) != tc.ruleName {
+			t.Errorf("%s: got %+v ok=%v", tc.what, got, ok)
+		}
+	}
+	// No LLM and no Hoiho place: the learned rule.
+	rules, _ := compileCityRules([]cityRuleRow{learned, row("example.net", 4, "llm", `{"fra":["DE","Frankfurt"]}`), hoihoRow("nl.example.net", 1, pattern, `{"fra":["DE","Frankfurt"]}`, "candidate")})
+	if got, rule, ok := firstCityRuleMatchRule(indexCityRules(rules), name); !ok || got.City != "Learned" || candidateRuleName(rule) != "example.net#1" {
+		t.Errorf("learned last: got %+v ok=%v", got, ok)
+	}
+}

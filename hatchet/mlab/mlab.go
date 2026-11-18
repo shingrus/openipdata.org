@@ -16,10 +16,10 @@
 //
 // A client /24 takes its city in two rounds (the variant measured on RIPE Atlas, "R then M"). R: the
 // hops whose router name the rules of resolve-ips decode to a city (the legacy public.generated_rules,
-// then the candidate rules: the Hoiho rules of public.rdns_hoiho_rules first, then those of
-// public.rdns_city_rules) vote, each with the traces it has there; the
-// city with the largest weight wins. When R gives no winner (no rule city, or a tie), M: the hops
-// with a city in the hop IP's own record in our published MMDB vote the same way, but only records
+// then the candidate rules: the LLM rules of public.rdns_city_rules first, then the Hoiho rules of
+// public.rdns_hoiho_rules, then the learned rules of public.rdns_city_rules) vote, each with the
+// traces it has there; the city with the largest weight wins. When R gives no winner (no rule
+// city, or a tie), M: the hops with a city in the hop IP's own record in our published MMDB vote the same way, but only records
 // whose city_source is one of mmdbStrongSources count (never a guess or a weak layer) and not a hop
 // inside the client /24 itself. Only a city in the client /24's country (its country in our MMDB)
 // votes. A tie in both rounds gives none.

@@ -14,14 +14,15 @@ import (
 
 // cityRule is a learned extraction rule. V1 consumes candidates only; active
 // rules stay unused until sticky learned rows with provenance and revocation exist.
-// A domain has up to 4 rules, tried in rank order (1 first). A Hoiho rule (hoiho = true, a row of
-// public.rdns_hoiho_rules, CAIDA's router-name rules; its seq is the rank) may have several capture
-// groups, whose lower-case values joined with a comma are the key of its places, and is tried
-// before the others.
+// A domain has up to 4 rules of public.rdns_city_rules (ranks 1 to 3 learned, rank 4 from the LLM). A
+// Hoiho rule (hoiho = true, a row of public.rdns_hoiho_rules, CAIDA's router-name rules; its seq is
+// the rank) may have several capture groups, whose lower-case values joined with a comma are the
+// key of its places. The order in which the kinds are tried is in firstCityRuleMatchRule.
 type cityRule struct {
 	domain  string
 	rank    int
 	hoiho   bool
+	llm     bool // a row of public.rdns_city_rules with origin llm
 	re      *regexp.Regexp
 	places  map[string]cityKey
 	status  string
@@ -31,7 +32,8 @@ type cityRule struct {
 type cityRuleRow struct {
 	Domain, Pattern, PlacesJSON, Status, Version string
 	Rank                                         int
-	Hoiho                                        bool // a row of public.rdns_hoiho_rules (Rank is its seq)
+	Hoiho                                        bool   // a row of public.rdns_hoiho_rules (Rank is its seq)
+	Origin                                       string // rdns_city_rules.origin: learned, llm, ...
 }
 
 // cityRuleStats counts the rules read: Loaded all usable ones (Hoiho included), Hoiho of them the
@@ -41,10 +43,10 @@ type cityRuleStats struct {
 	Missing                         bool
 }
 
-const cityRulesQuery = `SELECT domain, rank::int, pattern, places::text, status, version
+const cityRulesQuery = `SELECT domain, rank::int, pattern, places::text, status, version, origin
 	FROM public.rdns_city_rules ORDER BY lower(domain), domain, rank`
 
-const hoihoRulesQuery = `SELECT domain, seq::int, pattern, places::text, status, version
+const hoihoRulesQuery = `SELECT domain, seq::int, pattern, places::text, status, version, 'hoiho'::text
 	FROM public.rdns_hoiho_rules ORDER BY lower(domain), domain, seq`
 
 func compileCityRules(rows []cityRuleRow) ([]cityRule, cityRuleStats) {
@@ -95,7 +97,7 @@ func compileCityRules(rows []cityRuleRow) ([]cityRule, cityRuleStats) {
 			st.Invalid++
 			continue
 		}
-		out = append(out, cityRule{domain: domain, rank: max(row.Rank, 1), hoiho: row.Hoiho, re: re, places: places, status: row.Status, version: row.Version})
+		out = append(out, cityRule{domain: domain, rank: max(row.Rank, 1), hoiho: row.Hoiho, llm: !row.Hoiho && row.Origin == "llm", re: re, places: places, status: row.Status, version: row.Version})
 		if row.Hoiho {
 			st.Hoiho++
 		}
@@ -145,22 +147,43 @@ func indexCityRules(rules []cityRule) cityRuleIndex {
 
 // firstCityRuleMatch checks only registered-domain suffixes present in the
 // index, so each hostname does work proportional to its label count rather than
-// the number of learned domains. The Hoiho rules of all suffixes of the name are tried first
-// (a domain's in seq order), then the others (a domain's in rank order); a regex match with no
-// place does not stop the next rule.
+// the number of learned domains. Three passes over the suffixes of the name (see ruleKinds):
+// the LLM rules first, then the Hoiho rules (a domain's in seq order), then the others (the learned
+// rules, a domain's in rank order); a regex match with no place does not stop the next rule.
 func firstCityRuleMatch(rules cityRuleIndex, ptr string) (cityKey, bool) {
 	c, _, ok := firstCityRuleMatchRule(rules, ptr)
 	return c, ok
 }
 
+// The kinds of candidate rules, in the order they are tried. Measured on M-Lab hop names against
+// the client's own strong city, where two kinds give cities more than 50 km apart: the LLM rules
+// are right far more often than the Hoiho rules (59% against 12%), and the Hoiho rules far more
+// often than the learned ones (55% against 7%).
+const (
+	ruleKindLLM = iota
+	ruleKindHoiho
+	ruleKindLearned
+	ruleKinds
+)
+
+func (r *cityRule) kind() int {
+	switch {
+	case r.hoiho:
+		return ruleKindHoiho
+	case r.llm:
+		return ruleKindLLM
+	}
+	return ruleKindLearned
+}
+
 // firstCityRuleMatchRule is firstCityRuleMatch that also returns the rule that matched.
 func firstCityRuleMatchRule(rules cityRuleIndex, ptr string) (cityKey, *cityRule, bool) {
 	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(ptr)), ".")
-	for _, hoiho := range [2]bool{true, false} {
+	for kind := 0; kind < ruleKinds; kind++ {
 		for start := 0; start < len(host); {
 			for i := range rules[host[start:]] {
 				rule := &rules[host[start:]][i]
-				if rule.hoiho != hoiho {
+				if rule.kind() != kind {
 					continue
 				}
 				if c, ok := rule.match(host); ok {
@@ -200,7 +223,7 @@ func loadCityRules(ctx context.Context, conn *pgx.Conn) ([]cityRule, cityRuleSta
 		}
 		for rows.Next() {
 			row := cityRuleRow{Hoiho: src.hoiho}
-			if err := rows.Scan(&row.Domain, &row.Rank, &row.Pattern, &row.PlacesJSON, &row.Status, &row.Version); err != nil {
+			if err := rows.Scan(&row.Domain, &row.Rank, &row.Pattern, &row.PlacesJSON, &row.Status, &row.Version, &row.Origin); err != nil {
 				rows.Close()
 				return nil, cityRuleStats{}, err
 			}
