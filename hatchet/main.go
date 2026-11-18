@@ -130,7 +130,7 @@ type BuildGeoInput struct {
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
 	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 36-mlab, 37-whois-arin, 37-whois-text, 38-asn-geofeed, 39-github-geofeeds, 40-hosting, 50-ix, 60-whois,
-	// 65-rdns and 67-rdns-names (for manual test runs).
+	// 65-rdns, 67-rdns-names and 68-cloud-regions (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
 

@@ -69,8 +69,13 @@ const (
 // file's modification time holds the server's Last-Modified, <path>.etag its
 // ETag, and the modification time of <path>.checked the last time the server
 // gave or confirmed the copy. When the server fails, a copy it confirmed
-// less than staleFor ago is used instead.
+// less than maxAge ago is used instead.
 func fetch(ctx context.Context, client *http.Client, rawURL, path string, now time.Time) (string, error) {
+	return fetchWithin(ctx, client, rawURL, path, now, staleFor)
+}
+
+// fetchWithin is fetch with its own limit for the age of the confirmed copy.
+func fetchWithin(ctx context.Context, client *http.Client, rawURL, path string, now time.Time, maxAge time.Duration) (string, error) {
 	checked := path + ".checked"
 	status, err := download.File(ctx, client, rawURL, path)
 	if err == nil {
@@ -83,7 +88,7 @@ func fetch(ctx context.Context, client *http.Client, rawURL, path string, now ti
 		return "", err
 	}
 	if _, statErr := os.Stat(path); statErr == nil {
-		if info, statErr := os.Stat(checked); statErr == nil && now.Sub(info.ModTime()) < staleFor {
+		if info, statErr := os.Stat(checked); statErr == nil && now.Sub(info.ModTime()) < maxAge {
 			return statusStale, nil
 		}
 	}

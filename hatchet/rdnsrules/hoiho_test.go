@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -441,49 +440,6 @@ func TestImportHoihoSkipsWithFixedReasons(t *testing.T) {
 	p = &Pipeline{DataDir: t.TempDir(), PGSQL: "postgres://unused.invalid/db", client: fail, now: time.Now, testHoiho: []byte(hoihoRecords(hoihoMinRecords, true))}
 	if out, err := p.ImportHoiho(ctx); err != nil || out.Skipped != "GeoNames unavailable" {
 		t.Fatalf("geonames: %+v %v", out, err)
-	}
-}
-
-// The download is capped: a body that announces too much fails at once, one that does not say
-// stops after the limit, and the file never grows past it.
-func TestCapClient(t *testing.T) {
-	const limit = 1000
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/announced":
-			w.Header().Set("Content-Length", "5000")
-			w.Write([]byte(strings.Repeat("x", 5000)))
-		case "/stream":
-			w.(http.Flusher).Flush() // chunked: no Content-Length
-			for i := 0; i < 100; i++ {
-				w.Write([]byte(strings.Repeat("x", 100)))
-				w.(http.Flusher).Flush()
-			}
-		case "/exact":
-			w.Write([]byte(strings.Repeat("x", limit)))
-		}
-	}))
-	defer srv.Close()
-	c := capClient(srv.Client(), limit)
-	for path, wantErr := range map[string]bool{"/announced": true, "/stream": true, "/exact": false} {
-		resp, err := c.Get(srv.URL + path)
-		if err == nil {
-			var b []byte
-			b, err = io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if err == nil && len(b) != limit {
-				t.Errorf("%s: %d bytes", path, len(b))
-			}
-			if err != nil && len(b) > limit {
-				t.Errorf("%s: read %d bytes past the limit", path, len(b))
-			}
-		}
-		if (err != nil) != wantErr {
-			t.Errorf("%s: err = %v, want error %v", path, err, wantErr)
-		}
-	}
-	if capClient(nil, limit).Timeout == 0 {
-		t.Error("a nil client has no timeout")
 	}
 }
 

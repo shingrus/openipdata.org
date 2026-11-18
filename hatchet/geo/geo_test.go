@@ -328,8 +328,8 @@ func TestHostingQuery(t *testing.T) {
 // The layer names carry the order, in steps of 10, and the R2 layers are named as
 // sync-geofeeds uploads them.
 func TestLayerNames(t *testing.T) {
-	names := []string{RIRLayer, IPverseLayer, BGPLayer, PDBLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, GitHubFeedsLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer, FeedsLayer}
-	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "25-bgp.csv.gz", "30-pdb.csv.gz", "35-rdns-wide.csv.gz", "36-mlab.csv.gz", "37-whois-arin.csv.gz", "37-whois-text.csv.gz", "38-asn-geofeed.csv.gz", "39-github-geofeeds.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "65-rdns.csv.gz", "67-rdns-names.csv.gz", "70-geofeeds.csv.gz"}
+	names := []string{RIRLayer, IPverseLayer, BGPLayer, PDBLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, GitHubFeedsLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer, CloudRegionsLayer, FeedsLayer}
+	want := []string{"10-rir.csv.gz", "20-ipverse.csv.gz", "25-bgp.csv.gz", "30-pdb.csv.gz", "35-rdns-wide.csv.gz", "36-mlab.csv.gz", "37-whois-arin.csv.gz", "37-whois-text.csv.gz", "38-asn-geofeed.csv.gz", "39-github-geofeeds.csv.gz", "40-hosting.csv.gz", "50-ix.csv.gz", "60-whois.csv.gz", "65-rdns.csv.gz", "67-rdns-names.csv.gz", "68-cloud-regions.csv.gz", "70-geofeeds.csv.gz"}
 	if !reflect.DeepEqual(names, want) || !sort.StringsAreSorted(names) {
 		t.Errorf("layer names = %v", names)
 	}

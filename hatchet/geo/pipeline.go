@@ -62,6 +62,11 @@
 //	              last published MMDB) whose sampled customer PTR names decode to one city;
 //	              applied only where the earlier layers give the same country; skipped while
 //	              the table has no such rows
+//	68-cloud-regions  the region file of a cloud operator (Amazon's ip-ranges.json, IPv4 only)
+//	              turned into cities: a region or zone (its network_border_group, else its
+//	              region) whose geofeed addresses (the geofeed layer) have one main city (at
+//	              least 80%, from at least 4,096 addresses) gives that city and country to all
+//	              its ranges; may change a country (-within-first); skipped while none qualifies
 //	70-geofeeds   geofeed rows from sync-geofeeds (private R2); a row broader than one
 //	              RIR block is skipped
 //
@@ -115,18 +120,19 @@ const (
 // order. The last two are the files sync-geofeeds uploads to R2, under the
 // same names.
 const (
-	RIRLayer       = "10-rir.csv.gz"
-	IPverseLayer   = "20-ipverse.csv.gz"
-	PDBLayer       = "30-pdb.csv.gz"
-	RDNSWideLayer  = "35-rdns-wide.csv.gz"
-	ASNFeedLayer   = "38-asn-geofeed.csv.gz"
-	HostingLayer   = "40-hosting.csv.gz"
-	IXLayer        = "50-ix.csv.gz"
-	WhoisLayer     = geofeeds.WhoisRowsFile // 60-whois.csv.gz
-	RDNSLayer      = "65-rdns.csv.gz"
-	RDNSNamesLayer = "67-rdns-names.csv.gz"
-	FeedsLayer     = geofeeds.RowsFile // 70-geofeeds.csv.gz
-	NamesFile      = "names.tsv"       // not a layer
+	RIRLayer          = "10-rir.csv.gz"
+	IPverseLayer      = "20-ipverse.csv.gz"
+	PDBLayer          = "30-pdb.csv.gz"
+	RDNSWideLayer     = "35-rdns-wide.csv.gz"
+	ASNFeedLayer      = "38-asn-geofeed.csv.gz"
+	HostingLayer      = "40-hosting.csv.gz"
+	IXLayer           = "50-ix.csv.gz"
+	WhoisLayer        = geofeeds.WhoisRowsFile // 60-whois.csv.gz
+	RDNSLayer         = "65-rdns.csv.gz"
+	RDNSNamesLayer    = "67-rdns-names.csv.gz"
+	CloudRegionsLayer = "68-cloud-regions.csv.gz"
+	FeedsLayer        = geofeeds.RowsFile // 70-geofeeds.csv.gz
+	NamesFile         = "names.tsv"       // not a layer
 )
 
 // layerRules is the one place that gives a layer a special rule: the
@@ -146,31 +152,36 @@ const (
 //   - -within-first: rows no broader than one prefix of the first layer. A broad
 //     row cannot change the country of networks that belong to someone else.
 //
+// The cloud region layer has -within-first too and may change a country: the region file is the
+// operator's own statement of where a range is (many ranges the registry data labels US are in
+// regions abroad), and its city is learned from that operator's own geofeed rows.
+//
 // The whois layer, like the geofeeds, may change a network's country: it has
 // only -within-first, no -first-country, because the inetnum's own country is
 // usually right (measured: 4% of geoloc /24s lie in another country than the
 // geofeed truth).
 var layerRules = map[string]string{
-	PDBLayer:         "-same-country",
-	RDNSWideLayer:    "-same-country",
-	HostingLayer:     "-first-country",
-	WhoisLayer:       "-within-first",
-	MLabLayer:        "-same-country",
-	ARINLayer:        "-same-country",
-	WhoisTextLayer:   "-same-country",
-	RDNSLayer:        "-same-country",
-	RDNSNamesLayer:   "-same-country",
-	FeedsLayer:       "-within-first",
-	ASNFeedLayer:     "-same-country",
-	GitHubFeedsLayer: "-same-country",
-	BGPLayer:         "-same-country",
+	PDBLayer:          "-same-country",
+	RDNSWideLayer:     "-same-country",
+	HostingLayer:      "-first-country",
+	WhoisLayer:        "-within-first",
+	MLabLayer:         "-same-country",
+	ARINLayer:         "-same-country",
+	WhoisTextLayer:    "-same-country",
+	RDNSLayer:         "-same-country",
+	RDNSNamesLayer:    "-same-country",
+	FeedsLayer:        "-within-first",
+	CloudRegionsLayer: "-within-first",
+	ASNFeedLayer:      "-same-country",
+	GitHubFeedsLayer:  "-same-country",
+	BGPLayer:          "-same-country",
 }
 
 // optionalLayers may be missing: a run without one is reported in
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, GitHubFeedsLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
+var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, GitHubFeedsLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer, CloudRegionsLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -195,14 +206,15 @@ type Pipeline struct {
 	MaxMindKey string // MAXMIND_LICENSE_KEY
 
 	// Tests only.
-	stats         []struct{ Name, URL string }
-	geoBlocks     string
-	refURLs       *evalURLs
-	writeIX       func(ctx context.Context, w *csv.Writer) (int, error)
-	writeHosting  func(ctx context.Context, w *csv.Writer) (int, error)
-	writeRDNS     func(ctx context.Context, scope string, w *csv.Writer) (int, error)
-	readAnnounced func(ctx context.Context) ([]asnPrefix, error)
-	heldOutURLs   func(ctx context.Context) (map[string]int64, error)
+	cloudRegionsURL string
+	stats           []struct{ Name, URL string }
+	geoBlocks       string
+	refURLs         *evalURLs
+	writeIX         func(ctx context.Context, w *csv.Writer) (int, error)
+	writeHosting    func(ctx context.Context, w *csv.Writer) (int, error)
+	writeRDNS       func(ctx context.Context, scope string, w *csv.Writer) (int, error)
+	readAnnounced   func(ctx context.Context) ([]asnPrefix, error)
+	heldOutURLs     func(ctx context.Context) (map[string]int64, error)
 }
 
 // Source is what Download prepared for the run.
@@ -214,6 +226,10 @@ type Source struct {
 	PDBASNs     int               `json:"pdb_asns"`
 	// ASNFeedASNs is the number of ASNs in the 38-asn-geofeed layer.
 	ASNFeedASNs int `json:"asn_feed_asns"`
+	// CloudRegions is the number of regions that got a city for the 68-cloud-regions layer and
+	// CloudRegionsSeen the labels (regions and zones, the pseudo label global left out) in the region file.
+	CloudRegions     int `json:"cloud_regions"`
+	CloudRegionsSeen int `json:"cloud_regions_seen"`
 	// BGPRules is the number of community values learned as a city rule for the 25-bgp layer,
 	// BGPKnown the prefixes of the communities file with a known geofeed city (the truth the
 	// rules are learned on) and BGPPrefixes the prefixes that got a city.
@@ -439,6 +455,11 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 
 	// 11. The dominant geofeed city of each ASN, from the geofeed layer just downloaded.
 	if err := p.downloadASNFeed(ctx, layers, &src); err != nil {
+		return src, err
+	}
+
+	// 11b. The cities that the region file of Amazon stands for, learned on the geofeed layer.
+	if err := p.downloadCloudRegions(ctx, client, downloads, layers, now, &src); err != nil {
 		return src, err
 	}
 

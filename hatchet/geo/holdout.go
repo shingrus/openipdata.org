@@ -298,6 +298,14 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 		}
 		summary += note
 	}
+	// The cloud region layer learns from the geofeeds too.
+	if _, err := os.Stat(filepath.Join(p.layersDir(), CloudRegionsLayer)); err == nil {
+		note, err := p.holdoutCloudRegions(kept, filepath.Join(keptDir, CloudRegionsLayer), replace)
+		if err != nil {
+			return "", "", "", err
+		}
+		summary += note
+	}
 	// The GitHub geofeed layer is left out: a copy of a held-out feed in another repository that
 	// differs by a row or by row order passes both duplicate rules of export-rows and would bring
 	// the held-out cities back.

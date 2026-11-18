@@ -554,12 +554,12 @@ together +882 right and +1,212 wrong probes (right city of all probes 48.1% to 5
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,
-`36-mlab.csv.gz`, `37-whois-arin.csv.gz`, `37-whois-text.csv.gz`, `38-asn-geofeed.csv.gz`, `39-github-geofeeds.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
+`36-mlab.csv.gz`, `37-whois-arin.csv.gz`, `37-whois-text.csv.gz`, `38-asn-geofeed.csv.gz`, `39-github-geofeeds.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `68-cloud-regions.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
 `/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
 `.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
-layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed` and `39-github-geofeeds` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed` and `39-github-geofeeds` `-same-country`, `40-hosting` `-first-country`, `60-whois`, `68-cloud-regions` and
 `70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
 
 | Task | Runs after | Does |
@@ -681,7 +681,19 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   older than 14 days, a missing object or any fetch error skips the layer (`skipped_layers`, a warning) and never skips the `HC_PING_GEO` ping. The holdout build leaves
   the layer out (a copy of a held-out feed that differs by a row or by row order would bring the held-out cities back); the real build passes it. Measured on RIPE Atlas: +32 right and -7 lost probes where our city was weak, a guess or missing; right for 61% of 88 probes; against `70-geofeeds` cities it lost 4 probes and
   gained none, so it sits below them.
-- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed`, `39-github-geofeeds`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
+- `68-cloud-regions` (optional, `-within-first`, between `67-rdns-names` and `70-geofeeds`: a real geofeed row replaces it, and it replaces the
+  router, customer-name and whois layers; it may change a country, because the region is the operator's own statement of where a range is) turns
+  Amazon's region file (`https://ip-ranges.amazonaws.com/ip-ranges.json`: address ranges with a region code such as `eu-west-1`, no country, no city) into cities,
+  IPv4 only (`ipv6_prefixes` is ignored). The city of a region is learned from the geofeed layer, nothing is hand-written. `download` fetches the file
+  into `geo/downloads/aws-ip-ranges.json` (shared downloader, body capped at 32 MB; a failed fetch uses the saved copy while it was confirmed less than 14 days ago) and computes the layer from it and `70-geofeeds`:
+  1. parse (streamed, so a body with too many entries is rejected without decoding it whole): at most 200,000 entries; the label of an entry is its `network_border_group` when that is a non-empty string, else its `region` (Local Zones and Wavelength zones carry the parent region in `region` and the real place only in the border group, so a zone is its own group and never gets the parent's city); an entry needs a label of `[a-z0-9-]{1,48}` (lower-cased) and a masked public IPv4 prefix of /8 to /32, else it is skipped and counted; fewer than 1,000 valid entries is not the file;
+  2. disjoint: the most specific prefix decides an address's label (the same prefix twice: the first, but the pseudo label `GLOBAL` never wins over a real one); `GLOBAL` gets no row, but a more specific `GLOBAL` prefix or zone still takes its addresses out of a region; neighbouring prefixes are not merged, so a row is never broader than an entry of the file;
+  3. learn: the addresses a geofeed row with a city owns (its prefix minus the more specific rows inside it; a repeated prefix: the last row) and that lie in a label's ranges are counted per city (case-insensitive; written with the most common spelling that has a lower-case letter); a label qualifies with at least 4,096 such addresses (a small zone gets no row) and a main city that holds at least 80% of them;
+  4. rows: every range of a qualifying label, split into prefixes, with that city and country, source `cloud-regions:aws:<label>`. A row broader than one `10-rir` prefix is dropped by the builder (`-within-first`) and shows in the builder's skipped count for the layer.
+  No geofeed layer, no usable file or copy, or no qualifying region skips the layer (`skipped_layers`, a warning) and never skips the `HC_PING_GEO` ping. The task output has `cloud_regions` and `cloud_regions_seen`.
+  The holdout build recomputes the layer from the kept feeds and the saved region file (it never fetches) and leaves it out when that gives no rows. Measured on the build of 2026-11-18 by a script, not by the builder: the file holds 102.1M IPv4 addresses, 79.9M already
+  have a geofeed city and 20.6M none; the geofeed rows put 97 to 100% of their addresses in one city in each of the 42 regions; the layer gives a place to 16.5M addresses and corrects the country of 14.1M.
+- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed`, `39-github-geofeeds`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns`, `67-rdns-names` and `68-cloud-regions`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.

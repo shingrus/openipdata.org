@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"openipdata.org/hatchet/download"
 	"openipdata.org/hatchet/schema"
 )
 
@@ -45,65 +45,6 @@ type HoihoOutput struct {
 	Rejection  *HoihoRejectOutput `json:"rejection,omitempty"`
 	Acceptance *HoihoRejectOutput `json:"acceptance,omitempty"`
 }
-
-// errHoihoTooLarge is returned by the capped body when the download is over the limit.
-var errHoihoTooLarge = errors.New("response too large")
-
-// capClient returns a copy of c whose response bodies end in an error after limit bytes, and whose
-// requests fail at once when the server announces more. download.File has no size limit of its
-// own, so this keeps a huge body from filling the disk. A nil client gets the usual timeout.
-func capClient(c *http.Client, limit int64) *http.Client {
-	if c == nil {
-		c = &http.Client{Timeout: 2 * time.Minute}
-	}
-	cp := *c
-	base := c.Transport
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	cp.Transport = capTransport{base: base, limit: limit}
-	return &cp
-}
-
-type capTransport struct {
-	base  http.RoundTripper
-	limit int64
-}
-
-func (t capTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := t.base.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.ContentLength > t.limit {
-		resp.Body.Close()
-		return nil, errHoihoTooLarge
-	}
-	resp.Body = &capBody{rc: resp.Body, left: t.limit}
-	return resp, nil
-}
-
-type capBody struct {
-	rc interface {
-		Read([]byte) (int, error)
-		Close() error
-	}
-	left int64
-}
-
-func (b *capBody) Read(p []byte) (int, error) {
-	if int64(len(p)) > b.left+1 {
-		p = p[:b.left+1]
-	}
-	n, err := b.rc.Read(p)
-	b.left -= int64(n)
-	if b.left < 0 {
-		return 0, errHoihoTooLarge
-	}
-	return n, err
-}
-
-func (b *capBody) Close() error { return b.rc.Close() }
 
 // markChecked writes the "<file>.checked" stamp that fetchSource reads (through a temporary file).
 func markChecked(path string, now time.Time) error {
@@ -137,7 +78,7 @@ func (p *Pipeline) ImportHoiho(ctx context.Context) (HoihoOutput, error) {
 			return finish("dictionary cache unavailable")
 		}
 		var err error
-		if data, fresh, err = fetchSource(ctx, dir, hoihoCacheName, hoihoURL, capClient(p.client, hoihoMaxFile), p.clock().UTC()); err != nil {
+		if data, fresh, err = fetchSource(ctx, dir, hoihoCacheName, hoihoURL, download.Capped(p.client, hoihoMaxFile), p.clock().UTC()); err != nil {
 			if ctx.Err() != nil {
 				return out, ctx.Err()
 			}
