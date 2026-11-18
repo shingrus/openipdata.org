@@ -49,7 +49,7 @@ flowchart LR
   llm[OpenRouter<br/>name patterns only] --> learn
   t_rd --> learn
   t_asn --> learn
-  learn --> t_rules[(rdns_city_rules<br/>rdns_llm_answers)]
+  learn --> t_rules[(rdns_city_rules<br/>rdns_hoiho_rules<br/>rdns_hoiho_rejected_domains<br/>rdns_llm_answers)]
   t_rules --> rd
 ```
 
@@ -87,7 +87,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `import-mlab` | `import` → `resolve-names` → `locate` → `upload` | `public.mlab_hop_names`; layer `36-mlab` to private R2 (`internal/layers/36-mlab.csv.gz`) | nothing |
 | `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `ip2geo-openipdata.mmdb` |
 | `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `sample-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.customer_name_networks`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink of the sticky traced rows; candidate, wide and named rows are only counted) | — |
-| `learn-rdns-rules` | `learn` → `propose-codes` | `public.rdns_city_rules` (ranks 1-3 by `learn`, atomic; rank 4 and scoped overrides by `propose-codes`), `public.rdns_llm_answers` | — |
+| `learn-rdns-rules` | `learn` → `import-hoiho` → `propose-codes` (they share the dictionary cache files) | `public.rdns_city_rules` (ranks 1-3 by `learn`, atomic; rank 4 and scoped overrides by `propose-codes`), `public.rdns_hoiho_rules` and `public.rdns_hoiho_rejected_domains` (`import-hoiho`, `-reject-hoiho`), `public.rdns_llm_answers` | — |
 
 - **`sync-geofeeds`**: finds every geofeed URL (whois, IRR, RDAP, CAIDA, built-in list, ASN websites), fetches and checks each feed, drops rows that fail the ownership check, exports ~6.4M rows (36 MB gz). `discover` also builds the whois geoloc layer.
 - **`sync-bgp`**: reads the community values (standard and large) of every IPv4 prefix of /8 to /24 in the RIPE RIS rrc00 table, drops values every route carries (over 5% of prefixes) or fewer than 3 prefixes carry, and uploads 1.16M rows (28 MB gz). No database is read.
@@ -137,6 +137,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `locate` | existing rules and carried traced rows first; then learned candidate rules (target name first, then router hops; ranks in order), which give a wide vote and a non-sticky `candidate_rule` traced row that never marks the /24 located; MMDB hop fallback last; one vote per /24; a gap /24 whose sampled customer names decode to one city (majority; a tie or another country gives none) gets a volatile row of scope `named`; replaces `public.rdns_geo_layer`; skipped when nothing changed for 24 hours, or when only other inputs than the rules changed and the last rebuild is under 6 hours old (a rule change rebuilds at once) |
 | `learn-rdns-rules` | `learn` | learns up to 3 rules (ranks) per domain from target and hop names, each with at least 3 distinct named IPs on the names better ranks do not decode, at least 2 distinct token values, stop list and GeoNames size limits, domestic country gate; retires learned rows it no longer reproduces; materializes token mappings in Postgres; rejection input withdraws current versions without downloads |
 | | `propose-codes` | asks an LLM (OpenRouter; only name patterns, never names or IPs) for the city code of every domain's names: 5+ hosts one domain a request, 1-4 hosts packed by country; checked answers become the rank-4 rule (GeoNames-resolved cities); learned rules it contradicts go to a second model and are overridden only when it agrees within 100 km; skipped without `OPENROUTER_API_KEY` and with `reject_domains`; API trouble never fails it (credit stop, request cap of 400) |
+| | `import-hoiho` | downloads CAIDA's Hoiho router-name rules (ITDK 2024-08, 30-day check, at most 32 MB), keeps the regexes whose capture plan is usable (one location type, optional `cc` and `st`) and matches their codes to GeoNames places (50 km around the published coordinates, else the most populous place within 30 km; CLLI codes without a place guessed from four abbreviating letters and a state or province); replaces `public.rdns_hoiho_rules` in one transaction only when the rows changed, refuses fewer than 500 rows and a file with fewer than 300 records or more than 500,000 keys (a regex with more than 50,000 keys is skipped); a file or GeoNames problem only skips it, and only a bad file is dropped from the cache; `run-rdns-rules -reject-hoiho` / `-accept-hoiho` switch a suffix and every name under it off or on (list in `public.rdns_hoiho_rejected_domains`, kept across imports); `-reject` does not touch these rules |
 
 ## Data sources
 
@@ -157,6 +158,7 @@ Every external input, grouped by what it feeds. Third-party geo databases are us
 | Operator geofeeds (RFC 8805) | `sync-geofeeds` `check-feeds` | city rows, ~6.4M | backoff 3 d / weekly / monthly |
 | GeoNames `cities1000.zip` | `sync-geofeeds` | city name for whois `geoloc:` points; place names for the text of RIPE and AFRINIC inetnums | 7-day age gate |
 | OurAirports, UNECE UN/LOCODE, GeoNames `cities1000.zip` and `admin1CodesASCII.txt` | `learn-rdns-rules` | city-token dictionaries and GeoNames places with region and coordinates (own caches) | monthly, conditional |
+| CAIDA ITDK 2024-08 Hoiho router-name rules (`midar-iff.geo-re.jsonl`, 2 MB) | `learn-rdns-rules` (`import-hoiho`) | regexes and codes that decode router names to places | 30-day check |
 | OpenRouter chat completions (`OPENROUTER_API_KEY`, optional) | `learn-rdns-rules` (`propose-codes`) | city codes of router names, from digit-free name patterns | daily, only domains with new patterns |
 | `public.visitor_ips` (external websites insert active users' IPs) | `resolve-ips` | which /24s to trace | every 30 min |
 | `scamper` traceroutes, PTR names (local resolver or system resolver, Cloudflare DoH) | `resolve-ips` | routers near each visitor /24 and their names | per /24 every 60 days; names 30 / 7 days |
@@ -183,6 +185,7 @@ Each table has exactly one writer; data between workflows goes through these tab
 | `public.network_traces` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
 | `public.ip_ptr_names` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
 | `public.rdns_city_rules` | `learn-rdns-rules` | `resolve-ips` (candidate rules, ranks 1-4: wide votes and non-sticky traced rows) |
+| `public.rdns_hoiho_rules`, `public.rdns_hoiho_rejected_domains` | `learn-rdns-rules` | `resolve-ips`, `import-mlab` (router-name rules tried before the learned ones, as candidate rules) |
 | `public.rdns_llm_answers` | `learn-rdns-rules` | `learn-rdns-rules` (what was asked, and the verdict) |
 | `public.customer_name_networks` | `resolve-ips` | `learn-rdns-rules` (the names of the sampled hosts, capped per domain), `resolve-ips` (`locate`) |
 | `public.mlab_hop_names` | `import-mlab` | `import-mlab` (`locate`), `learn-rdns-rules` (the ok names as router names, capped per domain) |

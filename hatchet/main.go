@@ -14,6 +14,9 @@
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
 //	openipdata-worker run-rdns-rules [-reject domain,...] # learn-rdns-rules (task learn)
 //	openipdata-worker run-rdns-rules -codes [-domains a,b] [-force] # learn-rdns-rules, only the task propose-codes
+//	openipdata-worker run-rdns-rules -hoiho # learn-rdns-rules, only the task import-hoiho
+//	openipdata-worker run-rdns-rules -reject-hoiho a.net,b.net # switch off the Hoiho rules of these suffixes and of every name under them
+//	openipdata-worker run-rdns-rules -accept-hoiho a.net,b.net # switch them on again
 //
 // Environment: PGSQL (Postgres DSN; sync-geofeeds keeps its URL list in
 // public.geofeed_urls, and its probe-domains task reads public.asn_domain and public.asn;
@@ -803,7 +806,7 @@ const resolveIPsName = "resolve-ips"
 
 func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("learn-rdns-rules",
-		hatchet.WithWorkflowDescription("traced IP PTR names + public place dictionaries -> public.rdns_city_rules (up to 3 learned candidate rules per domain; propose-codes adds an LLM rule as rank 4 and records its questions in public.rdns_llm_answers)"),
+		hatchet.WithWorkflowDescription("traced IP PTR names + public place dictionaries -> public.rdns_city_rules (up to 3 learned candidate rules per domain; propose-codes adds an LLM rule as rank 4 and records its questions in public.rdns_llm_answers; import-hoiho imports the router-name rules of CAIDA's Hoiho into public.rdns_hoiho_rules)"),
 		hatchet.WithWorkflowCron("0 5 * * *"),
 		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns-rules")),
 	)
@@ -817,7 +820,21 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		}
 		return p.Learn(ctx)
 	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
-	// The LLM questions run after learn. API trouble never fails the task (it is counted); only
+	// The imported Hoiho rules. The tasks share the dictionary cache files (cities1000.zip and
+	// admin1CodesASCII.txt are fetched through the same .tmp name), so they run one after the other:
+	// learn, import-hoiho, propose-codes. A file or GeoNames problem only skips the import; only a
+	// database error fails the task.
+	importHoiho := wf.NewTask("import-hoiho", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.HoihoOutput, error) {
+		if len(input.RejectDomains) > 0 {
+			return rdnsrules.HoihoOutput{Skipped: "reject_domains"}, nil
+		}
+		p := newRDNSRulesPipeline(taskLog(ctx))
+		if err := p.CheckPGSQL(); err != nil {
+			return rdnsrules.HoihoOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		return p.ImportHoiho(ctx)
+	}, taskRetry(hatchet.WithParents(learn), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	// The LLM questions run after import-hoiho. API trouble never fails the task (it is counted); only
 	// a database error and an invalid key do, and an invalid key is not retried.
 	wf.NewTask("propose-codes", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.ProposeOutput, error) {
 		if len(input.RejectDomains) > 0 {
@@ -832,7 +849,7 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			err = hatchet.NewNonRetryableError(err)
 		}
 		return out, err
-	}, taskRetry(hatchet.WithParents(learn), hatchet.WithExecutionTimeout(8*time.Hour))...)
+	}, taskRetry(hatchet.WithParents(importHoiho), hatchet.WithExecutionTimeout(8*time.Hour))...)
 	return wf
 }
 
@@ -1211,6 +1228,9 @@ func runRDNSRules(ctx context.Context, args []string) error {
 	codes := flags.Bool("codes", false, "run only propose-codes (the LLM questions), without learning")
 	domains := flags.String("domains", "", "with -codes: ask only these comma-separated registered domains")
 	force := flags.Bool("force", false, "with -codes: ask again whatever the record says")
+	hoiho := flags.Bool("hoiho", false, "run only import-hoiho (the router-name rules of CAIDA's Hoiho), without learning")
+	rejectHoiho := flags.String("reject-hoiho", "", "switch off the Hoiho rules of these comma-separated suffixes and of every name under them")
+	acceptHoiho := flags.String("accept-hoiho", "", "switch the Hoiho rules of these comma-separated suffixes on again")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -1222,9 +1242,34 @@ func runRDNSRules(ctx context.Context, args []string) error {
 		return err
 	}
 	var rejection bool
-	flags.Visit(func(f *flag.Flag) { rejection = rejection || f.Name == "reject" })
+	given, setHoiho := 0, ""
+	flags.Visit(func(f *flag.Flag) {
+		rejection = rejection || f.Name == "reject"
+		if f.Name == "reject-hoiho" || f.Name == "accept-hoiho" {
+			setHoiho = f.Name
+		}
+		given++
+	})
+	if setHoiho != "" {
+		if given != 1 {
+			return errors.New("run-rdns-rules: -reject-hoiho and -accept-hoiho cannot be combined with any other flag")
+		}
+		list := *rejectHoiho
+		if setHoiho == "accept-hoiho" {
+			list = *acceptHoiho
+		}
+		_, err := p.SetHoihoRejected(ctx, strings.Split(list, ","), setHoiho == "reject-hoiho")
+		return err
+	}
 	if !*codes && (*domains != "" || *force) {
 		return errors.New("run-rdns-rules: -domains and -force need -codes")
+	}
+	if *hoiho {
+		if rejection || *codes || *domains != "" || *force {
+			return errors.New("run-rdns-rules: -hoiho cannot be combined with -reject, -codes, -domains or -force")
+		}
+		_, err := p.ImportHoiho(ctx)
+		return err
 	}
 	if *codes {
 		if rejection {

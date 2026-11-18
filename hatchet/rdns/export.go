@@ -55,8 +55,9 @@ func (n *NameResolver) ResolveAll(ctx context.Context, ips []netip.Addr, workers
 }
 
 // Decoder decodes a router name into a city exactly as locate does: the legacy rules of
-// public.generated_rules first, then the candidate rules of public.rdns_city_rules (a
-// domain's ranks in order).
+// public.generated_rules first, then the candidate rules: the Hoiho rules of
+// public.rdns_hoiho_rules (tried first, a domain's in seq order), then those of
+// public.rdns_city_rules (a domain's ranks in order).
 type Decoder struct {
 	rules     []rule
 	cityRules cityRuleIndex
@@ -95,7 +96,8 @@ func (d *Decoder) Decode(name string) (country, city string, ok bool) {
 	return "", "", false
 }
 
-// Counts returns how many legacy rules and learned domains the decoder holds.
+// Counts returns how many legacy rules the decoder holds and how many DNS suffixes (domains) have
+// candidate rules; the domain count includes the suffixes of the Hoiho rules.
 func (d *Decoder) Counts() (legacy, domains int) {
 	if d == nil {
 		return 0, 0

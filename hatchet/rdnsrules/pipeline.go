@@ -86,6 +86,7 @@ type Pipeline struct {
 	llmHTTP       *http.Client
 	llmBackoff    time.Duration
 	testGeo       *geoIndex
+	testHoiho     []byte // import-hoiho: the file bytes (tests), instead of the download
 	client        *http.Client
 	now           func() time.Time
 	dictionaries  Dictionaries

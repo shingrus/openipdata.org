@@ -14,10 +14,14 @@ import (
 
 // cityRule is a learned extraction rule. V1 consumes candidates only; active
 // rules stay unused until sticky learned rows with provenance and revocation exist.
-// A domain has up to 3 rules, tried in rank order (1 first).
+// A domain has up to 4 rules, tried in rank order (1 first). A Hoiho rule (hoiho = true, a row of
+// public.rdns_hoiho_rules, CAIDA's router-name rules; its seq is the rank) may have several capture
+// groups, whose lower-case values joined with a comma are the key of its places, and is tried
+// before the others.
 type cityRule struct {
 	domain  string
 	rank    int
+	hoiho   bool
 	re      *regexp.Regexp
 	places  map[string]cityKey
 	status  string
@@ -27,15 +31,21 @@ type cityRule struct {
 type cityRuleRow struct {
 	Domain, Pattern, PlacesJSON, Status, Version string
 	Rank                                         int
+	Hoiho                                        bool // a row of public.rdns_hoiho_rules (Rank is its seq)
 }
 
+// cityRuleStats counts the rules read: Loaded all usable ones (Hoiho included), Hoiho of them the
+// Hoiho rules. Missing is true when public.rdns_city_rules does not exist.
 type cityRuleStats struct {
-	Loaded, Invalid, Skipped int
-	Missing                  bool
+	Loaded, Invalid, Skipped, Hoiho int
+	Missing                         bool
 }
 
 const cityRulesQuery = `SELECT domain, rank::int, pattern, places::text, status, version
 	FROM public.rdns_city_rules ORDER BY lower(domain), domain, rank`
+
+const hoihoRulesQuery = `SELECT domain, seq::int, pattern, places::text, status, version
+	FROM public.rdns_hoiho_rules ORDER BY lower(domain), domain, seq`
 
 func compileCityRules(rows []cityRuleRow) ([]cityRule, cityRuleStats) {
 	st := cityRuleStats{}
@@ -57,7 +67,7 @@ func compileCityRules(rows []cityRuleRow) ([]cityRule, cityRuleStats) {
 			st.Skipped++
 			continue
 		}
-		if re.NumSubexp() != 1 {
+		if groups := re.NumSubexp(); groups < 1 || groups != 1 && !row.Hoiho {
 			st.Invalid++
 			continue
 		}
@@ -85,7 +95,10 @@ func compileCityRules(rows []cityRuleRow) ([]cityRule, cityRuleStats) {
 			st.Invalid++
 			continue
 		}
-		out = append(out, cityRule{domain: domain, rank: max(row.Rank, 1), re: re, places: places, status: row.Status, version: row.Version})
+		out = append(out, cityRule{domain: domain, rank: max(row.Rank, 1), hoiho: row.Hoiho, re: re, places: places, status: row.Status, version: row.Version})
+		if row.Hoiho {
+			st.Hoiho++
+		}
 	}
 	st.Loaded = len(out)
 	return out, st
@@ -97,10 +110,22 @@ func (r *cityRule) match(ptr string) (cityKey, bool) {
 		return cityKey{}, false
 	}
 	m := r.re.FindStringSubmatch(host)
-	if len(m) != 2 || strings.TrimSpace(m[1]) == "" {
+	if len(m) < 2 {
 		return cityKey{}, false
 	}
-	c, ok := r.places[strings.ToLower(strings.TrimSpace(m[1]))]
+	// The key is the lower-case captures joined with a comma; an empty capture is no match.
+	key := ""
+	for i, capture := range m[1:] {
+		capture = strings.ToLower(strings.TrimSpace(capture))
+		if capture == "" {
+			return cityKey{}, false
+		}
+		if i > 0 {
+			key += ","
+		}
+		key += capture
+	}
+	c, ok := r.places[key]
 	return c, ok
 }
 
@@ -120,8 +145,9 @@ func indexCityRules(rules []cityRule) cityRuleIndex {
 
 // firstCityRuleMatch checks only registered-domain suffixes present in the
 // index, so each hostname does work proportional to its label count rather than
-// the number of learned domains. A domain's rules are tried in rank order; a regex
-// match with no place does not stop the next rank.
+// the number of learned domains. The Hoiho rules of all suffixes of the name are tried first
+// (a domain's in seq order), then the others (a domain's in rank order); a regex match with no
+// place does not stop the next rule.
 func firstCityRuleMatch(rules cityRuleIndex, ptr string) (cityKey, bool) {
 	c, _, ok := firstCityRuleMatchRule(rules, ptr)
 	return c, ok
@@ -130,48 +156,63 @@ func firstCityRuleMatch(rules cityRuleIndex, ptr string) (cityKey, bool) {
 // firstCityRuleMatchRule is firstCityRuleMatch that also returns the rule that matched.
 func firstCityRuleMatchRule(rules cityRuleIndex, ptr string) (cityKey, *cityRule, bool) {
 	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(ptr)), ".")
-	for start := 0; start < len(host); {
-		for i := range rules[host[start:]] {
-			rule := &rules[host[start:]][i]
-			if c, ok := rule.match(host); ok {
-				return c, rule, true
+	for _, hoiho := range [2]bool{true, false} {
+		for start := 0; start < len(host); {
+			for i := range rules[host[start:]] {
+				rule := &rules[host[start:]][i]
+				if rule.hoiho != hoiho {
+					continue
+				}
+				if c, ok := rule.match(host); ok {
+					return c, rule, true
+				}
 			}
+			dot := strings.IndexByte(host[start:], '.')
+			if dot < 0 {
+				break
+			}
+			start += dot + 1
 		}
-		dot := strings.IndexByte(host[start:], '.')
-		if dot < 0 {
-			break
-		}
-		start += dot + 1
 	}
 	return cityKey{}, nil, false
 }
 
-// loadCityRules reads only the learner's published rows. A missing table is
-// expected during rollout and means no candidate rules.
+// loadCityRules reads the learner's published rows and the imported Hoiho rows. A missing table
+// is expected during rollout and means no rules of that kind.
 func loadCityRules(ctx context.Context, conn *pgx.Conn) ([]cityRule, cityRuleStats, error) {
-	var table *string
-	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.rdns_city_rules')::text`).Scan(&table); err != nil {
-		return nil, cityRuleStats{}, err
-	}
-	if table == nil {
-		return nil, cityRuleStats{Missing: true}, nil
-	}
-	rows, err := conn.Query(ctx, cityRulesQuery)
-	if err != nil {
-		return nil, cityRuleStats{}, err
-	}
-	defer rows.Close()
 	var all []cityRuleRow
-	for rows.Next() {
-		var row cityRuleRow
-		if err := rows.Scan(&row.Domain, &row.Rank, &row.Pattern, &row.PlacesJSON, &row.Status, &row.Version); err != nil {
+	missing := false
+	for _, src := range []struct {
+		table, query string
+		hoiho        bool
+	}{{"public.rdns_city_rules", cityRulesQuery, false}, {"public.rdns_hoiho_rules", hoihoRulesQuery, true}} {
+		var table *string
+		if err := conn.QueryRow(ctx, `SELECT to_regclass($1)::text`, src.table).Scan(&table); err != nil {
 			return nil, cityRuleStats{}, err
 		}
-		all = append(all, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, cityRuleStats{}, err
+		if table == nil {
+			missing = missing || !src.hoiho
+			continue
+		}
+		rows, err := conn.Query(ctx, src.query)
+		if err != nil {
+			return nil, cityRuleStats{}, err
+		}
+		for rows.Next() {
+			row := cityRuleRow{Hoiho: src.hoiho}
+			if err := rows.Scan(&row.Domain, &row.Rank, &row.Pattern, &row.PlacesJSON, &row.Status, &row.Version); err != nil {
+				rows.Close()
+				return nil, cityRuleStats{}, err
+			}
+			all = append(all, row)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, cityRuleStats{}, err
+		}
 	}
 	rules, st := compileCityRules(all)
+	st.Missing = missing
 	return rules, st, nil
 }

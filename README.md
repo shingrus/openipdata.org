@@ -55,7 +55,7 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 | `public.asn_domain` | `update-asn-domains` |
 | `public.geo_eval` | `build-geo-data` |
 | `public.network_traces`, `public.traced_networks`, `public.ip_ptr_names`, `public.customer_name_networks`, `public.rdns_geo_layer` | `resolve-ips` |
-| `public.rdns_city_rules`, `public.rdns_llm_answers` | `learn-rdns-rules` |
+| `public.rdns_city_rules`, `public.rdns_hoiho_rules`, `public.rdns_hoiho_rejected_domains`, `public.rdns_llm_answers` | `learn-rdns-rules` |
 | `public.mlab_hop_names` | `import-mlab` |
 
 The three ASN workflows share one concurrency limit, so only one runs at a time. Every morning (UTC):
@@ -828,6 +828,18 @@ patterns only (never a name or an IP) and stores each checked answer as the doma
 contradicts are overridden only when a second model agrees. Questions and verdicts are in `public.rdns_llm_answers`;
 API trouble or an used-up credit limit never fails the run.
 
+The task `import-hoiho` (after `learn`, before `propose-codes`: the tasks share the dictionary cache files) imports the router-name rules that CAIDA's Hoiho publishes with
+the ITDK 2024-08 release: per DNS suffix, regular expressions that find the location code (airport, place, CLLI, UN/LOCODE,
+facility, with a country or state code) in a router's name, plus the codes' places. The file is downloaded into the
+dictionary cache (30-day check, at most 32 MB) and read defensively (a file with fewer than 300 records, or one that would give more than 500,000 keys, is dropped from the cache); the codes are matched to GeoNames places
+(50 km around the published coordinates, else the most populous place within 30 km; CLLI codes without a place are
+guessed from four abbreviating letters and a state or province). The rows go to `public.rdns_hoiho_rules`, replaced in one
+transaction only when they changed and refused when fewer than 500 rows come out. The Hoiho rules of a suffix and of every
+name under it are switched off with `run-rdns-rules -reject-hoiho a.net,b.net` (and on again with `-accept-hoiho`); the
+list is kept in `public.rdns_hoiho_rejected_domains`, so a rejection survives later imports. `-reject` does not touch them. `locate` and the other decoders try these rules before the
+learned ones (`rule_name` `<domain>#h<seq>`, method `candidate_rule`). A file or GeoNames problem only skips the import.
+Run it alone with `run-rdns-rules -hoiho`.
+
 ### Customer names in the gap (`sample-names`)
 
 About 69% of IPv4 has a country but no city (the gap). The PTR names of customer addresses often carry
@@ -853,7 +865,7 @@ shrink guard (they show in `previous_named`/`stored_named`), voting for a wide r
 
 `locate` skips its rebuild (output `skipped` with `skip_reason`) when the fingerprint of its inputs equals the one of the
 last rebuild and that is less than 24 hours old (`unchanged`), or when the fingerprint differs but the rules (the
-legacy `public.generated_rules` and the candidate `public.rdns_city_rules`) are those of the last rebuild and that
+legacy `public.generated_rules`, the candidate `public.rdns_city_rules` and the Hoiho `public.rdns_hoiho_rules`) are those of the last rebuild and that
 rebuild is less than 6 hours old (`recent`). So new traces, names, ASN data, customer samples or a new MMDB wait for the
 next rebuild, at most 6 hours, and a rule change still rebuilds at once; `force_replace` always rebuilds. A rebuild that
 could not read the MMDB R2 offered is followed by a rebuild at the next run (it tries R2 again), and the visitor IPs of
@@ -901,6 +913,9 @@ openipdata-worker run-rdns -force-replace # allow an intentional layer shrink ab
 openipdata-worker run-rdns-rules       # learn candidate rules once locally
 openipdata-worker run-rdns-rules -reject example.net # withdraw the current rule, without learning
 openipdata-worker run-rdns-rules -codes [-domains a.net,b.net] [-force] # only the LLM task propose-codes (needs OPENROUTER_API_KEY)
+openipdata-worker run-rdns-rules -hoiho # only the task import-hoiho (CAIDA's router-name rules)
+openipdata-worker run-rdns-rules -reject-hoiho a.net,b.net # switch off the Hoiho rules of these suffixes and of every name under them
+openipdata-worker run-rdns-rules -accept-hoiho a.net,b.net # switch them on again
 mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb>
 mmdbbuilder geo -out <file.mmdb> [-names <names.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] <layer.csv.gz>...
 mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <f> -holdout-truth <rows.csv>]  # scores as JSON

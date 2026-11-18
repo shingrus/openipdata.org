@@ -501,7 +501,7 @@ func TestTracesQueryReadsOnly(t *testing.T) {
 	if locateWindow != "180 days" || resolveWindow != "7 days" {
 		t.Errorf("windows: locate %s, resolve-names %s", locateWindow, resolveWindow)
 	}
-	for _, q := range []string{tracesQuery, originQuery, originFallbackQuery, namesQuery, cityRulesQuery, fingerprintTracesQuery, fingerprintNamesQuery, fingerprintASNQuery, fingerprintRulesQuery, fingerprintCityRulesQuery} {
+	for _, q := range []string{tracesQuery, originQuery, originFallbackQuery, namesQuery, cityRulesQuery, fingerprintTracesQuery, fingerprintNamesQuery, fingerprintASNQuery, fingerprintRulesQuery, fingerprintCityRulesQuery, fingerprintHoihoRulesQuery, hoihoRulesQuery} {
 		for _, bad := range []string{"INSERT", "UPDATE", "ALTER", "DELETE", "CREATE"} {
 			if contains(upper(q), bad) {
 				t.Errorf("%s contains %s", q, bad)

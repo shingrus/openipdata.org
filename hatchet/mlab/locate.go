@@ -313,9 +313,9 @@ type LocateOutput struct {
 	Ties       int    `json:"ties"`         // client /24s with no city: two cities with the same largest weight in the last round that had votes
 	NoCity     int    `json:"no_city"`      // client /24s with no city: no hop has one (in the client's country)
 	NoCountry  int    `json:"no_country"`   // client /24s not voted: no country in our MMDB
-	Legacy     int    `json:"legacy_rules"` // legacy rules and learned domains read
-	Domains    int    `json:"rule_domains"`
-	MMDB       string `json:"mmdb"` // "used", "saved copy" or "skipped"
+	Legacy     int    `json:"legacy_rules"` // legacy rules read
+	Domains    int    `json:"rule_domains"` // DNS suffixes with candidate rules read (learned, LLM and Hoiho rules together)
+	MMDB       string `json:"mmdb"`         // "used", "saved copy" or "skipped"
 	MMDBReason string `json:"mmdb_reason,omitempty"`
 	Bytes      int64  `json:"bytes"`
 }

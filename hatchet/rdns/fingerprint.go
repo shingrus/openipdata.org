@@ -63,6 +63,8 @@ const (
 		FROM public.generated_rules`
 	fingerprintCityRulesQuery = `SELECT count(*)::text || ':' || coalesce(md5(string_agg(concat_ws(E'\x1f', domain, rank::text, pattern, dictionary, places::text, version, status), E'\x1e'
 			ORDER BY lower(domain), domain, rank)), '') FROM public.rdns_city_rules`
+	fingerprintHoihoRulesQuery = `SELECT count(*)::text || ':' || coalesce(md5(string_agg(concat_ws(E'\x1f', domain, seq::text, pattern, plan, places::text, version, status), E'\x1e'
+			ORDER BY lower(domain), domain, seq)), '') FROM public.rdns_hoiho_rules`
 )
 
 // inputsSummary summarizes the database inputs of locate: five short texts, no rows.
@@ -95,6 +97,17 @@ func inputsSummary(ctx context.Context, conn *pgx.Conn) ([5]string, error) {
 		}
 	}
 	parts[2] += "|candidate:" + cityFingerprint
+	var hoihoTable *string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.rdns_hoiho_rules')::text`).Scan(&hoihoTable); err != nil {
+		return parts, dbError("fingerprint hoiho rules", err)
+	}
+	hoihoFingerprint := "no table"
+	if hoihoTable != nil {
+		if err := conn.QueryRow(ctx, fingerprintHoihoRulesQuery).Scan(&hoihoFingerprint); err != nil {
+			return parts, dbError("fingerprint hoiho rules", err)
+		}
+	}
+	parts[2] += "|hoiho:" + hoihoFingerprint
 	if err := conn.QueryRow(ctx, fingerprintASNQuery).Scan(&parts[3]); err != nil {
 		return parts, dbError("fingerprint asn", err)
 	}

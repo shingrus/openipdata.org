@@ -113,6 +113,7 @@ type LocateOutput struct {
 	CandidateRulesInvalid int  `json:"candidate_rules_invalid"`
 	CandidateRulesSkipped int  `json:"candidate_rules_skipped"`
 	CandidateRulesMissing bool `json:"candidate_rules_missing,omitempty"`
+	HoihoRules            int  `json:"hoiho_rules"` // of the candidate rules, the ones imported from Hoiho
 
 	Traced          int `json:"traced"`           // /24s located now by a trace
 	CandidateTraced int `json:"candidate_traced"` // /24s given a traced row by a learned candidate rule (not sticky, never located)
@@ -417,8 +418,14 @@ func candidateMatches(ts []traceIn, ptrs map[netip.Addr]string, rules cityRuleIn
 	return nil, other
 }
 
-// candidateRuleName is the rule_name of a traced row that a candidate rule found.
-func candidateRuleName(r *cityRule) string { return r.domain + "#" + strconv.Itoa(r.rank) }
+// candidateRuleName is the rule_name of a traced row that a candidate rule found: <domain>#<rank>,
+// or <domain>#h<seq> for a Hoiho rule.
+func candidateRuleName(r *cityRule) string {
+	if r.hoiho {
+		return r.domain + "#h" + strconv.Itoa(r.rank)
+	}
+	return r.domain + "#" + strconv.Itoa(r.rank)
+}
 
 // hopIPs lists the router IPs locate wants an MMDB city for, each once, in
 // address order, never the target itself: the hops of every /24 that no rule
@@ -884,6 +891,7 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 	}
 	out.RulesSkipped, out.RulesInvalid, out.RulesMissing, out.ASNPrefixes = rstats.Skipped, rstats.Invalid, rstats.NoTable, prefixes
 	out.CandidateRules, out.CandidateRulesInvalid, out.CandidateRulesSkipped, out.CandidateRulesMissing = crstats.Loaded, crstats.Invalid, crstats.Skipped, crstats.Missing
+	out.HoihoRules = crstats.Hoiho
 	if rstats.NoTable {
 		p.log("locate: WARNING public.generated_rules does not exist; legacy rules are unavailable")
 	}
@@ -923,8 +931,8 @@ func (p *Pipeline) Locate(ctx context.Context, force bool) (LocateOutput, error)
 	}
 	p.log("locate: sampled customer names: %d /24s with a name, %d names, %d decoded; %d named rows (%d before; %d ties, %d in another country)",
 		out.CustomerNetworks, out.CustomerNames, out.CustomerMatched, out.StoredNamed, out.PreviousNamed, out.NamedTies, out.NamedForeign)
-	p.log("locate: %d traces in %d /24s, %d names, %d rules (%d skipped, %d invalid), %d candidate rules (%d skipped, %d invalid); %d traced rows (%d carried over, %d from candidate rules), %d wide rows (%d votes, %d candidate votes, %d candidate-backed rows, %d ties); candidate/legacy %d agreed of %d compared; %d rows before; volatile rows (candidate traced, wide) %d before, %d now; %d visitor IPs deleted",
-		out.Traces, out.Networks, out.Names, out.Rules, out.RulesSkipped, out.RulesInvalid, out.CandidateRules, out.CandidateRulesSkipped, out.CandidateRulesInvalid,
+	p.log("locate: %d traces in %d /24s, %d names, %d rules (%d skipped, %d invalid), %d candidate rules (%d skipped, %d invalid, %d of them Hoiho); %d traced rows (%d carried over, %d from candidate rules), %d wide rows (%d votes, %d candidate votes, %d candidate-backed rows, %d ties); candidate/legacy %d agreed of %d compared; %d rows before; volatile rows (candidate traced, wide) %d before, %d now; %d visitor IPs deleted",
+		out.Traces, out.Networks, out.Names, out.Rules, out.RulesSkipped, out.RulesInvalid, out.CandidateRules, out.CandidateRulesSkipped, out.CandidateRulesInvalid, out.HoihoRules,
 		out.Traced+out.Carried+out.CandidateTraced, out.Carried, out.CandidateTraced, out.Wide, out.Votes, out.CandidateVotes, out.CandidateWide, out.WideTies,
 		out.CandidateAgreed, out.CandidateCompared, out.Previous, out.PreviousVolatile, out.StoredVolatile, out.VisitorsCut)
 	for _, k := range kindOrder {
