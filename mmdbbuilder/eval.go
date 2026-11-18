@@ -93,8 +93,9 @@ type evalMetrics struct {
 	MaxMindAtlasCityPrecisionPct *float64 `json:"maxmind_atlas_city_precision_pct,omitempty"`
 
 	// Our Atlas city score per city_source (layer): flat keys
-	// layer_<src>_atlas_city_{answered,precision_pct,unresolved}, merged into
-	// the JSON by MarshalJSON.
+	// layer_<src>_atlas_city_{answered,precision_pct,unresolved}, and the
+	// holdout city score per city_source: layer_<src>_holdout_city_{answered,right}
+	// and holdout_city_unanswered, merged into the JSON by MarshalJSON.
 	Layers map[string]float64 `json:"-"`
 }
 
@@ -622,7 +623,7 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 			return nil, err
 		}
 		defer reader.Close()
-		s, err := scoreHoldout(mmdbLookup(reader), in.holdoutTruth)
+		s, err := scoreHoldout(sourceLookup(reader), in.holdoutTruth)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", in.holdoutTruth, err)
 		}
@@ -630,6 +631,12 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 			m.HoldoutPrefixes = count(s.rows)
 			m.HoldoutCountryPct = ratio(uint64(s.countryOK), uint64(s.rows))
 			m.HoldoutCityPct = ratio(uint64(s.cityOK), uint64(s.cityRows))
+			if m.Layers == nil {
+				m.Layers = map[string]float64{}
+			}
+			for k, v := range s.metrics() {
+				m.Layers[k] = v
+			}
 		}
 	}
 	return m, nil
@@ -693,6 +700,22 @@ func mmdbLookup(reader *maxminddb.Reader) lookupFunc {
 	}
 }
 
+// sourceLookupFunc is lookupFunc plus the city_source of the record.
+type sourceLookupFunc func(netip.Addr) (country, city, source string, err error)
+
+// sourceLookup looks addresses up in one of our MMDBs (country_code, city_name, city_source).
+func sourceLookup(reader *maxminddb.Reader) sourceLookupFunc {
+	return func(addr netip.Addr) (string, string, string, error) {
+		res := reader.Lookup(addr)
+		if !res.Found() {
+			return "", "", "", res.Err()
+		}
+		// Every city counts here, a guessed one too: the holdout score always did.
+		country, city, source, err := evidenceRecord(res, func(string) bool { return false })
+		return normCountry(country), normCity(city), source, err
+	}
+}
+
 // rangeLookup looks addresses up in sorted ranges (a reference database);
 // reverse turns their ids back into strings.
 func rangeLookup(ranges []rng, reverse []string) lookupFunc {
@@ -739,12 +762,32 @@ func scoreProbes(lookup lookupFunc, path string) (probes, ok int, err error) {
 type holdoutScore struct {
 	rows, countryOK  int // every held-out prefix
 	cityRows, cityOK int // those with a city
+	// The rows with a city by the city_source of the database's record (answered
+	// with a city, and right); the rows whose record has no city are unanswered.
+	// The answered counts and unanswered add up to cityRows, the right counts to cityOK.
+	by         map[string]*layerScore
+	unanswered int
+}
+
+// metrics turns the per-source counts into the flat metric keys.
+func (s holdoutScore) metrics() map[string]float64 {
+	out := map[string]float64{}
+	if s.cityRows > 0 {
+		out["holdout_city_unanswered"] = float64(s.unanswered)
+	}
+	for src, c := range s.by {
+		if c.answered > 0 {
+			out["layer_"+src+"_holdout_city_answered"] = float64(c.answered)
+			out["layer_"+src+"_holdout_city_right"] = float64(c.right)
+		}
+	}
+	return out
 }
 
 // scoreHoldout looks up the first address of each held-out prefix
 // (prefix,country,city) in a database.
-func scoreHoldout(lookup lookupFunc, path string) (holdoutScore, error) {
-	var s holdoutScore
+func scoreHoldout(lookup sourceLookupFunc, path string) (holdoutScore, error) {
+	s := holdoutScore{by: map[string]*layerScore{}}
 	var lookupErr error
 	err := readTruth(path, []string{"prefix", "country", "city"}, func(f []string) {
 		p, perr := netip.ParsePrefix(strings.TrimSpace(f[0]))
@@ -752,7 +795,7 @@ func scoreHoldout(lookup lookupFunc, path string) (holdoutScore, error) {
 		if perr != nil || !p.Addr().Is4() || want == "" {
 			return
 		}
-		got, gotCity, lerr := lookup(p.Masked().Addr())
+		got, gotCity, source, lerr := lookup(p.Masked().Addr())
 		if lerr != nil {
 			lookupErr = lerr
 			return
@@ -763,6 +806,20 @@ func scoreHoldout(lookup lookupFunc, path string) (holdoutScore, error) {
 		}
 		if wantCity != "" {
 			s.cityRows++
+			if gotCity == "" {
+				s.unanswered++
+			} else {
+				key := sourceKey(source)
+				c := s.by[key]
+				if c == nil {
+					c = &layerScore{}
+					s.by[key] = c
+				}
+				c.answered++
+				if gotCity == wantCity {
+					c.right++
+				}
+			}
 			if gotCity == wantCity {
 				s.cityOK++
 			}

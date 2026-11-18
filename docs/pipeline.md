@@ -241,7 +241,7 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | --- | --- |
 | Coverage (RIR layer space) | `country_pct`, `city_pct` |
 | RIPE Atlas probes (connected, public IPv4) | `atlas_country_pct`, `atlas_city_pct` (ours placed with GeoNames, within 50 km; `atlas_city_unresolved`) |
-| Geofeed holdout (frozen 10% of feeds left out of a second build) | `holdout_country_pct`, `holdout_city_pct` |
+| Geofeed holdout (frozen 10% of feeds left out of a second build) | `holdout_country_pct`, `holdout_city_pct`, and by `city_source` `layer_<src>_holdout_city_answered` / `_right` and `holdout_city_unanswered` (which layer gained or lost the held-out prefixes) |
 | DB-IP Lite city | country and city agreement; Atlas country and city (own coordinates) |
 | MaxMind GeoLite2 City | country and city agreement; vendor consensus; scored like ours on coverage and Atlas (rating); no reference holdout scores, vendors ingest the same geofeeds |
 
