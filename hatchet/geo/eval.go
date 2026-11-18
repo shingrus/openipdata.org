@@ -67,6 +67,20 @@ type stampMeta struct {
 	EvalError bool               `json:"eval_error,omitempty"`
 }
 
+// stampMetrics returns the metrics for the stamp: all but the per-feed holdout
+// keys (holdout_feed_..., named in holdoutScore.metrics of mmdbbuilder/eval.go:
+// keep the prefix the same in both). A feed id is a row of our own table and
+// means nothing in the published file. The map of the task output is not changed.
+func stampMetrics(metrics map[string]float64) map[string]float64 {
+	out := make(map[string]float64, len(metrics))
+	for k, v := range metrics {
+		if !strings.HasPrefix(k, "holdout_feed_") {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // stampMMDB writes the scores into the metadata of the MMDB (the search tree
 // and the data stay the same) through a temporary file and a rename. A
 // failure is returned as text and leaves the MMDB as it was.
@@ -83,10 +97,7 @@ func (p *Pipeline) stampMMDB(ctx context.Context, src Source, mmdbPath string, o
 		p.log("eval: stamp %s", msg)
 		return msg
 	}
-	meta := stampMeta{DateTag: src.DateTag, EvalID: out.ID, Metrics: out.Metrics, EvalError: out.Error != ""}
-	if meta.Metrics == nil {
-		meta.Metrics = map[string]float64{}
-	}
+	meta := stampMeta{DateTag: src.DateTag, EvalID: out.ID, Metrics: stampMetrics(out.Metrics), EvalError: out.Error != ""}
 	data, err := json.Marshal(meta)
 	if err != nil {
 		return fail(err)

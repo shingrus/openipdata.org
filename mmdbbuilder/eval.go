@@ -95,7 +95,9 @@ type evalMetrics struct {
 	// Our Atlas city score per city_source (layer): flat keys
 	// layer_<src>_atlas_city_{answered,precision_pct,unresolved}, and the
 	// holdout city score per city_source: layer_<src>_holdout_city_{answered,right}
-	// and holdout_city_unanswered, merged into the JSON by MarshalJSON.
+	// and holdout_city_unanswered, and, when the truth file has a feed column,
+	// holdout_feed_<id>_city_{rows,right} for the 10 biggest feeds and
+	// holdout_feed_other_city_{rows,right} for the rest, merged into the JSON by MarshalJSON.
 	Layers map[string]float64 `json:"-"`
 }
 
@@ -644,29 +646,43 @@ func evaluate(in evalInputs) (*evalMetrics, error) {
 
 // readTruth calls fn with the named columns of each row of a truth CSV.
 func readTruth(path string, columns []string, fn func(fields []string)) error {
+	_, err := readTruthOpt(path, columns, nil, fn)
+	return err
+}
+
+// readTruthOpt is readTruth with extra optional columns. fn gets the required
+// fields, then the optional ones ("" when the column is absent or the row is
+// short). The result says which optional columns the header has.
+func readTruthOpt(path string, columns, optional []string, fn func(fields []string)) ([]bool, error) {
+	has := make([]bool, len(optional))
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return has, err
 	}
 	defer f.Close()
 	r := csv.NewReader(f)
 	r.FieldsPerRecord = -1
 	header, err := r.Read()
 	if err != nil {
-		return fmt.Errorf("read header: %w", err)
+		return has, fmt.Errorf("read header: %w", err)
 	}
 	pos := make([]int, len(columns))
 	for i, name := range columns {
 		pos[i] = slices.Index(header, name)
 		if pos[i] < 0 {
-			return fmt.Errorf("header %q lacks %s", strings.Join(header, ","), name)
+			return has, fmt.Errorf("header %q lacks %s", strings.Join(header, ","), name)
 		}
 	}
-	fields := make([]string, len(columns))
+	optPos := make([]int, len(optional))
+	for i, name := range optional {
+		optPos[i] = slices.Index(header, name)
+		has[i] = optPos[i] >= 0
+	}
+	fields := make([]string, len(columns)+len(optional))
 	for {
 		rec, err := r.Read()
 		if err == io.EOF {
-			return nil
+			return has, nil
 		}
 		if err != nil {
 			continue // a row that does not parse is not a truth row
@@ -679,9 +695,16 @@ func readTruth(path string, columns []string, fn func(fields []string)) error {
 			}
 			fields[i] = rec[p]
 		}
-		if ok {
-			fn(fields)
+		if !ok {
+			continue
 		}
+		for i, p := range optPos {
+			fields[len(columns)+i] = ""
+			if p >= 0 && p < len(rec) {
+				fields[len(columns)+i] = rec[p]
+			}
+		}
+		fn(fields)
 	}
 }
 
@@ -759,17 +782,41 @@ func scoreProbes(lookup lookupFunc, path string) (probes, ok int, err error) {
 	return probes, ok, errors.Join(err, lookupErr)
 }
 
+// holdoutTopFeeds is how many feeds get their own per-feed keys; the rest go to "other".
+const holdoutTopFeeds = 10
+
 type holdoutScore struct {
 	rows, countryOK  int // every held-out prefix
 	cityRows, cityOK int // those with a city
 	// The rows with a city by the city_source of the database's record (answered
 	// with a city, and right); the rows whose record has no city are unanswered.
-	// The answered counts and unanswered add up to cityRows, the right counts to cityOK.
+	// The answered counts plus unanswered add up to cityRows, the right counts to cityOK.
 	by         map[string]*layerScore
 	unanswered int
+	// The rows with a city by feed (the optional truth column "feed": a decimal id),
+	// only when the truth file has that column. A value that is not 1 to 18 digits is
+	// counted under "". The rows add up to cityRows, the right counts to cityOK.
+	hasFeed bool
+	feeds   map[string]*feedScore
 }
 
-// metrics turns the per-source counts into the flat metric keys.
+// feedScore counts the held-out rows with a city of one feed, and those the database has right.
+type feedScore struct{ rows, right int }
+
+// feedID reports whether s is a feed id: 1 to 18 decimal digits.
+func feedID(s string) bool {
+	if len(s) == 0 || len(s) > 18 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// metrics turns the per-source and per-feed counts into the flat metric keys.
 func (s holdoutScore) metrics() map[string]float64 {
 	out := map[string]float64{}
 	if s.cityRows > 0 {
@@ -781,15 +828,54 @@ func (s holdoutScore) metrics() map[string]float64 {
 			out["layer_"+src+"_holdout_city_right"] = float64(c.right)
 		}
 	}
+	if s.hasFeed && s.cityRows > 0 {
+		// The feeds with the most rows keep their key (ties: the smaller id, as a number).
+		// The worker keeps keys with the prefix holdout_feed_ out of the MMDB stamp
+		// (stampMetrics in hatchet/geo/eval.go): keep the prefix the same in both.
+		ids := make([]string, 0, len(s.feeds))
+		for id := range s.feeds {
+			if id != "" {
+				ids = append(ids, id)
+			}
+		}
+		slices.SortFunc(ids, func(a, b string) int {
+			if d := s.feeds[b].rows - s.feeds[a].rows; d != 0 {
+				return d
+			}
+			// Same length: string order is number order; else the shorter is smaller.
+			if len(a) != len(b) {
+				return len(a) - len(b)
+			}
+			return strings.Compare(a, b)
+		})
+		other := feedScore{}
+		if c := s.feeds[""]; c != nil {
+			other = *c
+		}
+		for i, id := range ids {
+			c := s.feeds[id]
+			if i < holdoutTopFeeds {
+				out["holdout_feed_"+id+"_city_rows"] = float64(c.rows)
+				out["holdout_feed_"+id+"_city_right"] = float64(c.right)
+				continue
+			}
+			other.rows += c.rows
+			other.right += c.right
+		}
+		if other.rows > 0 {
+			out["holdout_feed_other_city_rows"] = float64(other.rows)
+			out["holdout_feed_other_city_right"] = float64(other.right)
+		}
+	}
 	return out
 }
 
 // scoreHoldout looks up the first address of each held-out prefix
-// (prefix,country,city) in a database.
+// (prefix,country,city[,feed]) in a database.
 func scoreHoldout(lookup sourceLookupFunc, path string) (holdoutScore, error) {
-	s := holdoutScore{by: map[string]*layerScore{}}
+	s := holdoutScore{by: map[string]*layerScore{}, feeds: map[string]*feedScore{}}
 	var lookupErr error
-	err := readTruth(path, []string{"prefix", "country", "city"}, func(f []string) {
+	has, err := readTruthOpt(path, []string{"prefix", "country", "city"}, []string{"feed"}, func(f []string) {
 		p, perr := netip.ParsePrefix(strings.TrimSpace(f[0]))
 		want, wantCity := normCountry(f[1]), normCity(f[2])
 		if perr != nil || !p.Addr().Is4() || want == "" {
@@ -823,8 +909,22 @@ func scoreHoldout(lookup sourceLookupFunc, path string) (holdoutScore, error) {
 			if gotCity == wantCity {
 				s.cityOK++
 			}
+			id := strings.TrimSpace(f[3])
+			if !feedID(id) {
+				id = ""
+			}
+			fc := s.feeds[id]
+			if fc == nil {
+				fc = &feedScore{}
+				s.feeds[id] = fc
+			}
+			fc.rows++
+			if gotCity == wantCity {
+				fc.right++
+			}
 		}
 	})
+	s.hasFeed = has[0]
 	return s, errors.Join(err, lookupErr)
 }
 

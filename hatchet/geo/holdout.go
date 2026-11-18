@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -32,9 +33,9 @@ const (
 	holdoutFrozenAt = "2026-11-11 00:00:00+00"
 )
 
-// loadHeldOut returns the URLs of the held-out feeds from public.geofeed_urls
-// (read only; sync-geofeeds owns the table).
-func (p *Pipeline) loadHeldOut(ctx context.Context) (map[string]bool, error) {
+// loadHeldOut returns the held-out feeds from public.geofeed_urls (read only;
+// sync-geofeeds owns the table) as feed URL -> the id of its row.
+func (p *Pipeline) loadHeldOut(ctx context.Context) (map[string]int64, error) {
 	if p.heldOutURLs != nil {
 		return p.heldOutURLs(ctx)
 	}
@@ -43,19 +44,20 @@ func (p *Pipeline) loadHeldOut(ctx context.Context) (map[string]bool, error) {
 		return nil, err
 	}
 	defer conn.Close(ctx)
-	rows, err := conn.Query(ctx, `SELECT url FROM public.geofeed_urls WHERE id % $1 = $2 AND first_seen_at < $3::timestamptz`,
+	rows, err := conn.Query(ctx, `SELECT id, url FROM public.geofeed_urls WHERE id % $1 = $2 AND first_seen_at < $3::timestamptz`,
 		holdoutBuckets, holdoutBucket, holdoutFrozenAt)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	urls := map[string]bool{}
+	urls := map[string]int64{}
 	for rows.Next() {
+		var id int64
 		var url string
-		if err := rows.Scan(&url); err != nil {
+		if err := rows.Scan(&id, &url); err != nil {
 			return nil, err
 		}
-		urls[url] = true
+		urls[url] = id
 	}
 	return urls, rows.Err()
 }
@@ -97,15 +99,15 @@ func prefixBlock(p netip.Prefix) block {
 // splitFeeds reads the geofeeds layer (prefix,country,region,city,source; the
 // source is the feed URL) and writes
 //
-//   - keptPath: the same file without the rows of the feeds in heldOut (a set
-//     of feed URLs)
-//   - truthPath: prefix,country,city of the held-out IPv4 rows that no kept
+//   - keptPath: the same file without the rows of the feeds in heldOut (feed
+//     URL -> the id of the feed's row in public.geofeed_urls)
+//   - truthPath: prefix,country,city,feed (the feed's id) of the held-out IPv4 rows that no kept
 //     row overlaps. Where a kept row covers or lies inside a held-out prefix,
 //     the holdout build still knows its answer, and the score would measure
 //     the overlap of two feeds, not our lower layers.
 //
 // Both are written through temporary files.
-func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]bool) (holdoutStats, error) {
+func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]int64) (holdoutStats, error) {
 	var stats holdoutStats
 	in, err := os.Open(feedsPath)
 	if err != nil {
@@ -151,6 +153,7 @@ func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]bool) 
 	type heldRow struct {
 		block
 		prefix, country, city string
+		feed                  int64
 	}
 	var keptBlocks []block
 	var held []heldRow
@@ -174,7 +177,7 @@ func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]bool) 
 			return ""
 		}
 		feedURL := field(urlCol)
-		isHeld := heldOut[feedURL]
+		feedID, isHeld := heldOut[feedURL]
 		feeds[feedURL] = isHeld
 		p, isV4 := parseV4(field(prefixCol))
 		if !isHeld {
@@ -187,7 +190,7 @@ func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]bool) 
 		}
 		stats.HeldRows++
 		if country := strings.ToUpper(strings.TrimSpace(field(countryCol))); isV4 && len(country) == 2 {
-			held = append(held, heldRow{prefixBlock(p), p.String(), country, strings.TrimSpace(field(cityCol))})
+			held = append(held, heldRow{prefixBlock(p), p.String(), country, strings.TrimSpace(field(cityCol)), feedID})
 		}
 	}
 	stats.Feeds = len(feeds)
@@ -225,12 +228,12 @@ func splitFeeds(feedsPath, keptPath, truthPath string, heldOut map[string]bool) 
 	defer os.Remove(truthTmp)
 	defer truth.Close()
 	truthCSV := csv.NewWriter(truth)
-	truthCSV.Write([]string{"prefix", "country", "city"})
+	truthCSV.Write([]string{"prefix", "country", "city", "feed"})
 	for _, row := range held {
 		if overlaps(row.block) {
 			continue
 		}
-		truthCSV.Write([]string{row.prefix, row.country, row.city})
+		truthCSV.Write([]string{row.prefix, row.country, row.city, strconv.FormatInt(row.feed, 10)})
 		stats.TruthRows++
 	}
 	truthCSV.Flush()

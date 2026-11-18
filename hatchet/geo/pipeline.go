@@ -202,7 +202,7 @@ type Pipeline struct {
 	writeHosting  func(ctx context.Context, w *csv.Writer) (int, error)
 	writeRDNS     func(ctx context.Context, scope string, w *csv.Writer) (int, error)
 	readAnnounced func(ctx context.Context) ([]asnPrefix, error)
-	heldOutURLs   func(ctx context.Context) (map[string]bool, error)
+	heldOutURLs   func(ctx context.Context) (map[string]int64, error)
 }
 
 // Source is what Download prepared for the run.

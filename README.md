@@ -736,7 +736,7 @@ request is replaced by a fixed message (an HTTP status stays), so it never reach
 output or a returned error. Attribution for the references when their numbers are shown: DB-IP Lite by
 DB-IP.com (CC BY 4.0); this product includes GeoLite2 data created by MaxMind; city places from GeoNames (geonames.org, CC BY 4.0).
 
-The holdout is scored on the held-out IPv4 rows (`holdout-truth.csv`: `prefix,country,city`) that no
+The holdout is scored on the held-out IPv4 rows (`holdout-truth.csv`: `prefix,country,city,feed`, the feed being its row id in `public.geofeed_urls`; `mmdbbuilder eval` takes the last column as optional) that no
 kept row covers or lies inside, so it measures the lower layers, not the overlap of two feeds. The
 score looks up the first address of each prefix.
 
@@ -763,6 +763,7 @@ same truth, with its own data as it is:
 | `atlas_city_answered`, `atlas_city_precision_pct` | coverage versus accuracy: probes where we named a city GeoNames could place (an unplaced city is not answered), and the share of those within 50 km (`atlas_city_pct` is hits over all probes, so it mixes coverage and precision; precision is hits over answered). Left out without `-geonames` |
 | `X_atlas_city_answered`, `X_atlas_city_precision_pct` | same for `X`: probes where `X` names a city with its own coordinates, and the share of those within 50 km |
 | `layer_<src>_holdout_city_answered`, `_right`, and `holdout_city_unanswered` | ours only, the holdout city score by `city_source` (same key rule as the Atlas keys below): held-out rows with a city whose record has a city from that layer, and how many of those are right (the same comparison as `holdout_city_pct`; `_right` is written, also as 0, when `_answered` is above 0); `holdout_city_unanswered` counts the rows whose record has no city. Answered plus unanswered is the number of rows with a city; the right counts add up to `holdout_city_pct`'s numerator. |
+| `holdout_feed_<id>_city_rows`, `_city_right`, and `holdout_feed_other_city_rows`, `_city_right` | ours only, the holdout city score by feed, written only when the truth file has the `feed` column (the id of the feed in `public.geofeed_urls`): held-out rows with a city per feed and how many of those are right (the same comparison as `holdout_city_pct`), for the 10 feeds with the most such rows (ties: the smaller id); `other` is all remaining feeds and rows whose feed is not an id, written when its rows are above 0 (the 10 are chosen in each build, so a feed near the cut can have its own key in one build and be in `other` in the next). The rows add up to the rows `holdout_city_pct` is computed over, the right counts to its numerator. They are in the task output and `public.geo_eval.metrics`, not in the MMDB stamp. |
 | `layer_<src>_atlas_city_answered`, `_precision_pct`, `_unresolved` | ours only, per `city_source` (the layer that wrote the city, e.g. `70_geofeeds`; characters outside `[a-z0-9]` become `_`; a city without `city_source`, from an older MMDB, is `unknown`): probes answered with a placed city, the share within 50 km, and cities GeoNames could not place (only when above 0) |
 | `X_atlas_city_pct` | per probe with coordinates (`atlas_city_probes`): share where `X` names a city whose own `location` is within 50 km of the probe; a record without a city (its coordinates are a country centroid) is a miss |
 

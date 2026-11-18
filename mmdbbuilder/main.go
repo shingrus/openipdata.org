@@ -196,7 +196,7 @@ func runEval(args []string) {
 	flags.StringVar(&in.atlas, "atlas", "", "RIPE Atlas probes CSV ip,country,lat,lon (optional)")
 	flags.StringVar(&in.geonames, "geonames", "", "GeoNames cities1000.txt: places our cities for atlas_city_pct (optional)")
 	flags.StringVar(&in.holdoutDB, "holdout-db", "", "MMDB built without the held-out geofeeds (optional, needs -holdout-truth)")
-	flags.StringVar(&in.holdoutTruth, "holdout-truth", "", "CSV prefix,country,city of the held-out rows (optional, needs -holdout-db)")
+	flags.StringVar(&in.holdoutTruth, "holdout-truth", "", "CSV prefix,country,city[,feed] of the held-out rows (optional, needs -holdout-db)")
 	flags.Parse(args)
 
 	if in.db == "" || in.rir == "" || flags.NArg() > 0 {

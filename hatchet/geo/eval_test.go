@@ -51,10 +51,11 @@ func readGzip(t *testing.T, path string) string {
 }
 
 // feed1 and feed7 are held out; any other URL is kept.
-var testHeldOut = map[string]bool{"https://feed1.example/geo.csv": true, "https://feed7.example/geo.csv": true}
+// Their ids in public.geofeed_urls are 10 and 70.
+var testHeldOut = map[string]int64{"https://feed1.example/geo.csv": 10, "https://feed7.example/geo.csv": 70}
 
-func heldOutSet(urls map[string]bool) func(context.Context) (map[string]bool, error) {
-	return func(context.Context) (map[string]bool, error) { return urls, nil }
+func heldOutSet(urls map[string]int64) func(context.Context) (map[string]int64, error) {
+	return func(context.Context) (map[string]int64, error) { return urls, nil }
 }
 
 func TestSplitFeeds(t *testing.T) {
@@ -90,7 +91,7 @@ func TestSplitFeeds(t *testing.T) {
 		"47.0.5.0/24,GB,,London,https://feed2.example/geo.csv\n" {
 		t.Errorf("kept rows:\n%s", got)
 	}
-	wantTruth := "prefix,country,city\n46.0.0.0/24,FR,\"Paris, 8e\"\n48.0.0.9/32,BE,Brussels\n49.0.0.0/24,ES,Madrid\n"
+	wantTruth := "prefix,country,city,feed\n46.0.0.0/24,FR,\"Paris, 8e\",10\n48.0.0.9/32,BE,Brussels,70\n49.0.0.0/24,ES,Madrid,70\n"
 	first, _ := os.ReadFile(truth)
 	if string(first) != wantTruth {
 		t.Errorf("truth:\n%s", first)
@@ -169,12 +170,12 @@ func TestPrepareHoldoutArgs(t *testing.T) {
 
 	// Without held-out feeds there is nothing to score and no build.
 	os.Remove(argsFile)
-	p.heldOutURLs = heldOutSet(map[string]bool{})
+	p.heldOutURLs = heldOutSet(map[string]int64{})
 	if mmdb, _, status, err = p.prepareHoldout(context.Background(), eval); err != nil || mmdb != "" || !strings.HasPrefix(status, "skipped: ") {
 		t.Errorf("empty set: %q %q %v", mmdb, status, err)
 	}
 	// A failed lookup is an error, never another sample.
-	p.heldOutURLs = func(context.Context) (map[string]bool, error) { return nil, errors.New("boom") }
+	p.heldOutURLs = func(context.Context) (map[string]int64, error) { return nil, errors.New("boom") }
 	if _, _, _, err = p.prepareHoldout(context.Background(), eval); err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("lookup error = %v", err)
 	}
@@ -631,7 +632,7 @@ func TestEvaluateStamp(t *testing.T) {
 	// Postgres is not set up, so the evaluation records an error, which is
 	// stamped too (eval_error).
 	script := `case "$1" in
-eval) echo '{"atlas_country_pct": 97.5}';;
+eval) echo '{"atlas_country_pct": 97.5, "holdout_feed_40_city_rows": 7, "holdout_feed_other_city_right": 2}';;
 stamp) echo "$@" > "$(dirname "$0")/stamp-args"; cp "$3" "$7" 2>/dev/null; cat "$5" > "$(dirname "$0")/stamp-meta"
   [ -f "$(dirname "$0")/stamp-fail" ] && { echo "boom: bad file" >&2; echo more >&2; exit 1; }
   printf stamped >> "$7";;
@@ -661,6 +662,14 @@ esac`
 		meta, _ := os.ReadFile(filepath.Join(p.DataDir, "stamp-meta"))
 		if strings.Contains(string(meta), "references") {
 			t.Errorf("meta %s holds references", meta)
+		}
+		// The per-feed holdout keys stay in the task output and out of the stamp
+		// (the exact "metrics" object below has none).
+		if out.Metrics["holdout_feed_40_city_rows"] != 7 || out.Metrics["holdout_feed_other_city_right"] != 2 {
+			t.Errorf("task output lost the per-feed keys: %v", out.Metrics)
+		}
+		if strings.Contains(string(meta), "holdout_feed_") {
+			t.Errorf("meta %s holds per-feed keys", meta)
 		}
 		for _, part := range []string{`"date_tag":"2026-11-10"`, `"eval_id":0`, `"eval_error":true`, `"metrics":{"atlas_country_pct":97.5}`} {
 			if !strings.Contains(string(meta), part) {
