@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"net/netip"
 	"strings"
 	"testing"
@@ -152,9 +153,123 @@ func TestRobotsAndLLMsMentionJSON(t *testing.T) {
 		t.Errorf("robots.txt: %q", b)
 	}
 	b := get(s, "GET", "/llms.txt").Body.String()
-	for _, x := range []string{"/json:", "/json/<ip>:", "/<country>-asn-list"} {
+	for _, x := range []string{"/json/8.8.8.8", "/<country>-asn-list"} {
 		if !strings.Contains(b, x) {
 			t.Errorf("llms.txt lacks %s", x)
 		}
+	}
+}
+
+func TestIsCLI(t *testing.T) {
+	for ua, want := range map[string]bool{
+		"curl/8.7.1": true, "Wget/1.21": true, "HTTPie/3.2": true, "CURL/8": true,
+		"Go-http-client/1.1": true, "Go-http-client/2.0": true, "python-requests/2.32.3": true, "Python-urllib/3.12": true,
+		"python-httpx/0.27.0": true, "Python/3.12 aiohttp/3.9.5": true, "node": true,
+		"node-fetch/1.0 (+https://github.com/bitinn/node-fetch)": true, "undici": true, "axios/1.7.2": true,
+		"got (https://github.com/sindresorhus/got)": true, "Deno/1.45.0": true, "Bun/1.1.20": true,
+		"Mozilla/5.0 Chrome/120.0 Safari/537.36 Edg/120.0": false, "Mozilla/5.0 (compatible; Googlebot/2.1)": false,
+		"Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Version/17 Safari/605.1.15": false,
+		"Mozilla/5.0 Chrome/120.0 Safari/537.36":                                  false,
+		"Mozilla/5.0 (X11; Linux) Gecko/20100101 Firefox/121.0":                   false,
+		"": false, "libcurl-agent": false, "NodePing": false, "nodejs-monitor": false, "undici/6.0": true,
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Header.Set("User-Agent", ua)
+		if isCLI(r) != want {
+			t.Errorf("isCLI(%q) = %v", ua, !want)
+		}
+	}
+}
+
+func TestCLIHome(t *testing.T) {
+	s := fixtureServer(t)
+	const curl, chrome = "curl/8.7.1", "Mozilla/5.0 Chrome/120.0 Safari/537.36"
+	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9", "User-Agent", curl)
+	if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Vary") != "User-Agent" ||
+		!strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("curl /: %d %v", w.Code, w.Header())
+	}
+	if m := jsonBody(t, w.Body.String()); m["ip"] != "203.0.113.9" {
+		t.Errorf("ip = %v", m["ip"])
+	}
+	r := httptest.NewRequest("HEAD", "/", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("X-Real-IP", "203.0.113.9")
+	r.Header.Set("User-Agent", curl)
+	hw := httptest.NewRecorder()
+	s.ServeHTTP(hw, r)
+	if hw.Code != 200 || hw.Body.Len() != 0 {
+		t.Errorf("HEAD: %d %q", hw.Code, hw.Body)
+	}
+	w = fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9", "User-Agent", chrome)
+	if !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") || w.Header().Get("Vary") != "User-Agent" {
+		t.Errorf("browser /: %v", w.Header())
+	}
+	w = fromPeer(s, "/?203.0.113.9", "127.0.0.1:1", "X-Real-IP", "203.0.113.9", "User-Agent", curl)
+	if !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("curl lookup page: %v", w.Header())
+	}
+	w = fromPeer(s, "/", "127.0.0.1:1", "User-Agent", curl)
+	if w.Code != 503 || jsonBody(t, w.Body.String())["error"] == nil {
+		t.Errorf("unknown: %d %s", w.Code, w.Body)
+	}
+}
+
+func TestCLIIPHosts(t *testing.T) {
+	s := fillServer(t, u4, u6)
+	const curl, chrome = "curl/8.7.1", "Mozilla/5.0 Chrome/120.0 Safari/537.36"
+	for _, c := range []struct {
+		url, ua string
+		json    bool
+	}{
+		{"http://v4.openipdata.org/ip", curl, true},
+		{"https://V6.OPENIPDATA.ORG:443/ip", curl, true},
+		{"http://v4.openipdata.org/ip", chrome, false},
+		{"http://openipdata.org/ip", curl, false},
+	} {
+		w := fromPeer(s, c.url, "127.0.0.1:1", "X-Real-IP", "203.0.113.9", "User-Agent", c.ua)
+		if w.Header().Get("Vary") != "User-Agent" {
+			t.Errorf("%s: no Vary", c.url)
+		}
+		if c.json {
+			if w.Code != 200 || jsonBody(t, w.Body.String())["ip"] != "203.0.113.9" {
+				t.Errorf("%s: %d %q", c.url, w.Code, w.Body)
+			}
+		} else if w.Body.String() != "203.0.113.9\n" {
+			t.Errorf("%s %s: %q", c.url, c.ua, w.Body)
+		}
+	}
+}
+
+func TestCLIIPHostEdges(t *testing.T) {
+	s := fillServer(t, u4, "http://[::1]/")
+	for _, host := range []string{"[::1]", "[::1]:80"} {
+		w := fromPeer(s, "http://"+host+"/ip", "127.0.0.1:1", "X-Real-IP", "203.0.113.9", "User-Agent", "curl/8")
+		if w.Code != 200 || jsonBody(t, w.Body.String())["ip"] != "203.0.113.9" {
+			t.Errorf("%s: %d %q", host, w.Code, w.Body)
+		}
+	}
+	// A non-public address on the family host: 400 JSON.
+	w := fromPeer(s, "http://v4.openipdata.org/ip", "127.0.0.1:1", "X-Real-IP", "10.0.0.1", "User-Agent", "curl/8")
+	if w.Code != 400 || jsonBody(t, w.Body.String())["error"] != "not a public address" {
+		t.Errorf("private: %d %q", w.Code, w.Body)
+	}
+}
+
+// A command-line client on the family host never adds its address to a report.
+func TestCLIIPHostSkipsReport(t *testing.T) {
+	s, m := shareServer(t)
+	id := share(t, s, "203.0.113.9", "")
+	w := fromPeer(s, "http://v6.openipdata.org/ip?r="+id, "127.0.0.1:1", "X-Real-IP", "2001:db8::9", "User-Agent", "curl/8")
+	if w.Code != 200 || jsonBody(t, w.Body.String())["ip"] != "2001:db8::9" {
+		t.Fatalf("%d %q", w.Code, w.Body)
+	}
+	if m.snapshot(t, id).Other != "" {
+		t.Error("curl added other_ip")
+	}
+	// A browser on the same name does add it.
+	fromPeer(s, "http://v6.openipdata.org/ip?r="+id, "127.0.0.1:1", "X-Real-IP", "2001:db8::9", "User-Agent", "Mozilla/5.0 Chrome/120")
+	if m.snapshot(t, id).Other != "2001:db8::9" {
+		t.Error("browser did not add other_ip")
 	}
 }

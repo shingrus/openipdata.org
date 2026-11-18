@@ -219,6 +219,22 @@ func (s *server) llmsText() string {
 	var b strings.Builder
 	b.WriteString("# openipdata.org\n\n")
 	b.WriteString("> Free IP geolocation and ASN database at city level. Public domain (CC0), no signup, no API key. Accuracy is measured and published on the home page.\n\n")
+	b.WriteString("## Quick start (agents, LLMs)\n\n")
+	b.WriteString("Every answer is JSON.\n\n```sh\n")
+	cmds := [][2]string{
+		{"curl -sL " + o, "# your own IP"},
+		{"curl -sL " + o + "/json/8.8.8.8", "# any IP"},
+		{"curl -sL " + o + "/json/1.1.1.1,8.8.8.8", "# up to 100, in order"},
+		{"curl -s --data-binary @ips.txt " + o + "/json", "# up to 1000, one per line"},
+	}
+	col := 0
+	for _, c := range cmds {
+		col = max(col, len(c[0]))
+	}
+	for _, c := range cmds {
+		b.WriteString(c[0] + strings.Repeat(" ", col+2-len(c[0])) + c[1] + "\n")
+	}
+	b.WriteString("```\n\nFields: `" + strings.Join(ipJSONFields, "`, `") + "`. A field is absent when unknown. An address that cannot be looked up gives `{\"ip\" or \"input\", \"error\"}` instead (a list keeps its place).\n\n")
 	b.WriteString("## Download\n\n")
 	for _, f := range []struct{ name, what string }{
 		{geoFile, "IP to country, city and coordinates (MMDB)"},
@@ -247,10 +263,6 @@ func (s *server) llmsText() string {
 	b.WriteString("- " + o + "/asn-<slug>/prefixes.txt: the prefixes of one organization, one per line\n")
 	b.WriteString("- " + o + "/prefix/<cidr>: one announced prefix\n")
 	b.WriteString("- " + o + "/api/as<number>: one network as JSON\n")
-	b.WriteString("- " + o + "/json: your own address as JSON (country, city, coordinates, network)\n")
-	b.WriteString("- " + o + "/json/<ip>: one address as JSON\n")
-	b.WriteString("- " + o + "/json/<ip>,<ip>: up to 100 addresses as a JSON array, one entry per address, in order\n")
-	b.WriteString("- POST " + o + "/json: up to 1000 addresses in the body (text or a JSON array of strings), the same JSON array\n")
 	b.WriteString("- " + o + "/<country>-asn-list: the networks of one country (for example /united-kingdom-asn-list)\n")
 	return b.String()
 }

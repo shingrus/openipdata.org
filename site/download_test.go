@@ -7,9 +7,11 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http/httptest"
 	"net/netip"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -199,7 +201,7 @@ func TestLLMsTxt(t *testing.T) {
 		t.Fatalf("%d %v", w.Code, w.Header())
 	}
 	for _, want := range []string{
-		"# openipdata.org\n", "\n> ",
+		"# openipdata.org\n", "\n> ", "## Quick start (agents, LLMs)\n", "\ncurl -sL https://openipdata.org  ", "Fields: `ip`, `country_code`,", "A field is absent when unknown.", "gives `{\"ip\" or \"input\", \"error\"}` instead",
 		releaseBase + "ip2geo-openipdata.mmdb", releaseBase + "ip2asn-openipdata.mmdb", releaseBase + "asn-openipdata.sqlite3",
 		geoFields, asnFields, "not into GeoLite2 model classes", "Any field can be absent (often the city and the coordinates).", "any of them can be absent", "GeoNames (CC BY 4.0)", cc0URL,
 		"https://openipdata.org/download", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/list-of-countries-by-ipv4-allocation",
@@ -254,5 +256,43 @@ func TestGoExampleImports(t *testing.T) {
 		if !used {
 			t.Errorf("import %s is not used", name)
 		}
+	}
+}
+
+func TestIPJSONFieldsMatchStruct(t *testing.T) {
+	want := []string{"ip", "country_code", "country_name", "city_name", "latitude", "longitude", "asn", "as_name", "org", "prefix"}
+	if strings.Join(ipJSONFields, ",") != strings.Join(want, ",") {
+		t.Errorf("fields %v", ipJSONFields)
+	}
+	ef := jsonNames(errJSON{})
+	if strings.Join(ef, ",") != "ip,input,error" {
+		t.Errorf("error fields %v", ef)
+	}
+	// llms.txt names them in its error sentence, so a renamed tag fails here.
+	s, _ := asnServer(t)
+	llms := get(s, "GET", "/llms.txt").Body.String()
+	for _, f := range ef {
+		if !strings.Contains(llms, `"`+f+`"`) {
+			t.Errorf("llms.txt error sentence lacks %q", f)
+		}
+	}
+	// Every key the answer can have is in the list, nothing else.
+	s.public = func(a netip.Addr) bool { return !a.IsLoopback() && !a.IsPrivate() }
+	m := jsonBody(t, get(s, "GET", "/json/203.0.113.9").Body.String())
+	for k := range m {
+		if !slices.Contains(ipJSONFields, k) {
+			t.Errorf("key %q not in the list", k)
+		}
+	}
+}
+
+func TestPostJSONPlainList(t *testing.T) {
+	s, _ := asnServer(t)
+	r := httptest.NewRequest("POST", "/json", strings.NewReader("1.1.1.1\n8.8.8.8\n"))
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	var arr []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &arr); err != nil || w.Code != 200 || len(arr) != 2 {
+		t.Errorf("%d %q", w.Code, w.Body)
 	}
 }

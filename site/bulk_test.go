@@ -382,7 +382,7 @@ func TestBulkSEO(t *testing.T) {
 		t.Error("sitemap")
 	}
 	l := get(s, "GET", "/llms.txt").Body.String()
-	for _, want := range []string{"/bulk-ip-lookup", "/json/<ip>,<ip>", "POST https://openipdata.org/json"} {
+	for _, want := range []string{"/bulk-ip-lookup", "/json/1.1.1.1,8.8.8.8", "-s --data-binary @ips.txt https://openipdata.org/json"} {
 		if !strings.Contains(l, want) {
 			t.Errorf("llms.txt lacks %q", want)
 		}

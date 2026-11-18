@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"reflect"
 	"strings"
 	"unicode"
 )
@@ -28,6 +29,19 @@ type ipJSON struct {
 	ASName      string   `json:"as_name,omitempty"`
 	Org         string   `json:"org,omitempty"`
 	Prefix      string   `json:"prefix,omitempty"`
+}
+
+// ipJSONFields are the JSON field names of ipJSON in struct order (for llms.txt),
+// read from the tags once at start so the list cannot drift from the struct.
+var ipJSONFields = jsonNames(ipJSON{})
+
+func jsonNames(v any) []string {
+	t := reflect.TypeOf(v)
+	var out []string
+	for i := 0; i < t.NumField(); i++ {
+		out = append(out, strings.Split(t.Field(i).Tag.Get("json"), ",")[0])
+	}
+	return out
 }
 
 // ipJSONFor is the answer for a public address, from the same lookups the
@@ -128,6 +142,49 @@ func (s *server) postJSON(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// cliPrefixes and cliExact are the User-Agents of command-line clients and
+// common HTTP libraries: curl, wget, httpie; Go net/http; Python requests,
+// urllib, httpx, aiohttp; Node (node-fetch, undici, axios, got, Deno, Bun).
+// Node's own fetch sends exactly "node" and undici exactly "undici", so those
+// two match whole (a monitor such as NodePing is not a client). A browser never
+// starts with any of them, so fetch() of the page is unaffected.
+var (
+	cliPrefixes = []string{"curl/", "wget/", "httpie/", "go-http-client/", "python", "node-fetch/", "undici/", "axios/", "got ", "deno/", "bun/"}
+	cliExact    = []string{"node", "undici"}
+)
+
+// isCLI says whether the request comes from a command-line client or an HTTP
+// library by its User-Agent (case-insensitive, no allocation); nothing else is guessed.
+func isCLI(r *http.Request) bool {
+	ua := r.UserAgent()
+	for _, p := range cliPrefixes {
+		if len(ua) >= len(p) && strings.EqualFold(ua[:len(p)], p) {
+			return true
+		}
+	}
+	for _, e := range cliExact {
+		if strings.EqualFold(ua, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// serveOwnJSON answers with the JSON of the visitor's own address (the same
+// clientAddr rules as /ip); used by /json and, for command-line clients, by
+// "/" and by /ip on the v4 and v6 names.
+func (s *server) serveOwnJSON(w http.ResponseWriter, r *http.Request) {
+	a, ok := clientAddr(r, s.realIP)
+	switch {
+	case !ok:
+		writeIPJSON(w, r, http.StatusServiceUnavailable, "no-store", errJSON{Error: "unknown address"})
+	case !s.public(a):
+		writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{IP: a.String(), Error: "not a public address"})
+	default:
+		writeIPJSON(w, r, http.StatusOK, "no-store", s.ipJSONFor(a))
+	}
+}
+
 // serveIPJSON answers /json and /json/<ip> (GET and HEAD).
 func (s *server) serveIPJSON(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/json"), "/")
@@ -149,16 +206,8 @@ func (s *server) serveIPJSON(w http.ResponseWriter, r *http.Request) {
 		s.postJSON(w, r)
 		return
 	}
-	if rest == "" { // the visitor's own address
-		a, ok := clientAddr(r, s.realIP)
-		switch {
-		case !ok:
-			writeIPJSON(w, r, http.StatusServiceUnavailable, "no-store", errJSON{Error: "unknown address"})
-		case !s.public(a):
-			writeIPJSON(w, r, http.StatusBadRequest, "no-store", errJSON{IP: a.String(), Error: "not a public address"})
-		default:
-			writeIPJSON(w, r, http.StatusOK, "no-store", s.ipJSONFor(a))
-		}
+	if rest == "" {
+		s.serveOwnJSON(w, r)
 		return
 	}
 	if strings.Contains(rest, "/") { // anything after the address

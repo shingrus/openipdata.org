@@ -56,7 +56,7 @@ var pageBudgets = []pageBudget{
 	{"/asn-huge-net/prefixes.txt", 100, 70, 60000, 2000 * time.Microsecond},                // 13, 34, 35956, 24µs
 	{"/sitemap.xml", 550, 250, 20000, 2000 * time.Microsecond},                             // 425, 191, 6695, 1µs
 	{"/sitemap-networks-1.xml", 38000, 2000, 80000, 2000 * time.Microsecond},               // 34295, 1812, 47277, 3µs
-	{"/llms.txt", 3000, 1130, 20000, 2000 * time.Microsecond},                              // 2604, 999, 8880, 1µs
+	{"/llms.txt", 3400, 1310, 20000, 2000 * time.Microsecond},                              // 3078, 1190, 9392, 1µs; raised 2026-11-18 for the agent Quick start (owner)
 	{"/robots.txt", 200, 150, 10000, 2000 * time.Microsecond},                              // 124, 107, 6319, 1µs
 }
 

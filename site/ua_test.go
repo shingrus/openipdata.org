@@ -121,7 +121,7 @@ func TestBrowserRowPage(t *testing.T) {
 		t.Error("the Browser row is not after Organization")
 	}
 	// Unknown browser and system: a dash and the button; an empty User-Agent too.
-	for _, ua := range []string{"curl/8.7.1", ""} {
+	for _, ua := range []string{"libcurl-agent", ""} {
 		r := vis(ua)
 		row := r[strings.Index(r, "<dt>Browser</dt>"):]
 		row = row[:strings.Index(row, "</dd>")]

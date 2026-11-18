@@ -95,28 +95,29 @@ type server struct {
 	fonts  map[string][]byte
 	scores atomic.Pointer[scores]
 
-	geo, asn   *mmdbFile // kept open for lookups
-	asnf       *asnFile  // the ASN data (SQLite), loaded into memory; nothing loaded until useASN
-	realIP     string    // header that holds the visitor address, or ""
-	v4, v6     string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
-	cspFill    string    // csp of a page that has the fill script
-	cspRes     string    // csp of a page that has the DNS row script
-	cspBoth    string    // csp of a page that has both scripts
-	origins    []string  // origins of V4_URL and V6_URL
-	zone       string    // names of the DNS row are <token>.<zone>; empty = no DNS row
-	redis      *redisClient
-	share      bool                      // SHARE: save a snapshot of every visit and serve /report/<id> (needs Redis)
-	origin     string                    // SITE_ORIGIN: the origin of the share links
-	seo        atomic.Pointer[seoStatic] // robots.txt, llms.txt and the fixed sitemaps for s.origin
-	dl         dlCache                   // the rendered /download page
-	bulk       bulkCache                 // the rendered GET /bulk-ip-lookup page
-	shareMu    [64]sync.Mutex            // updates of one report run one after another (see updateReport)
-	cspPnl     [8]string                 // csp of a page that has panel.js, by fill (1), res (2) and the Share button (4)
-	public     func(netip.Addr) bool
-	world      *world           // country outlines for the map, decoded once at start
-	placeLimit int              // most MMDB records read for the places of a prefix page
-	started    time.Time        // when this process started (the status page)
-	now        func() time.Time // the clock of the status page; time.Now
+	geo, asn    *mmdbFile // kept open for lookups
+	asnf        *asnFile  // the ASN data (SQLite), loaded into memory; nothing loaded until useASN
+	realIP      string    // header that holds the visitor address, or ""
+	familyHosts []string  // host names of V4_URL and V6_URL: /ip answers command-line clients there with JSON
+	v4, v6      string    // URLs that answer with the visitor's IPv4 / IPv6 address, or ""
+	cspFill     string    // csp of a page that has the fill script
+	cspRes      string    // csp of a page that has the DNS row script
+	cspBoth     string    // csp of a page that has both scripts
+	origins     []string  // origins of V4_URL and V6_URL
+	zone        string    // names of the DNS row are <token>.<zone>; empty = no DNS row
+	redis       *redisClient
+	share       bool                      // SHARE: save a snapshot of every visit and serve /report/<id> (needs Redis)
+	origin      string                    // SITE_ORIGIN: the origin of the share links
+	seo         atomic.Pointer[seoStatic] // robots.txt, llms.txt and the fixed sitemaps for s.origin
+	dl          dlCache                   // the rendered /download page
+	bulk        bulkCache                 // the rendered GET /bulk-ip-lookup page
+	shareMu     [64]sync.Mutex            // updates of one report run one after another (see updateReport)
+	cspPnl      [8]string                 // csp of a page that has panel.js, by fill (1), res (2) and the Share button (4)
+	public      func(netip.Addr) bool
+	world       *world           // country outlines for the map, decoded once at start
+	placeLimit  int              // most MMDB records read for the places of a prefix page
+	started     time.Time        // when this process started (the status page)
+	now         func() time.Time // the clock of the status page; time.Now
 }
 
 // useURLs sets V4_URL and V6_URL (already checked) and the policy of the pages
@@ -124,9 +125,11 @@ type server struct {
 func (s *server) useURLs(v4, v6 string) {
 	s.v4, s.v6 = v4, v6
 	var origins []string
+	s.familyHosts = nil
 	for _, u := range []string{v4, v6} {
 		if u != "" {
 			x, _ := url.Parse(u)
+			s.familyHosts = append(s.familyHosts, strings.ToLower(x.Hostname()))
 			if o := x.Scheme + "://" + x.Host; !slices.Contains(origins, o) {
 				origins = append(origins, o)
 			}
@@ -302,6 +305,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case p == "/":
+		if r.URL.RawQuery == "" { // the answer depends on the client, a lookup page never does
+			w.Header().Add("Vary", "User-Agent")
+			if isCLI(r) {
+				s.serveOwnJSON(w, r)
+				return
+			}
+		}
 		s.serveHome(w, r)
 	case p == "/ip":
 		s.serveIP(w, r)
@@ -467,8 +477,15 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 // serveIP answers "/ip": the visitor's own address and a newline, nothing
 // else, for the page to read from the names that have one address family only.
 // Any site may read it (it is only the requester's own address). Never logged.
+// A command-line client on the v4 or v6 name gets the JSON instead; the
+// page's script (a browser) keeps the plain address.
 func (s *server) serveIP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
+	h.Add("Vary", "User-Agent")
+	if isCLI(r) && s.onFamilyHost(r) {
+		s.serveOwnJSON(w, r)
+		return
+	}
 	h.Set("Cache-Control", "no-store")
 	h.Set("Access-Control-Allow-Origin", "*")
 	h.Set("Content-Type", "text/plain; charset=utf-8")
@@ -485,6 +502,17 @@ func (s *server) serveIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodHead {
 		w.Write([]byte(body))
 	}
+}
+
+// onFamilyHost says whether the request was made to the V4_URL or V6_URL name.
+func (s *server) onFamilyHost(r *http.Request) bool {
+	h := strings.ToLower(r.Host)
+	if x, _, err := net.SplitHostPort(h); err == nil {
+		h = x
+	} else {
+		h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]") // "[::1]" without a port
+	}
+	return slices.Contains(s.familyHosts, h)
 }
 
 func plain(w http.ResponseWriter, code int, body string) {
