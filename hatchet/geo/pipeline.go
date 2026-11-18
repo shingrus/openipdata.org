@@ -40,6 +40,10 @@
 //	              geofeed layer): every announced prefix of an ASN whose own geofeed rows
 //	              put 80% of their addresses in one city; applied only where the earlier
 //	              layers give the same country; skipped while there are no such ASNs
+//	39-github-geofeeds  sync-geofeeds (private R2): the rows of geofeed files in public GitHub
+//	              repositories whose name contains "geofeed" that no whois record links; applied
+//	              only where the earlier layers give the same country; skipped while the object is
+//	              missing or older than 14 days (the health check ping is still sent)
 //	40-hosting    hosting networks whose PeeringDB facilities are all in one city: that
 //	              city and country for every announced prefix (Postgres); applied only
 //	              where the RIR stats give the same country, so it can only change a
@@ -147,25 +151,26 @@ const (
 // usually right (measured: 4% of geoloc /24s lie in another country than the
 // geofeed truth).
 var layerRules = map[string]string{
-	PDBLayer:       "-same-country",
-	RDNSWideLayer:  "-same-country",
-	HostingLayer:   "-first-country",
-	WhoisLayer:     "-within-first",
-	MLabLayer:      "-same-country",
-	ARINLayer:      "-same-country",
-	WhoisTextLayer: "-same-country",
-	RDNSLayer:      "-same-country",
-	RDNSNamesLayer: "-same-country",
-	FeedsLayer:     "-within-first",
-	ASNFeedLayer:   "-same-country",
-	BGPLayer:       "-same-country",
+	PDBLayer:         "-same-country",
+	RDNSWideLayer:    "-same-country",
+	HostingLayer:     "-first-country",
+	WhoisLayer:       "-within-first",
+	MLabLayer:        "-same-country",
+	ARINLayer:        "-same-country",
+	WhoisTextLayer:   "-same-country",
+	RDNSLayer:        "-same-country",
+	RDNSNamesLayer:   "-same-country",
+	FeedsLayer:       "-within-first",
+	ASNFeedLayer:     "-same-country",
+	GitHubFeedsLayer: "-same-country",
+	BGPLayer:         "-same-country",
 }
 
 // optionalLayers may be missing: a run without one is reported in
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
+var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, GitHubFeedsLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -455,6 +460,11 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 
 	// 15. The cities named by whois descriptions (sync-geofeeds' layer file in R2), put in as it is.
 	if err := p.downloadWhoisText(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
+		return src, err
+	}
+
+	// 16. The geofeed files found in GitHub repositories (sync-geofeeds' layer file in R2), put in as it is.
+	if err := p.downloadGitHubFeeds(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
 		return src, err
 	}
 	return src, nil

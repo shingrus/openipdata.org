@@ -1,5 +1,6 @@
 // Package geofeeds is the sync-geofeeds workflow: it finds every geofeed URL
-// that whois data, IRR data, and public lists point to, and checks each feed.
+// that whois data, IRR data, public lists, ASN websites and public GitHub repositories
+// point to, and checks each feed.
 package geofeeds
 
 import (
@@ -26,6 +27,8 @@ type Pipeline struct {
 	Progress func(string)
 	R2       string // private bucket for the rows files (see RowsKey, WhoisRowsKey)
 	PGSQL    string // Postgres DSN: public.geofeed_urls (written here), public.asn_domain and public.asn (read by probe-domains)
+	// GitHubToken (optional) is sent to the GitHub API by search-github, never anywhere else.
+	GitHubToken string
 
 	// Overridden in tests.
 	dumps        []dump
@@ -40,6 +43,12 @@ type Pipeline struct {
 	domainRows  func(ctx context.Context) ([]asnDomain, error)
 	asnPrefixes func(ctx context.Context, asns []int64) (map[int64][]netip.Prefix, error)
 	candidates  func(domain string) []string
+	// search-github: the API and raw file hosts, no pause between search requests, and the
+	// number of repositories listed per run (0: the default).
+	ghAPI, ghRaw string
+	ghNoWait     bool
+	ghBudget     int
+	ghRunTime    time.Duration // the soft time budget of search-github (0: the default)
 }
 
 func (p *Pipeline) clock() time.Time {
@@ -249,6 +258,23 @@ func (p *Pipeline) Discover(ctx context.Context) (DiscoverOutput, error) {
 	}
 	out.Sources[sourceDomain] = SourceStats{Status: "probed", URLs: len(domainURLs)}
 	p.log("discover: domain: %d URLs", len(domainURLs))
+
+	// Feeds that search-github found in GitHub repositories: no blocks either, and export-rows
+	// writes them to their own layer (see exportGitHub). No file: none yet; an unreadable one is
+	// logged and adds none.
+	ghURLs, err := githubFeedURLs(filepath.Join(p.dir(), GitHubFile))
+	if err != nil {
+		p.log("discover: github: %v", err)
+	}
+	for _, u := range ghURLs {
+		c.add(sourceGitHub, u, netip.Prefix{})
+	}
+	ghStats := SourceStats{Status: "searched", URLs: len(ghURLs)}
+	if err != nil {
+		ghStats.Error = err.Error()
+	}
+	out.Sources[sourceGitHub] = ghStats
+	p.log("discover: github: %d URLs", len(ghURLs))
 
 	listClient := newHTTPClient(2*time.Minute, p.allowPrivate)
 	listed, pages := parseFeedList(listedFeeds)

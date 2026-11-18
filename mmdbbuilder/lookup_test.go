@@ -124,8 +124,10 @@ func sourcesDB(t *testing.T, dir string) string {
 		"20.0.5.0/24,DE,,Bonn,whois-text:ripe\n")
 	l6 := writeFile(t, filepath.Join(dir, "37-whois-arin.csv.gz"), "prefix,country,region,city,source\n"+
 		"20.0.6.0/24,DE,,Cologne,whois-city:arin\n")
+	l7 := writeFile(t, filepath.Join(dir, "39-github-geofeeds.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.7.0/24,DE,,Hanover,https://raw.githubusercontent.com/x/geofeed/main/geofeed.csv\n")
 	db := filepath.Join(dir, "sources.mmdb")
-	if _, err := buildGeo([]string{l1, l2, l3, l6, l5, l4}, "", db, false, nil, nil, nil, nil, ""); err != nil {
+	if _, err := buildGeo([]string{l1, l2, l3, l6, l5, l7, l4}, "", db, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -172,7 +174,7 @@ func TestWriteCitiesKeepsWhoisText(t *testing.T) {
 	}
 }
 
-// A /24 whose city comes from 25-bgp, 36-mlab, 37-whois-arin or 37-whois-text is still a gap (20.0.5.0/24 and 20.0.6.0/24 are inside the last run); one from a geofeed is not.
+// A /24 whose city comes from 25-bgp, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds is still a gap (20.0.5.0/24, 20.0.6.0/24 and 20.0.7.0/24 are inside the last run); one from a geofeed is not.
 func TestGapsWeakSources(t *testing.T) {
 	dir := t.TempDir()
 	db := sourcesDB(t, dir)

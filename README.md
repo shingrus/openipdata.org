@@ -145,15 +145,16 @@ inetnums, and the cities that the free text of RIPE and AFRINIC inetnums and the
 |---|---|---|
 | `rdap-lookups` | | checks the R2 settings (unless `skip_upload`), then looks up due ARIN, Brazil (registro.br) and Mexico (LACNIC) blocks over RDAP, within a budget per run; runs beside the other tasks |
 | `probe-domains` | | needs `PGSQL` (and checks the R2 settings, unless `skip_upload`); reads the ASN website domains from `public.asn_domain` and probes the due ones for a geofeed at the usual paths, within a budget per run; runs beside the other tasks |
-| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums and the whois text layer from the text of the RIPE and AFRINIC ones and the `city:` line of the LACNIC ones), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the built-in feed list (and the feed links on its pages), and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them, `out/60-whois.csv.gz` and `out/37-whois-text.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
+| `search-github` | | needs no database; searches public GitHub repositories whose name contains `geofeed` (GitHub API, `GITHUB_TOKEN` optional), lists the files of the new or changed ones and keeps the files that read as a geofeed in `github.json`, within a budget per run (40 repositories without a token, 1000 with one); a GitHub problem never fails it; runs beside the other tasks |
+| `discover` | | needs `PGSQL`; reads the whois and IRR dumps (and builds the whois geoloc layer from their `geoloc` inetnums and the whois text layer from the text of the RIPE and AFRINIC ones and the `city:` line of the LACNIC ones), the RDAP results saved so far, the domain-found feeds in `domain-prefixes.csv`, the GitHub feeds in `github.json`, the built-in feed list (and the feed links on its pages), and CAIDA's lists; adds the URLs to `public.geofeed_urls` and writes the blocks that point to them, `out/60-whois.csv.gz` and `out/37-whois-text.csv.gz` (also checks the R2 settings first, unless `skip_upload`) |
 | `check-feeds` | `discover` | needs `PGSQL`; fetches every due feed in `public.geofeed_urls`, keeps a checked copy of each working one, stores the results in the table, and writes the lists |
-| `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them as `70-geofeeds.csv.gz` to R2; also uploads `60-whois.csv.gz` and `37-whois-text.csv.gz` (a problem with either never fails the task) |
+| `export-rows` | `check-feeds` | needs `PGSQL`; writes the rows of all working feeds (from `public.geofeed_urls`) that pass the ownership check, and uploads them as `70-geofeeds.csv.gz` to R2; also uploads `60-whois.csv.gz` and `37-whois-text.csv.gz`, and writes and uploads the rows of the feeds that only `search-github` found as `39-github-geofeeds.csv.gz` (a problem with any of these three never fails the task) |
 
-`rdap-lookups` and `probe-domains` have no child task: they run at the same time as `discover` → `check-feeds` →
+`rdap-lookups`, `probe-domains` and `search-github` have no child task: they run at the same time as `discover` → `check-feeds` →
 `export-rows` (about 40 minutes), so the rows reach R2 without waiting for the RDAP pass (up to
-2 hours). `discover` uses the results already in `rdap.jsonl` and the feeds in `domain-prefixes.csv`; what
+2 hours). `discover` uses the results already in `rdap.jsonl`, the feeds in `domain-prefixes.csv` and the files in `github.json`; what
 this run finds is picked up by the next one (a domain-found feed only after the `probe-domains` run that
-found it has finished). The run ends when all tasks have ended. `run-geofeeds` does the same.
+found it has finished; a GitHub feed after the `search-github` run that found it, and after `check-feeds` has fetched it). The run ends when all tasks have ended. `run-geofeeds` does the same.
 
 - Whois dumps: RIPE and APNIC (`inetnum`, `inet6num`), AFRINIC, LACNIC. IRR dumps: RIPE, APNIC
   (`route`, `route6`), ARIN, LACNIC, and over FTP from RADB: RADB itself plus its copies of ALTDB,
@@ -334,6 +335,23 @@ found it has finished). The run ends when all tasks have ended. `run-geofeeds` d
   together and the LACNIC rows are about a quarter of the file, so a registry whose rows vanish holds the whole file back). Measured on RIPE Atlas (build of
   2026-11-16, real rebuild), the layer above the weak layers gave +384 right and -81 lost probes (net +303; right city
   54.8% to 57.0%, precision of all answers 56.6% to 58.7%); the layer's own city was right for 68% of the 995 probes it answers.
+- GitHub feeds (`search-github`, `39-github-geofeeds.csv.gz`, one of the layers of `build-geo-data`). Operators also publish geofeed files in
+  public GitHub repositories that no whois record links. `search-github` searches `GET /search/repositories?q=geofeed+in:name` (sorted
+  by update, 100 a page, at most 10 pages, 7 s between requests, 2 s with `GITHUB_TOKEN`), keeps a repository only when its `full_name`
+  is a plain `owner/repo`, it is not a fork, private, disabled or empty, the repository part contains `geofeed`, the default branch is a
+  plain name and the name does not look like a test or a blacklist (counted as `skipped_names` and `skipped_other`). A new repository, or one whose
+  `pushed_at` or default branch changed, is listed (`git/trees/<branch>?recursive=1`; at most 40 a run without a token, 1000 with one, then
+  `stopped: budget`, or `stopped: time` after 45 minutes, and the rest waits for the next run; never-tried repositories go first, then never-listed ones whose last try failed (oldest failure first, `failed_at`), then the changed ones, the one listed longest ago first, so daily pushers cannot starve the rest). A search answer with `incomplete_results` removes nothing in that run. A tree that is truncated or larger than the read limit is still listed and counted in `incomplete`. A 401 for the token drops it for the rest of the run (`token_rejected`; the anonymous wait and budget apply). Candidates are `.csv`, `.txt` and extension-less files of 20 bytes to 32 MB that are
+  not a readme, licence or RFC text and not in a test, vendor or example directory (geo/feed names first, at most 8 per repository); each is
+  fetched from `raw.githubusercontent.com` and kept when the feed parser finds a valid row in at least half of its data lines. The state is
+  `github.json` (per repository: `pushed_at`, branch, `listed_at`, `seen_at`, accepted paths); a repository the search stops returning stays
+  30 days. A transport error or a 5xx leaves a repository for the next run; a rate limit (a 429, or a 403 with a `Retry-After` header or `X-RateLimit-Remaining: 0`; a 429 from the raw host too, leaving that repository unlisted) ends the run (`stopped:
+  rate limited`) with the progress saved, while any other 403 or 451 on a tree (a blocked repository) lists it with no files and the run goes on; a failing first search page changes nothing. The token goes only to the API, never to the raw
+  host, and never into a log, output or error. `discover` adds each file URL with the source `github` and no block. `export-rows` keeps
+  feeds whose sources are exactly `github` out of `70-geofeeds.csv.gz` and its counts and gate, and writes their rows (same ownership
+  check; rows with no city are dropped and counted as `no_city`, because the layer is `-same-country` and a country-only row would erase a lower layer's city) to `out/39-github-geofeeds.csv.gz`, uploaded to `internal/layers/39-github-geofeeds.csv.gz` (`github` in its output; own state file
+  `github-upload.json`; no first-upload minimum and no drop limit, since three feeds carry almost all of its rows and one moving to `70-geofeeds` is normal; a problem never fails the task). A github-only feed is skipped as a duplicate when
+  a feed of `public.geofeed_urls` that is not github-only and was just read is in the same GitHub repository (a dead URL does not count) or has the same stored rows, and nothing is written for a row with no city or one broader than a /16 (IPv4) or a /32 (IPv6; `too_broad`). Only feeds whose stored copy was just read count for the same-repository rule. Without a github-only feed the file is removed and nothing is uploaded; the R2 object then stays and `build-geo-data` keeps using it until it is 14 days old.
   Records broader than a /16 were right 32% of the time and are left out. The LACNIC rows (468,740, measured 2026-11-17 on top of that)
   gave +75 right and -33 lost probes (net +42) and were right for 60% of the 324 probes they answer; a `city:` value of 3 letters or
   fewer is not read (mostly abbreviations such as `MVD` or `SJO`).
@@ -536,12 +554,12 @@ together +882 right and +1,212 wrong probes (right city of all probes 48.1% to 5
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,
-`36-mlab.csv.gz`, `37-whois-arin.csv.gz`, `37-whois-text.csv.gz`, `38-asn-geofeed.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
+`36-mlab.csv.gz`, `37-whois-arin.csv.gz`, `37-whois-text.csv.gz`, `38-asn-geofeed.csv.gz`, `39-github-geofeeds.csv.gz`, `40-hosting.csv.gz`, `50-ix.csv.gz`, `60-whois.csv.gz`, `70-geofeeds.csv.gz`. `download` empties
 `/var/lib/openipdata/geo/layers/` and writes each source's file there through one shared writer (via a
 `.tmp` file); the two R2 layers are downloaded as they are. The build passes every `*.csv.gz` in the
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
-layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-arin`, `37-whois-text` and `38-asn-geofeed` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
+layer name (`layerRules`): `25-bgp`, `30-pdb`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed` and `39-github-geofeeds` `-same-country`, `40-hosting` `-first-country`, `60-whois` and
 `70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
 
 | Task | Runs after | Does |
@@ -657,7 +675,13 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
   `stale_layers` and skips the ping, so the owner is alerted. It is not one of the layers
   `download` must have (not in the `60-whois`/`70-geofeeds` list). The holdout build passes the layer as it is: it is not learned from the
   geofeed rows, so held-out feeds do not reach it. Measured on RIPE Atlas (build of 2026-11-16): +384 right and -81 lost probes (net +303).
-- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
+- `39-github-geofeeds` (optional, `-same-country`, between `38-asn-geofeed` and `40-hosting`, so `40-hosting`, `50-ix`, `60-whois`, `65-rdns`, `67-rdns-names` and `70-geofeeds` replace it) is
+  the rows of the geofeed files found in public GitHub repositories, written by `sync-geofeeds` (above) at `internal/layers/39-github-geofeeds.csv.gz` in the private R2 bucket. It adds
+  cities and never changes a country. `download` fetches it with the same Stat, ETag and saved-copy rule as the other R2 layers and puts it in the layers dir as it is. An object
+  older than 14 days, a missing object or any fetch error skips the layer (`skipped_layers`, a warning) and never skips the `HC_PING_GEO` ping. The holdout build leaves
+  the layer out (a copy of a held-out feed that differs by a row or by row order would bring the held-out cities back); the real build passes it. Measured on RIPE Atlas: +32 right and -7 lost probes where our city was weak, a guess or missing; right for 61% of 88 probes; against `70-geofeeds` cities it lost 4 probes and
+  gained none, so it sits below them.
+- The optional layers are `25-bgp`, `35-rdns-wide`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed`, `39-github-geofeeds`, `40-hosting`, `50-ix`, `60-whois`, `65-rdns` and `67-rdns-names`. One that is not in the build this run (no rows,
   no R2 object, or named in `skip_layers`) has no file, is listed in `skipped_layers` in the task output with a
   warning in the log, and is not passed to `mmdbbuilder` in the real build or the holdout build (both
   list the same directory). The rest of the sources are required and fail the run as before.
@@ -814,7 +838,7 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
-`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `36-mlab`, `37-whois-arin` or `37-whois-text` as no city too (like the four guesses `80-asn-main`, `82-asn-likely`, `84-asn-near` and `86-country-main`), so customer names keep being sampled there.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `36-mlab`, `37-whois-arin`, `37-whois-text` or `39-github-geofeeds` as no city too (like the four guesses `80-asn-main`, `82-asn-likely`, `84-asn-near` and `86-country-main`), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
 smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
 hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the
@@ -883,7 +907,7 @@ mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
-mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the four guesses 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main, or from 25-bgp, 36-mlab, 37-whois-arin or 37-whois-text counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the four guesses 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main, or from 25-bgp, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 

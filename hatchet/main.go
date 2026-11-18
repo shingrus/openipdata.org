@@ -28,7 +28,8 @@
 // openai/gpt-6.1-terra) and OPENROUTER_SECOND_MODEL (default openai/gpt-6-luna),
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
-// GITHUB_TOKEN, GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
+// GITHUB_TOKEN (the release uploads; also read by sync-geofeeds, for the GitHub repository search only),
+// GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
 // HC_PING_GEO and HC_PING_BGP (optional), MAXMIND_LICENSE_KEY (optional secret: the
 // MaxMind GeoLite2 City reference of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // PTR_RESOLVER (optional, host:port of a local recursive resolver on loopback, e.g. 127.0.0.1:5335: the PTR
@@ -125,7 +126,7 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 36-mlab, 37-whois-arin, 37-whois-text, 38-asn-geofeed, 40-hosting, 50-ix, 60-whois,
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 36-mlab, 37-whois-arin, 37-whois-text, 38-asn-geofeed, 39-github-geofeeds, 40-hosting, 50-ix, 60-whois,
 	// 65-rdns and 67-rdns-names (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
@@ -298,7 +299,7 @@ func newDomainsPipeline(progress func(string)) *domains.Pipeline {
 
 // newGeofeedsPipeline reads the environment; progress receives log lines.
 func newGeofeedsPipeline(progress func(string)) *geofeeds.Pipeline {
-	return &geofeeds.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2"), PGSQL: pgsql()}
+	return &geofeeds.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2"), PGSQL: pgsql(), GitHubToken: env("GITHUB_TOKEN")}
 }
 
 // newRDNSPipeline reads the environment; progress receives log lines. scamper and
@@ -514,7 +515,7 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 // Nothing is published.
 func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-geofeeds",
-		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists + ASN website probes -> checked geofeed rows, whois geoloc rows and whois text rows in private R2"),
+		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists + ASN website probes + GitHub repositories -> checked geofeed rows, whois geoloc rows and whois text rows in private R2"),
 		hatchet.WithWorkflowCron("0 0 * * *"),
 		// Its own limit, not asn-db: it reads and writes no ASN table.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
@@ -525,7 +526,7 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	// discover reads whatever rdap.jsonl holds when it gets there; results found in
 	// this run reach the rows in the next one. The run ends when all tasks end.
 	// Each result is appended as it comes in, so a retry resumes where it stopped.
-	// probe-domains is the same: no parent, no child, results for the next run.
+	// probe-domains and search-github are the same: no parent, no child, results for the next run.
 	wf.NewTask("rdap-lookups", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.RDAPOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
 		if !input.SkipUpload {
@@ -552,6 +553,12 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		}
 		return p.ProbeDomains(ctx, input.DomainBudget)
 	}, taskRetry(hatchet.WithExecutionTimeout(3*time.Hour))...)
+
+	// Looks for geofeed files in public GitHub repositories (no database; the token is optional).
+	// It never fails for a GitHub problem, only for a file error.
+	wf.NewTask("search-github", func(ctx hatchet.Context, _ SyncGeofeedsInput) (geofeeds.GitHubOutput, error) {
+		return newGeofeedsPipeline(taskLog(ctx)).SearchGitHub(ctx)
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
 
 	discover := wf.NewTask("discover", func(ctx hatchet.Context, input SyncGeofeedsInput) (geofeeds.DiscoverOutput, error) {
 		p := newGeofeedsPipeline(taskLog(ctx))
@@ -970,7 +977,7 @@ func runDomains(ctx context.Context) error {
 }
 
 // runGeofeeds runs the sync-geofeeds tasks once, without Hatchet: rdap-lookups and
-// probe-domains beside the discover -> check-feeds -> export-rows chain.
+// probe-domains beside the discover -> check-feeds -> export-rows chain, after search-github.
 func runGeofeeds(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-geofeeds", flag.ExitOnError)
 	skipUpload := flags.Bool("skip-upload", false, "write the rows file but do not upload it")
@@ -990,6 +997,12 @@ func runGeofeeds(ctx context.Context, args []string) error {
 		if err := p.CheckUpload(); err != nil {
 			return err
 		}
+	}
+	// The GitHub search comes before discover, which reads what it saved. A problem is
+	// printed and the run goes on.
+	_, githubErr := p.SearchGitHub(ctx)
+	if githubErr != nil {
+		cliLog(fmt.Sprintf("geofeeds: search-github: %v", githubErr))
 	}
 	// Like the workflow: the RDAP lookups and the domain probes run beside discover ->
 	// check-feeds -> export-rows, which use the results saved so far. Wait for all
@@ -1013,7 +1026,7 @@ func runGeofeeds(ctx context.Context, args []string) error {
 	if err != nil {
 		cliLog(fmt.Sprintf("geofeeds: %v; waiting for the RDAP lookups and domain probes to finish", err))
 	}
-	return errors.Join(err, <-rdapDone, <-domainsDone)
+	return errors.Join(githubErr, err, <-rdapDone, <-domainsDone)
 }
 
 // runBGP runs the sync-bgp tasks once, in order, without Hatchet. With -mrt it reads a

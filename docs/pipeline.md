@@ -17,10 +17,10 @@ flowchart LR
   t_dom --> asn
   asn --> t_asn[(asn)]
   asn --> pub_asn[/ip2asn MMDB<br/>asn.sqlite3/]
-  whois[whois + IRR dumps, RDAP, CAIDA<br/>feeds.txt, ASN websites, geofeeds<br/>GeoNames] --> gf[sync-geofeeds<br/>00:00]
+  whois[whois + IRR dumps, RDAP, CAIDA<br/>feeds.txt, ASN websites, GitHub repos, geofeeds<br/>GeoNames] --> gf[sync-geofeeds<br/>00:00]
   t_dom --> gf
   gf --> t_gf[(geofeed_urls)]
-  gf --> r2[(R2: 37-whois-text<br/>60-whois, 70-geofeeds)]
+  gf --> r2[(R2: 37-whois-text, 39-github-geofeeds<br/>60-whois, 70-geofeeds)]
   ris[RIPE RIS routing table] --> bgp[sync-bgp<br/>03:40]
   bgp --> r2bgp[(R2: bgp communities)]
   r2bgp --> geo
@@ -81,7 +81,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `sync-peeringdb` | `download` → `compute-and-store` | `public.asn_geo_pdb`, `public.geo_ix_pdb` (one transaction; refuses a >10% shrink) | — |
 | `update-asn-domains` | `pdb-domains` → `rdap-domains` (≤3,000 ASNs a run) | `public.asn_domain` | — |
 | `build-asn-data` | `sync-source` → `ingest` → `build-mmdb` + `export-sqlite` → `publish` | `public.asn` (incl. `seen_at`) | `ip2asn-openipdata.mmdb`, `asn.sqlite3` |
-| `sync-geofeeds` | `rdap-lookups` and `probe-domains` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `37-whois-text`, `60-whois` and `70-geofeeds` to private R2 | nothing |
+| `sync-geofeeds` | `rdap-lookups`, `probe-domains` and `search-github` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `37-whois-text`, `39-github-geofeeds`, `60-whois` and `70-geofeeds` to private R2 | nothing |
 | `sync-bgp` | `download` → `extract` → `upload` | the BGP community values of every IPv4 prefix to private R2 (`internal/bgp/communities.csv.gz`) | nothing |
 | `sync-arin-whois` | `lookup` → `export` → `upload` | records file on the VM; layer `37-whois-arin` to private R2 (`internal/layers/37-whois-arin.csv.gz`) and a daily copy of the records (`internal/arin/records.csv.gz`) | nothing |
 | `import-mlab` | `import` → `resolve-names` → `locate` → `upload` | `public.mlab_hop_names`; layer `36-mlab` to private R2 (`internal/layers/36-mlab.csv.gz`) | nothing |
@@ -112,7 +112,8 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `publish` | uploads both to R2 `<date>/`, replaces the MMDB on the GitHub release, pings the health check |
 | `sync-geofeeds` | `rdap-lookups` | RDAP for due ARIN, registro.br and LACNIC (Mexico) blocks within a budget; results in `rdap.jsonl` |
 | | `probe-domains` | looks for a geofeed at the usual paths of ASN websites; found feeds and their ASNs' prefixes go to `domain-prefixes.csv` |
-| | `discover` | reads the whois and IRR dumps, saved RDAP results, domain-found feeds, `feeds.txt` and CAIDA's lists; adds every URL to `public.geofeed_urls`; writes the whois blocks that link feeds; builds `60-whois.csv.gz` from `geoloc:` and `37-whois-text.csv.gz` from the `descr:` and `netname:` text of RIPE and AFRINIC inetnums and the `city:` line of LACNIC inetnums (GeoNames is loaded first) |
+| | `search-github` | searches public GitHub repositories named like `geofeed`, lists the new or changed ones and keeps the files that read as a geofeed in `github.json` (`GITHUB_TOKEN` optional: 40 repositories a run without it, 1000 with it; never-tried repositories first, then failed ones, then the changed ones, oldest listed first; a 45-minute soft time budget; a rejected token (401) is dropped for the run); a rate limit (429, or 403 with `Retry-After` or `X-RateLimit-Remaining: 0`) ends the run with the progress saved, any other 403 or 451 on one repository is just an answer |
+| | `discover` | reads the whois and IRR dumps, saved RDAP results, domain-found feeds, GitHub-found feeds (source `github`), `feeds.txt` and CAIDA's lists; adds every URL to `public.geofeed_urls`; writes the whois blocks that link feeds; builds `60-whois.csv.gz` from `geoloc:` and `37-whois-text.csv.gz` from the `descr:` and `netname:` text of RIPE and AFRINIC inetnums and the `city:` line of LACNIC inetnums (GeoNames is loaded first) |
 | | `check-feeds` | fetches every due feed, keeps a checked copy of each working one, writes its status to `public.geofeed_urls`, writes the URL lists |
 | | `export-rows` | writes the rows of working feeds that pass the ownership check to `70-geofeeds.csv.gz`; uploads both layers to R2 behind their row-drop gates |
 | `sync-bgp` | `download` | fetches the newest RIPE RIS rrc00 table (`latest-bview.gz`, ~430 MB) into its own dir, not again within 6 hours |
@@ -125,7 +126,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | | `resolve-names` | PTR of the distinct hop IPs into `public.mlab_hop_names` (answers younger than 60 days are skipped; stored 2000 at a time; a 3-hour budget ends it cleanly with `stopped: time`) |
 | | `locate` | R: hops whose name a rule decodes to a city vote (weight = traces); no winner: M: hops with a city in a strong-source record of our MMDB vote; only the client /24's country counts; writes `36-mlab.csv.gz` |
 | | `upload` | puts it at the fixed R2 key with the sha256 in the metadata (unchanged: not sent); no health-check ping |
-| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `67-rdns-names` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2, then writes `38-asn-geofeed` from the geofeed layer and `25-bgp` from the geofeed layer and the R2 communities file; downloads `36-mlab`, `37-whois-arin` and `37-whois-text` from R2 as they are |
+| `build-geo-data` | `download` | empties the layers dir; writes `10-rir` to `67-rdns-names` (except `60-whois`) from the web and Postgres; downloads `60-whois` and `70-geofeeds` from R2, then writes `38-asn-geofeed` from the geofeed layer and `25-bgp` from the geofeed layer and the R2 communities file; downloads `36-mlab`, `37-whois-arin`, `37-whois-text` and `39-github-geofeeds` from R2 as they are |
 | | `build-mmdb` | runs `mmdbbuilder geo` on the layers in name order with the rules table → `ip2geo-openipdata-<date>.mmdb` |
 | | `evaluate` | builds the holdout MMDB, scores both with `mmdbbuilder eval` (DB-IP, MaxMind GeoLite2, Atlas probes, GeoNames to place our cities; holdout for ours only), stores a row in `public.geo_eval`, then stamps the scores into the MMDB's metadata (`description.openipdata`; a failure never blocks publish) |
 | | `publish` | applies the 2-point gate, uploads to R2 and the GitHub release, marks the row published, pings the health check |
@@ -152,6 +153,7 @@ Every external input, grouped by what it feeds. Third-party geo databases are us
 | CAIDA geofeed whois lists | `sync-geofeeds` | ARIN and NIR feeds | last 7 days |
 | `feeds.txt` (built-in list: Apple Private Relay, Google Cloud, Charter, …) | `sync-geofeeds` | feeds no whois record points to | with the code |
 | ASN websites (from `public.asn_domain`) | `sync-geofeeds` `probe-domains` | feeds at the usual paths | budget per run |
+| GitHub repositories named like `geofeed` (GitHub API) | `sync-geofeeds` `search-github` | geofeed files no whois record links | budget per run (40 repositories, 1000 with a token) |
 | Operator geofeeds (RFC 8805) | `sync-geofeeds` `check-feeds` | city rows, ~6.4M | backoff 3 d / weekly / monthly |
 | GeoNames `cities1000.zip` | `sync-geofeeds` | city name for whois `geoloc:` points; place names for the text of RIPE and AFRINIC inetnums | 7-day age gate |
 | OurAirports, UNECE UN/LOCODE, GeoNames `cities1000.zip` and `admin1CodesASCII.txt` | `learn-rdns-rules` | city-token dictionaries and GeoNames places with region and coordinates (own caches) | monthly, conditional |
@@ -186,6 +188,7 @@ Each table has exactly one writer; data between workflows goes through these tab
 | `public.mlab_hop_names` | `import-mlab` | `import-mlab` (`locate`), `learn-rdns-rules` (the ok names as router names, capped per domain) |
 | `public.rdns_geo_layer` | `resolve-ips` | `build-geo-data` (layers `35-rdns-wide`, `65-rdns`, `67-rdns-names`) |
 | R2 private `internal/layers/37-whois-text.csv.gz` | `sync-geofeeds` | `build-geo-data` |
+| R2 private `internal/layers/39-github-geofeeds.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/layers/60-whois.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/layers/70-geofeeds.csv.gz` | `sync-geofeeds` | `build-geo-data` |
 | R2 private `internal/bgp/communities.csv.gz` | `sync-bgp` | `build-geo-data` (layer `25-bgp`) |
@@ -212,6 +215,7 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 | 37 | `37-whois-arin.csv.gz` | the registrant city of ARIN RDAP records of at most a /20 for the gap /24s (`sync-arin-whois`, R2), only a city that GeoNames places in the record's own state; records wider than a /16 (head offices) are never stored; measured on RIPE Atlas: +197 right, -37 lost probes, the layer's city right for 61% of 531 rows | city | same-country (only refines) |
 | 37 | `37-whois-text.csv.gz` | RIPE and AFRINIC inetnum `descr:` and `netname:` text, and the `city:` line of LACNIC inetnums, that names a GeoNames place of the object's country (longest word group, then the most populous place; an ignore list, short words and records broader than a /16 are left out; `sync-geofeeds`, R2); measured on RIPE Atlas: +384 right, -81 lost probes (net +303) above the weak layers, the layer's city right for 68% of the 995 probes it answers; the LACNIC rows: +75 right, -33 lost, right for 60% of 324 probes | city | same-country (only refines) |
 | 38 | `38-asn-geofeed.csv.gz` | the ASN's own geofeed rows (`70-geofeeds` attributed by announced prefix, MOAS prefixes ignored): an ASN whose feed rows cover ≥50% of its announced addresses (per address family) and put ≥80% of their addresses (country-only rows count in the total) in one city, from ≥2 rows, gives that city to all its announced prefixes | city | same-country (only refines) |
+| 39 | `39-github-geofeeds.csv.gz` | rows of geofeed files in public GitHub repositories named like `geofeed` that no whois record links (`sync-geofeeds` `search-github`, R2); a feed already read under another URL (a feed just read in the same repository, or the same rows) is left out, and so are a row with no city (`no_city`: a country-only row would erase a lower layer's city) and one broader than a /16 or /32 (`too_broad`); uploaded with no first-upload minimum and no drop limit; measured on RIPE Atlas: +32 right, -7 lost probes where our city was weak, a guess or missing, right for 61% of 88 probes; against `70-geofeeds` cities -4 and +0, so it sits below them | city | same-country (only refines) |
 | 40 | `40-hosting.csv.gz` | single-city PeeringDB `Content` networks, non-Global scope | city | first-country (only back to the RIR country) |
 | 50 | `50-ix.csv.gz` | `public.geo_ix_pdb`: exchange peering LANs | city | — |
 | 60 | `60-whois.csv.gz` | whois `geoloc:`, most populous place within 25 km (measured 85.8% within 100 km) | city | within-first |
@@ -225,7 +229,8 @@ Every layer is a gzipped CSV in the geofeed layout (`prefix,country,region,city,
 - `36-mlab` is put in as it is from the R2 object (saved in `geo/downloads/` with its ETag). A missing object, one older than 45 days (the export is made by hand about monthly) or any fetch error only skips it with a warning; it never skips the health-check ping. The holdout build passes it as it is: it does not learn from the geofeed rows directly, but its MMDB-hop part reads the published MMDB (which holds geofeed cities), like the MMDB votes of `35-rdns-wide`. `gaps` counts a /24 whose city comes from `25-bgp` or `36-mlab` (like the `80-asn-main` guess) as no city, so `sample-names` keeps sampling customer names there.
 - `37-whois-arin` is put in as it is from the R2 object (saved in `geo/downloads/` with its ETag). One older than 14 days, a missing object or any fetch error skips it with a warning; it never skips the health-check ping. The holdout build passes it as it is: it is not learned from the geofeed rows. `gaps` counts a /24 whose city comes from this layer as no city, so `sync-arin-whois` keeps these /24s in its walk and `sample-names` keeps sampling customer names there.
 - `37-whois-text` is put in as it is from the R2 object (saved in `geo/downloads/` with its ETag). One older than 14 days, a missing object or any fetch error skips it with a warning; a missing object or a fetch error never skips the health-check ping. An existing object older than 3 days is still used up to 14 days but skips the ping (`sync-geofeeds` renews it every night). The holdout build passes it as it is: it is not learned from the geofeed rows.
-- Optional layers (25, 35, 36, 37, 38, 40, 50, 60, 65, 67) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
+- `39-github-geofeeds` is put in as it is from the R2 object (saved in `geo/downloads/` with its ETag). One older than 14 days, a missing object or any fetch error skips it with a warning and never skips the health-check ping. The holdout build leaves it out (a copy of a held-out feed that differs by a row or by row order would pass the duplicate rules and bring the held-out cities back). `export-rows` writes only rows with a city and none broader than a /16 or a /32, has no 10% drop gate for it (three feeds carry most rows), and leaves out every feed that is read under another URL; when its local file is removed the R2 object stays and is used until it is 14 days old.
+- Optional layers (25, 35, 36, 37, 38, 39, 40, 50, 60, 65, 67) are skipped with a warning when missing; a missing or stale R2 layer (60, 70) also skips the health-check ping.
 - `35-rdns-wide` sits right after `30-pdb` and `65-rdns` between whois and geofeeds, so every measured layer overwrites the greedy wide rows. `35-rdns-wide` is kept only if `holdout_city_pct` and the Atlas scores do not drop.
 
 ## Evaluation and publish gate

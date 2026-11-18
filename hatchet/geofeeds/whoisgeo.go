@@ -443,15 +443,16 @@ func putLayer(ctx context.Context, upload uploadFunc, key, path string, force bo
 // layerUpload says what uploadLayer sends and how it is gated: the whois
 // geoloc rows and the whois text rows are two such files.
 type layerUpload struct {
-	file, key   string // the file discover wrote in OutDir, and its key in R2
-	stateFile   string // what the last upload sent, in the geofeeds dir
-	label       string // for log lines
-	firstUpload int    // with no previous upload, refuse fewer rows than this
+	file, key   string  // the file discover wrote in OutDir, and its key in R2
+	stateFile   string  // what the last upload sent, in the geofeeds dir
+	label       string  // for log lines
+	firstUpload int     // with no previous upload, refuse fewer rows than this
+	maxDrop     float64 // refuse an upload with this much fewer rows than the last one; 0: no limit
 }
 
 var (
-	whoisGeolocUpload = layerUpload{WhoisRowsFile, WhoisRowsKey, whoisUploadFile, "whois geoloc rows", minWhoisFirstUpload}
-	whoisTextUpload   = layerUpload{WhoisTextFile, WhoisTextKey, whoisTextUploadFile, "whois text rows", minWhoisTextFirstUpload}
+	whoisGeolocUpload = layerUpload{WhoisRowsFile, WhoisRowsKey, whoisUploadFile, "whois geoloc rows", minWhoisFirstUpload, maxRowsDrop}
+	whoisTextUpload   = layerUpload{WhoisTextFile, WhoisTextKey, whoisTextUploadFile, "whois text rows", minWhoisTextFirstUpload, maxRowsDrop}
 )
 
 // uploadWhois puts the whois geoloc rows file that discover wrote at
@@ -469,8 +470,8 @@ func (p *Pipeline) uploadWhoisText(ctx context.Context, upload uploadFunc, force
 // nil. It never fails: a problem ends in the result's Skipped. A file that
 // discover did not rewrite since the last upload is not sent again (its upload
 // time would hide that discover could not build it). The gate is the geofeed
-// rows': more than 10% fewer rows than the last upload is refused, as are fewer
-// than l.firstUpload rows on the first upload; force skips both checks.
+// rows': more than l.maxDrop (10%) fewer rows than the last upload is refused (no limit when
+// it is 0), as are fewer than l.firstUpload rows on the first upload; force skips both checks.
 func (p *Pipeline) uploadLayer(ctx context.Context, upload uploadFunc, force bool, l layerUpload) WhoisUploadOutput {
 	var out WhoisUploadOutput
 	skip := func(format string, args ...any) WhoisUploadOutput {
@@ -530,7 +531,7 @@ func (p *Pipeline) checkLayerUpload(modified time.Time, force bool, l layerUploa
 		return fmt.Errorf("not rebuilt since the last upload on %s (could discover build it?)", last.Date)
 	}
 	switch {
-	case last.Rows > 0 && float64(out.Rows) < float64(last.Rows)*(1-maxRowsDrop):
+	case l.maxDrop > 0 && last.Rows > 0 && float64(out.Rows) < float64(last.Rows)*(1-l.maxDrop):
 		return fmt.Errorf("%d rows, down from %d on %s", out.Rows, last.Rows, last.Date)
 	case last.Rows == 0 && out.Rows < l.firstUpload:
 		return fmt.Errorf("%d rows, fewer than %d", out.Rows, l.firstUpload)

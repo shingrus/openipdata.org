@@ -295,6 +295,13 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 		}
 		summary += note
 	}
+	// The GitHub geofeed layer is left out: a copy of a held-out feed in another repository that
+	// differs by a row or by row order passes both duplicate rules of export-rows and would bring
+	// the held-out cities back.
+	if _, err := os.Stat(filepath.Join(p.layersDir(), GitHubFeedsLayer)); err == nil {
+		replace[GitHubFeedsLayer] = ""
+		summary += "; " + GitHubFeedsLayer + " left out: a copy of a held-out feed could be in it"
+	}
 	mmdbPath = filepath.Join(dir, "holdout.mmdb")
 	// The ASN main city fill is recomputed by the builder from this build's own merged
 	// result, so the held-out feeds never reach it.

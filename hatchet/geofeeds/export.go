@@ -32,6 +32,14 @@ const (
 	// private R2 bucket, replaced by each upload.
 	RowsKey = "internal/layers/" + RowsFile
 
+	// GitHubRowsFile, in OutDir, holds the rows of the feeds that only search-github found
+	// (see exportGitHub), a layer file of build-geo-data. RowsFile never holds them.
+	GitHubRowsFile = "39-github-geofeeds.csv.gz"
+	// GitHubRowsKey is where build-geo-data finds GitHubRowsFile.
+	GitHubRowsKey = "internal/layers/" + GitHubRowsFile
+
+	githubUploadFile = "github-upload.json" // what the last upload of GitHubRowsFile sent
+
 	uploadFile     = "upload.json" // what the last upload sent
 	maxRowsDrop    = 0.10          // refuse an upload with this much fewer rows than the last one
 	minFirstUpload = 1_000_000     // with no previous upload, refuse fewer rows than this
@@ -47,6 +55,10 @@ var layerHeader = []string{"prefix", "country", "region", "city", "source"}
 // covering them links a feed on another site.
 const dropOtherOwner = "other_owner"
 
+// dropNoCity counts rows of the GitHub layer that have no city: the layer is -same-country and
+// the builder replaces the whole record, so a country-only row would erase a city a lower layer gave.
+const dropNoCity = "no_city"
+
 // dropOutsideASN counts rows dropped from a feed that only a domain probe found
 // (source "domain"): they lie outside the announced prefixes of the domain's ASNs.
 const dropOutsideASN = "outside_asn"
@@ -56,19 +68,20 @@ var ErrGate = errors.New("upload gate")
 
 // ExportOutput is the export-rows task's result.
 type ExportOutput struct {
-	Feeds           int               `json:"feeds"` // working feeds read
-	Rows            int               `json:"rows"`  // rows written
-	Dropped         map[string]int    `json:"dropped,omitempty"`
-	MissingFeeds    int               `json:"missing_feeds,omitempty"`    // working feeds with no stored copy
-	UnreadableFeeds int               `json:"unreadable_feeds,omitempty"` // stored copies that could not be read; skipped
-	BroadRows       int               `json:"broad_rows,omitempty"`       // rows kept although they span a block of another owner
-	Bytes           int64             `json:"bytes"`
-	Uploaded        bool              `json:"uploaded"`            // the rows file was sent
-	Refreshed       bool              `json:"refreshed,omitempty"` // R2 already had this exact file: only its upload time was renewed
-	PreviousRows    int               `json:"previous_rows,omitempty"`
-	Whois           WhoisUploadOutput `json:"whois"`      // never fails the task: see WhoisUploadOutput.Skipped
-	WhoisText       WhoisUploadOutput `json:"whois_text"` // the same for the whois text rows
-	DurationSeconds float64           `json:"duration_seconds"`
+	Feeds           int                `json:"feeds"` // working feeds read
+	Rows            int                `json:"rows"`  // rows written
+	Dropped         map[string]int     `json:"dropped,omitempty"`
+	MissingFeeds    int                `json:"missing_feeds,omitempty"`    // working feeds with no stored copy
+	UnreadableFeeds int                `json:"unreadable_feeds,omitempty"` // stored copies that could not be read; skipped
+	BroadRows       int                `json:"broad_rows,omitempty"`       // rows kept although they span a block of another owner
+	Bytes           int64              `json:"bytes"`
+	Uploaded        bool               `json:"uploaded"`            // the rows file was sent
+	Refreshed       bool               `json:"refreshed,omitempty"` // R2 already had this exact file: only its upload time was renewed
+	PreviousRows    int                `json:"previous_rows,omitempty"`
+	Whois           WhoisUploadOutput  `json:"whois"`      // never fails the task: see WhoisUploadOutput.Skipped
+	WhoisText       WhoisUploadOutput  `json:"whois_text"` // the same for the whois text rows
+	GitHub          GitHubExportOutput `json:"github"`     // the GitHub feeds layer; apart from Feeds, Rows and the gate above
+	DurationSeconds float64            `json:"duration_seconds"`
 }
 
 // owners indexes the whois blocks that point to feeds, by the feed's site:
@@ -285,17 +298,24 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 		return out, err
 	}
 	now := p.clock().UTC()
-	var urls []string
+	var urls, githubURLs []string
 	domainOnly := map[string]bool{} // feeds that only a domain probe found
 	for i := range urlRows {
 		r := &urlRows[i]
-		if r.working(now) {
-			urls = append(urls, r.URL)
-			domainOnly[r.URL] = len(r.Sources) == 1 && r.Sources[0] == sourceDomain
+		githubOnly := len(r.Sources) == 1 && r.Sources[0] == sourceGitHub
+		if !r.working(now) {
+			continue
 		}
+		if githubOnly {
+			githubURLs = append(githubURLs, r.URL)
+			continue
+		}
+		urls = append(urls, r.URL)
+		domainOnly[r.URL] = len(r.Sources) == 1 && r.Sources[0] == sourceDomain
 	}
 	sort.Strings(urls)
-	p.log("export: %d working feeds, %d whois blocks", len(urls), len(idx.blocks))
+	sort.Strings(githubURLs)
+	p.log("export: %d working feeds, %d GitHub-only feeds, %d whois blocks", len(urls), len(githubURLs), len(idx.blocks))
 
 	outDir := filepath.Join(p.dir(), OutDir)
 	if err := os.MkdirAll(outDir, 0o750); err != nil {
@@ -355,7 +375,7 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 				inside = &prefixSet{}
 			}
 		}
-		rows, err := p.exportFeed(w, backedW, idx, inside, u, feedPath(filepath.Join(p.dir(), FeedsDir), u), &out)
+		rows, err := p.exportFeed(w, backedW, idx, inside, u, feedPath(filepath.Join(p.dir(), FeedsDir), u), out.Dropped, &out.BroadRows, false)
 		if err != nil {
 			return out, err // it was readable a moment ago
 		}
@@ -394,10 +414,12 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 		out.Rows, out.Feeds, out.Dropped, out.BroadRows, out.MissingFeeds, out.UnreadableFeeds, out.Bytes)
 
 	// The whois geoloc rows are separate: whatever goes wrong with them leaves the geofeed rows alone.
+	// So are the GitHub feeds.
 	var put uploadFunc
 	if upload {
 		put = r2.Put
 	}
+	out.GitHub = p.exportGitHub(ctx, put, force, idx, githubURLs, usable, outDir)
 	out.Whois = p.uploadWhois(ctx, put, force)
 	out.WhoisText = p.uploadWhoisText(ctx, put, force)
 	if err := ctx.Err(); err != nil {
@@ -417,12 +439,25 @@ func (p *Pipeline) ExportRows(ctx context.Context, upload, force bool) (ExportOu
 // check: rows a whois block backs go to backedW, the others to w. Drops and
 // broad rows are counted from the rows that are not backed. If inside is not
 // nil, rows outside it are dropped first (dropOutsideASN).
-func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, inside *prefixSet, feed, path string, out *ExportOutput) (int, error) {
-	site, rows, dropped, outside := feedSite(feed), 0, 0, 0
+func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, inside *prefixSet, feed, path string, dropReasons map[string]int, broad *int, githubLayer bool) (int, error) {
+	site, rows, dropped, outside, noCity, tooBroad := feedSite(feed), 0, 0, 0, 0, 0
 	err := readStoredFeed(path, func(rec []string, prefix netip.Prefix) {
 		if inside != nil && !inside.contains(prefix) {
 			outside++
 			return
+		}
+		if githubLayer {
+			// The GitHub layer: no row without a city (the builder replaces the whole record), and
+			// none broader than a /16 (IPv4) or a /32 (IPv6): nothing ties a repository to the
+			// networks it names.
+			if rec[3] == "" {
+				noCity++
+				return
+			}
+			if prefix.Addr().Is4() && prefix.Bits() < 16 || prefix.Addr().Is6() && prefix.Bits() < 32 {
+				tooBroad++
+				return
+			}
 		}
 		backed, allowed := idx.classify(site, prefix)
 		row := []string{rec[0], rec[1], rec[2], rec[3], feed}
@@ -434,17 +469,23 @@ func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, inside *prefi
 			return
 		default:
 			if idx.spansOther(site, prefix) {
-				out.BroadRows++
+				*broad++
 			}
 			w.Write(row)
 		}
 		rows++
 	})
 	if dropped > 0 {
-		out.Dropped[dropOtherOwner] += dropped
+		dropReasons[dropOtherOwner] += dropped
+	}
+	if tooBroad > 0 {
+		dropReasons[rejectTooBroad] += tooBroad
+	}
+	if noCity > 0 {
+		dropReasons[dropNoCity] += noCity
 	}
 	if outside > 0 {
-		out.Dropped[dropOutsideASN] += outside
+		dropReasons[dropOutsideASN] += outside
 	}
 	return rows, err
 }
