@@ -105,6 +105,8 @@ type Output struct {
 	Retired         int     `json:"retired"`       // learned rows of domains with current names that this run no longer reproduces (now rejected)
 	Rejected        int     `json:"rejected"`
 	DurationSeconds float64 `json:"duration_seconds"`
+	// Skipped is set when the run only switches Hoiho suffixes (the task import-hoiho does it).
+	Skipped string `json:"skipped,omitempty"`
 }
 
 func (p *Pipeline) clock() time.Time {

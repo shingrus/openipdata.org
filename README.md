@@ -835,7 +835,8 @@ dictionary cache (30-day check, at most 32 MB) and read defensively (a file with
 (50 km around the published coordinates, else the most populous place within 30 km; CLLI codes without a place are
 guessed from four abbreviating letters and a state or province). The rows go to `public.rdns_hoiho_rules`, replaced in one
 transaction only when they changed and refused when fewer than 500 rows come out. The Hoiho rules of a suffix and of every
-name under it are switched off with `run-rdns-rules -reject-hoiho a.net,b.net` (and on again with `-accept-hoiho`); the
+name under it are switched off with `run-rdns-rules -reject-hoiho a.net,b.net` (and on again with `-accept-hoiho`), or from
+Hatchet by triggering `learn-rdns-rules` with `{"reject_hoiho_domains":["a.net"]}` or `{"accept_hoiho_domains":["a.net"]}` (such a run only switches: nothing is learned, imported or asked); the
 list is kept in `public.rdns_hoiho_rejected_domains`, so a rejection survives later imports. `-reject` does not touch them. `locate` and the other decoders try these rules before the
 learned ones (`rule_name` `<domain>#h<seq>`, method `candidate_rule`). A file or GeoNames problem only skips the import.
 Run it alone with `run-rdns-rules -hoiho`.

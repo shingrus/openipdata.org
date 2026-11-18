@@ -145,10 +145,21 @@ type ResolveIPsInput struct {
 // versions only, without source downloads or learning.
 type LearnRDNSRulesInput struct {
 	RejectDomains []string `json:"reject_domains"`
+	// RejectHoihoDomains switches off the Hoiho rules of these suffixes and of every name under
+	// them; AcceptHoihoDomains switches them on again (a domain in both ends up accepted). A run with
+	// either one only does that (and reject_domains, when given too): nothing is learned, imported
+	// or asked.
+	RejectHoihoDomains []string `json:"reject_hoiho_domains"`
+	AcceptHoihoDomains []string `json:"accept_hoiho_domains"`
 	// Domains restricts the questions of propose-codes to these registered domains.
 	Domains []string `json:"domains"`
 	// Force makes propose-codes ask again whatever its record says.
 	Force bool `json:"force"`
+}
+
+// switchesHoiho reports a run that only switches Hoiho suffixes off or on.
+func (in LearnRDNSRulesInput) switchesHoiho() bool {
+	return len(in.RejectHoihoDomains) > 0 || len(in.AcceptHoihoDomains) > 0
 }
 
 // version is set at build time (-ldflags "-X main.version=..."); "dev" for a plain go build.
@@ -818,6 +829,9 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		if len(input.RejectDomains) > 0 {
 			return p.Reject(ctx, input.RejectDomains)
 		}
+		if input.switchesHoiho() {
+			return rdnsrules.Output{Skipped: "hoiho_domains"}, nil
+		}
 		return p.Learn(ctx)
 	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
 	// The imported Hoiho rules. The tasks share the dictionary cache files (cities1000.zip and
@@ -825,12 +839,22 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	// learn, import-hoiho, propose-codes. A file or GeoNames problem only skips the import; only a
 	// database error fails the task.
 	importHoiho := wf.NewTask("import-hoiho", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.HoihoOutput, error) {
-		if len(input.RejectDomains) > 0 {
+		if !input.switchesHoiho() && len(input.RejectDomains) > 0 {
 			return rdnsrules.HoihoOutput{Skipped: "reject_domains"}, nil
 		}
 		p := newRDNSRulesPipeline(taskLog(ctx))
 		if err := p.CheckPGSQL(); err != nil {
 			return rdnsrules.HoihoOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		if input.switchesHoiho() {
+			// reject_hoiho_domains / accept_hoiho_domains: only the switch, no import.
+			out := rdnsrules.HoihoOutput{Skipped: "hoiho_domains"}
+			var err error
+			out.Rejection, out.Acceptance, err = p.SwitchHoiho(ctx, input.RejectHoihoDomains, input.AcceptHoihoDomains)
+			if errors.Is(err, rdnsrules.ErrHoihoDomain) {
+				err = hatchet.NewNonRetryableError(err)
+			}
+			return out, err
 		}
 		return p.ImportHoiho(ctx)
 	}, taskRetry(hatchet.WithParents(learn), hatchet.WithExecutionTimeout(30*time.Minute))...)
@@ -839,6 +863,9 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf.NewTask("propose-codes", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.ProposeOutput, error) {
 		if len(input.RejectDomains) > 0 {
 			return rdnsrules.ProposeOutput{Skipped: "reject_domains"}, nil
+		}
+		if input.switchesHoiho() {
+			return rdnsrules.ProposeOutput{Skipped: "hoiho_domains"}, nil
 		}
 		p := newRDNSRulesPipeline(taskLog(ctx))
 		if err := p.CheckPGSQL(); err != nil {

@@ -40,6 +40,10 @@ type HoihoOutput struct {
 	Unchanged         bool           `json:"unchanged"`
 	Skipped           string         `json:"skipped,omitempty"`
 	DurationSeconds   float64        `json:"duration_seconds"`
+	// Rejection and Acceptance are set by a run with the workflow inputs reject_hoiho_domains or
+	// accept_hoiho_domains, which switches suffixes off or on and imports nothing.
+	Rejection  *HoihoRejectOutput `json:"rejection,omitempty"`
+	Acceptance *HoihoRejectOutput `json:"acceptance,omitempty"`
 }
 
 // errHoihoTooLarge is returned by the capped body when the download is over the limit.
@@ -326,8 +330,63 @@ type HoihoRejectOutput struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 }
 
-// errHoihoDomain is the fixed error for a domain that is not a plain host name (it never echoes it).
-var errHoihoDomain = errors.New("invalid domain: want a plain host name such as example.net")
+// ErrHoihoDomain is the fixed error for a domain that is not a plain host name (it never echoes it).
+var ErrHoihoDomain = errors.New("invalid domain: want a plain host name such as example.net")
+
+// SwitchHoiho is what the workflow inputs reject_hoiho_domains and accept_hoiho_domains do: it runs
+// SetHoihoRejected for the reject list and then for the accept list (a domain in both ends up
+// accepted). A list with no domain is left out and its report is nil. Both lists are checked before
+// anything is changed, so a bad domain in one never leaves the other applied.
+func (p *Pipeline) SwitchHoiho(ctx context.Context, reject, accept []string) (rejected, accepted *HoihoRejectOutput, err error) {
+	for _, list := range [][]string{reject, accept} {
+		if len(list) > 0 {
+			if _, err := cleanHoihoDomains(list); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if len(reject) > 0 {
+		out, err := p.SetHoihoRejected(ctx, reject, true)
+		if err != nil {
+			return nil, nil, err
+		}
+		rejected = &out
+	}
+	if len(accept) > 0 {
+		out, err := p.SetHoihoRejected(ctx, accept, false)
+		if err != nil {
+			return rejected, nil, err
+		}
+		accepted = &out
+	}
+	return rejected, accepted, nil
+}
+
+// cleanHoihoDomains lower-cases the domains, trims dots and spaces, drops repeats and sorts them.
+// Every one must be a plain host name (an empty item among several is a trailing comma and is
+// skipped); a bad one, or none at all, is ErrHoihoDomain.
+func cleanHoihoDomains(domains []string) ([]string, error) {
+	var clean []string
+	seen := map[string]bool{}
+	for _, d := range domains {
+		d = strings.Trim(strings.ToLower(strings.TrimSpace(d)), ".")
+		if d == "" && len(domains) > 1 {
+			continue // a trailing comma
+		}
+		if !plainHostName(d) {
+			return nil, ErrHoihoDomain
+		}
+		if !seen[d] {
+			seen[d] = true
+			clean = append(clean, d)
+		}
+	}
+	if len(clean) == 0 {
+		return nil, ErrHoihoDomain
+	}
+	sort.Strings(clean)
+	return clean, nil
+}
 
 // SetHoihoRejected adds the domains to (rejected = true) or removes them from the list of suffixes
 // whose Hoiho rules are switched off (public.rdns_hoiho_rejected_domains), then brings the status of
@@ -339,25 +398,10 @@ func (p *Pipeline) SetHoihoRejected(ctx context.Context, domains []string, rejec
 	if err := p.CheckPGSQL(); err != nil {
 		return out, err
 	}
-	var clean []string
-	seen := map[string]bool{}
-	for _, d := range domains {
-		d = strings.Trim(strings.ToLower(strings.TrimSpace(d)), ".")
-		if d == "" && len(domains) > 1 {
-			continue // a trailing comma
-		}
-		if !plainHostName(d) {
-			return out, errHoihoDomain
-		}
-		if !seen[d] {
-			seen[d] = true
-			clean = append(clean, d)
-		}
+	clean, err := cleanHoihoDomains(domains)
+	if err != nil {
+		return out, err
 	}
-	if len(clean) == 0 {
-		return out, errHoihoDomain
-	}
-	sort.Strings(clean)
 	out.Domains = len(clean)
 	conn, err := pgx.Connect(ctx, p.PGSQL)
 	if err != nil {

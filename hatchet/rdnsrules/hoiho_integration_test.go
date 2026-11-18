@@ -2,6 +2,7 @@ package rdnsrules
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -240,5 +241,51 @@ func TestImportHoihoPostgres(t *testing.T) {
 	}
 	if r, err := (&Pipeline{PGSQL: fresh}).SetHoihoRejected(ctx, []string{"example.org"}, true); err != nil || r.DomainsChanged != 1 || r.RowsChanged != 0 {
 		t.Fatalf("hoiho reject without table: %+v %v", r, err)
+	}
+}
+
+// The workflow inputs reject_hoiho_domains and accept_hoiho_domains: reject first, then accept, so a
+// domain in both ends up accepted; an empty list is left out; a bad domain is the fixed error.
+func TestSwitchHoihoPostgres(t *testing.T) {
+	dsn := hoihoTestDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(schema.HideDSN(err))
+	}
+	defer conn.Close(ctx)
+	p := &Pipeline{DataDir: t.TempDir(), PGSQL: dsn, testHoiho: hoihoSpec{}.file(), testGeo: hoihoTestGeo(t)}
+	if out, err := p.ImportHoiho(ctx); err != nil || !out.Written {
+		t.Fatalf("import: %+v %v", out, err)
+	}
+	rejectedRows := func() (n int) {
+		t.Helper()
+		if err := conn.QueryRow(ctx, `SELECT count(*) FROM public.rdns_hoiho_rules WHERE status = 'rejected'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	rej, acc, err := p.SwitchHoiho(ctx, []string{"example.org"}, nil)
+	if err != nil || rej == nil || acc != nil || rej.RowsChanged == 0 || rejectedRows() != rej.RowsChanged {
+		t.Fatalf("reject: %+v %+v %v, %d rows rejected", rej, acc, err, rejectedRows())
+	}
+	rej, acc, err = p.SwitchHoiho(ctx, nil, []string{"example.org"})
+	if err != nil || rej != nil || acc == nil || acc.RowsChanged == 0 || rejectedRows() != 0 {
+		t.Fatalf("accept: %+v %+v %v, %d rows rejected", rej, acc, err, rejectedRows())
+	}
+	rej, acc, err = p.SwitchHoiho(ctx, []string{"example.org", "x000.example.net"}, []string{"example.org"})
+	if err != nil || rej == nil || acc == nil || rej.Domains != 2 || acc.DomainsChanged != 1 || acc.Rejected != 1 || rejectedRows() != 1 {
+		t.Fatalf("both: %+v %+v %v, %d rows rejected", rej, acc, err, rejectedRows())
+	}
+	if _, _, err = p.SwitchHoiho(ctx, []string{"not a domain"}, nil); !errors.Is(err, ErrHoihoDomain) {
+		t.Fatalf("bad domain: %v", err)
+	}
+	// A bad domain in the accept list: the reject list is not applied either.
+	if _, _, err = p.SwitchHoiho(ctx, []string{"example.org"}, []string{"not a domain"}); !errors.Is(err, ErrHoihoDomain) || rejectedRows() != 1 {
+		t.Fatalf("bad accept domain: %v, %d rows rejected", err, rejectedRows())
+	}
+	if rej, acc, err = p.SwitchHoiho(ctx, nil, nil); err != nil || rej != nil || acc != nil {
+		t.Fatalf("nothing to do: %+v %+v %v", rej, acc, err)
 	}
 }
