@@ -27,7 +27,9 @@ package main
 // given to its rung before the first insert, so a guess never counts as evidence for
 // another guess and the stats count real fills. A city counts as evidence only when it
 // "counts": with a GeoNames index when the index places it, without one always. Cities
-// that do not count are ignored for the sums and are never overwritten. IPv4 only.
+// that do not count are ignored for the sums and are never overwritten. With an index a
+// city is the place the index gives it, so every spelling and name of one place counts
+// together (São Paulo and Sao Paulo); without one a city is its normalised name. IPv4 only.
 
 import (
 	"fmt"
@@ -158,14 +160,19 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	// With a GeoNames index only the cities it places count (the measured definition);
 	// the answer is cached per (country, city) pair, 0 unknown, 1 placed, 2 not placed.
 	placedState := make([]uint8, len(pairs))
+	var placeKeys []string // with an index: the place of each counted city (placeKey)
+	if index != nil {
+		placeKeys = make([]string, len(pairs))
+	}
 	counts := func(rec uint32) bool {
 		if index == nil {
 			return true
 		}
 		if placedState[rec] == 0 {
 			placedState[rec] = 2
-			if _, ok := index.place(pairs[rec].code, pairs[rec].city); ok {
+			if pl, ok := index.place(pairs[rec].code, pairs[rec].city); ok {
 				placedState[rec] = 1
+				placeKeys[rec] = placeKey(pl)
 			}
 		}
 		return placedState[rec] == 1
@@ -183,13 +190,19 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 		if norm == "" || !counts(l.rec) {
 			continue
 		}
+		// With GeoNames a city is its place, so two spellings or names of one place count
+		// together; without it a city is its normalised name.
+		city := norm
+		if index != nil {
+			city = placeKeys[l.rec]
+		}
 		if fallback {
 			g := countries[p.code]
 			if g == nil {
 				g = newGroup()
 				countries[p.code] = g
 			}
-			g.add(norm, p.city, uint64(l.hi)-uint64(l.lo)+1)
+			g.add(city, norm, p.city, uint64(l.hi)-uint64(l.lo)+1)
 		}
 		if !useASN {
 			continue
@@ -201,7 +214,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 				g = newGroup()
 				groups[key] = g
 			}
-			g.add(norm, p.city, uint64(b)-uint64(a)+1)
+			g.add(city, norm, p.city, uint64(b)-uint64(a)+1)
 			if fallback {
 				pieces[key] = append(pieces[key], piece{a, b, l.rec})
 			}

@@ -530,7 +530,7 @@ places (country + name, the most populous place on a clash: the same rule `eval`
 
 After all layers, `mmdbbuilder geo -asn-main` adds one guessed fill, `80-asn-main` (it is not a layer file: it needs the
 merged result). For each ASN and country, the addresses that already have a city are counted per city. When one city has at
-least 90% of them and there are at least 256 such addresses (with GeoNames, only cities it places are counted; others are ignored for the counts and never overwritten), the ASN's addresses in that country that have no city get that
+least 90% of them and there are at least 256 such addresses (with GeoNames, only cities it places are counted; others are ignored for the counts and never overwritten; and a city is then the place GeoNames gives it, so two spellings or names of one place, `São Paulo` and `Sao Paulo`, count together, for this guess and for the fallback guesses), the ASN's addresses in that country that have no city get that
 city (`city_source` `80-asn-main`, with coordinates when GeoNames places it). It never replaces a city or changes a country.
 IPv4 only; an address belongs to the ASN of its longest announced prefix, and a prefix announced by two ASNs belongs to nobody.
 Measured on RIPE Atlas it is right 48% of the time (520 of 1,083 gap probes) and fills about 25% of the gap.

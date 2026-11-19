@@ -400,3 +400,65 @@ func TestNearPiece(t *testing.T) {
 		t.Error("no pieces")
 	}
 }
+
+// With a GeoNames index a city is its place: two spellings and an alternate name of one place
+// count together, for the country guess and for the ASN guess, and the most common spelling is
+// written. Without an index they are separate cities, as before.
+func TestGuessesCountAPlaceOnce(t *testing.T) {
+	dir := t.TempDir()
+	geonames := writeFile(t, filepath.Join(dir, "cities1000.txt"),
+		geoNamesLine("1", "São Paulo", "Sao Paulo,Sampa", "-23.5475", "-46.63611", "BR", "10021295")+
+			geoNamesLine("2", "Rio de Janeiro", "", "-22.90642", "-43.18223", "BR", "6023699")+
+			geoNamesLine("3", "Curitiba", "", "-25.42778", "-49.27306", "BR", "1718421")+
+			geoNamesLine("4", "Salvador", "", "-12.97563", "-38.49096", "BR", "2711840"))
+	index, err := loadGeoNames(geonames)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("country", func(t *testing.T) {
+		// 100 /24s with a city: São Paulo 20, Sao Paulo 15, Rio 28, Salvador 20, Curitiba 17.
+		// One place: 35%, the main city. Two cities: Rio leads with 28%, under the 30% bar.
+		layer := rows24(1, 0, 20, "BR", "São Paulo") + rows24(2, 0, 15, "BR", "Sao Paulo") + rows24(3, 0, 28, "BR", "Rio de Janeiro") +
+			rows24(4, 0, 20, "BR", "Salvador") + rows24(5, 0, 17, "BR", "Curitiba") + "10.9.0.0/24,BR,,,x\n"
+		for _, tc := range []struct {
+			index geoNames
+			want  string
+		}{{index, "BR/São Paulo/86-country-main"}, {nil, "BR/<nil>/<nil>"}} {
+			out, _ := guessBuild(t, t.TempDir(), layer, nil, tc.index, true)
+			checkCities(t, out, map[string]string{"10.9.0.9": tc.want})
+		}
+	})
+	t.Run("asn", func(t *testing.T) {
+		// 12 /24s of AS100 with a city: São Paulo 6, Sao Paulo 4, Sampa 1, Rio 1: 11 of 12 in one place.
+		layer := rows24(0, 0, 6, "BR", "São Paulo") + rows24(0, 6, 4, "BR", "Sao Paulo") + rows24(0, 10, 1, "BR", "Sampa") +
+			rows24(0, 11, 1, "BR", "Rio de Janeiro") + "10.0.20.0/24,BR,,,x\n"
+		asn := "100,10.0.0.0/16\n"
+		for _, tc := range []struct {
+			index geoNames
+			want  string
+		}{{index, "BR/São Paulo/80-asn-main"}, {nil, "BR/<nil>/<nil>"}} {
+			out, _ := guessBuild(t, t.TempDir(), layer, &asn, tc.index, false)
+			checkCities(t, out, map[string]string{"10.0.20.9": tc.want})
+		}
+	})
+	t.Run("ties", func(t *testing.T) {
+		// Two places with the same count: the smaller name wins, whatever their coordinates
+		// (Curitiba before Salvador); two spellings with the same count: the smaller spelling.
+		g := &asnGroup{cities: map[string]*cityCount{}}
+		for _, city := range []string{"Salvador", "Curitiba"} {
+			pl, _ := index.place("BR", city)
+			g.add(placeKey(pl), normCity(city), city, 256)
+		}
+		if main, ok := g.choose(0.5, 0); !ok || main != "Curitiba" {
+			t.Errorf("tie between places: %q %v", main, ok)
+		}
+		g = &asnGroup{cities: map[string]*cityCount{}}
+		for _, city := range []string{"São Paulo", "Sao Paulo"} {
+			pl, _ := index.place("BR", city)
+			g.add(placeKey(pl), normCity(city), city, 256)
+		}
+		if main, ok := g.choose(0.9, 0); !ok || main != "Sao Paulo" {
+			t.Errorf("tie between spellings: %q %v", main, ok)
+		}
+	})
+}

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/bits"
 	"net/netip"
 	"os"
@@ -289,7 +290,7 @@ func treeLeaves(tree *mmdbwriter.Tree) ([]leaf, []cityPair) {
 // asnGroup is the addresses of one ASN in one country that have a city.
 type asnGroup struct {
 	total  uint64
-	cities map[string]*cityCount // by normalised city
+	cities map[string]*cityCount // by city key: the normalised name, or with GeoNames the place (placeKey)
 	// set by choose when the group qualifies
 	main string // 80-asn-main: the city to write
 	ok   bool
@@ -298,13 +299,18 @@ type asnGroup struct {
 	likelyOK bool
 }
 
-// add counts n addresses of a city (normalised name norm, written as spell).
-func (g *asnGroup) add(norm, spell string, n uint64) {
+// add counts n addresses of a city: key says which city it is (the normalised name norm, or
+// with GeoNames the place, so that every spelling and name of one place counts together), and
+// spell is how the record writes it.
+func (g *asnGroup) add(key, norm, spell string, n uint64) {
 	g.total += n
-	c := g.cities[norm]
+	c := g.cities[key]
 	if c == nil {
-		c = &cityCount{spells: map[string]uint64{}}
-		g.cities[norm] = c
+		c = &cityCount{name: norm, spells: map[string]uint64{}}
+		g.cities[key] = c
+	}
+	if norm < c.name {
+		c.name = norm
 	}
 	c.n += n
 	c.spells[spell] += n
@@ -312,7 +318,14 @@ func (g *asnGroup) add(norm, spell string, n uint64) {
 
 type cityCount struct {
 	n      uint64
+	name   string // the smallest normalised name counted here: the tie-break between cities
 	spells map[string]uint64
+}
+
+// placeKey is the city key of a place GeoNames gave: its coordinates. Two names that the index
+// places at the same place (São Paulo and Sao Paulo, Kyiv and Kiev) get the same key.
+func placeKey(p gnPlace) string {
+	return strconv.FormatUint(math.Float64bits(p.lat), 16) + "," + strconv.FormatUint(math.Float64bits(p.lon), 16)
 }
 
 type groupKey struct {
@@ -326,10 +339,10 @@ type groupKey struct {
 // city is the spelling with most addresses (ties: the smallest spelling).
 func (g *asnGroup) choose(minShare float64, minAddrs uint64) (main string, ok bool) {
 	var best *cityCount
-	var bestName string
-	for name, c := range g.cities {
-		if best == nil || c.n > best.n || c.n == best.n && name < bestName {
-			best, bestName = c, name
+	var bestKey string
+	for key, c := range g.cities {
+		if best == nil || c.n > best.n || c.n == best.n && (c.name < best.name || c.name == best.name && key < bestKey) {
+			best, bestKey = c, key
 		}
 	}
 	if best == nil || g.total < minAddrs || float64(best.n)/float64(g.total) < minShare {
