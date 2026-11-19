@@ -206,15 +206,16 @@ type Pipeline struct {
 	MaxMindKey string // MAXMIND_LICENSE_KEY
 
 	// Tests only.
-	cloudRegionsURL string
-	stats           []struct{ Name, URL string }
-	geoBlocks       string
-	refURLs         *evalURLs
-	writeIX         func(ctx context.Context, w *csv.Writer) (int, error)
-	writeHosting    func(ctx context.Context, w *csv.Writer) (int, error)
-	writeRDNS       func(ctx context.Context, scope string, w *csv.Writer) (int, error)
-	readAnnounced   func(ctx context.Context) ([]asnPrefix, error)
-	heldOutURLs     func(ctx context.Context) (map[string]int64, error)
+	cloudRegionsURL  string
+	oracleRegionsURL string
+	stats            []struct{ Name, URL string }
+	geoBlocks        string
+	refURLs          *evalURLs
+	writeIX          func(ctx context.Context, w *csv.Writer) (int, error)
+	writeHosting     func(ctx context.Context, w *csv.Writer) (int, error)
+	writeRDNS        func(ctx context.Context, scope string, w *csv.Writer) (int, error)
+	readAnnounced    func(ctx context.Context) ([]asnPrefix, error)
+	heldOutURLs      func(ctx context.Context) (map[string]int64, error)
 }
 
 // Source is what Download prepared for the run.
@@ -230,6 +231,9 @@ type Source struct {
 	// CloudRegionsSeen the labels (regions and zones, the pseudo label global left out) in the region file.
 	CloudRegions     int `json:"cloud_regions"`
 	CloudRegionsSeen int `json:"cloud_regions_seen"`
+	// Both are summed over the operators of the layer (aws, oracle) whose file could be read.
+	// CloudRegionsLeftOut names the operators that gave no rows.
+	CloudRegionsLeftOut []string `json:"cloud_regions_left_out,omitempty"`
 	// BGPRules is the number of community values learned as a city rule for the 25-bgp layer,
 	// BGPKnown the prefixes of the communities file with a known geofeed city (the truth the
 	// rules are learned on) and BGPPrefixes the prefixes that got a city.

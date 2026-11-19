@@ -2,20 +2,15 @@ package geo
 
 import (
 	"bytes"
-	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
-	"openipdata.org/hatchet/download"
 	"openipdata.org/hatchet/ipdata"
 	"openipdata.org/hatchet/rirstats"
 )
@@ -48,6 +43,9 @@ import (
 //     main city (the most common form that has a lower-case letter) and its country and the
 //     source cloud-regions:aws:<label>. The layer rule -within-first drops a row broader than
 //     one prefix of the first layer; the builder counts it as skipped.
+//
+// The layer file also holds the rows of a second operator, Oracle (oracleregions.go), whose
+// cities come from a table; cloudregionsdl.go puts the two together.
 const (
 	// cloudRegionsURL is Amazon's region file.
 	cloudRegionsURL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
@@ -61,6 +59,7 @@ const (
 
 	cloudRegionsMaxEntries  = 200000 // more entries and the file is not the file
 	cloudRegionsMinPrefixes = 1000   // fewer valid entries and it is not the file either
+	cloudRegionsMinBits     = 8      // an entry broader than this is not used
 	cloudRegionsMinAddrs    = 4096   // geofeed addresses with a city a region needs
 	cloudRegionsMinShare    = 80     // percent of them the main city needs
 	cloudRegionsGlobal      = "global"
@@ -102,6 +101,17 @@ func validRegion(s string) bool {
 		}
 	}
 	return true
+}
+
+// cloudEntry is the range of one entry of a region file. ok is false unless the label is valid and
+// p is a public IPv4 prefix of minBits to 32 bits with no host bits (the zero prefix of a failed
+// parse is not).
+func cloudEntry(p netip.Prefix, label string, minBits int) (r cloudRange, ok bool) {
+	if !validRegion(label) || !p.Addr().Is4() || p.Bits() < minBits || p.Masked() != p || !ipdata.PublicV4(p.Addr()) {
+		return r, false
+	}
+	a := p.Addr().As4()
+	return cloudRange{addr: uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3]), bits: uint8(p.Bits()), region: label}, true
 }
 
 // skipJSONValue reads one JSON value from dec token by token (nothing is kept).
@@ -169,13 +179,13 @@ func parseCloudRegions(data []byte) ([]cloudRange, cloudParse, error) {
 			if label == "" {
 				label = strings.ToLower(strings.TrimSpace(e.Region))
 			}
-			p, err := netip.ParsePrefix(strings.TrimSpace(e.IPPrefix))
-			if err != nil || !validRegion(label) || !p.Addr().Is4() || p.Bits() < 8 || p.Masked() != p || !ipdata.PublicV4(p.Addr()) {
+			p, _ := netip.ParsePrefix(strings.TrimSpace(e.IPPrefix))
+			r, ok := cloudEntry(p, label, cloudRegionsMinBits)
+			if !ok {
 				st.Bad++
 				continue
 			}
-			a := p.Addr().As4()
-			out = append(out, cloudRange{addr: uint32(a[0])<<24 | uint32(a[1])<<16 | uint32(a[2])<<8 | uint32(a[3]), bits: uint8(p.Bits()), region: label})
+			out = append(out, r)
 		}
 		if t, err := dec.Token(); err != nil || t != json.Delim(']') {
 			return nil, st, notFile
@@ -256,21 +266,43 @@ type cloudStats struct {
 	Rows      int
 }
 
-// cloudRegionRows is the 68-cloud-regions layer (see the top of this file): it reads the region
-// file (data) and the geofeed layer file and writes the rows to w. Pure: no database, no network.
-// A problem with the region file is a *cloudInputError.
-func cloudRegionRows(data []byte, feedsPath string, w *csv.Writer) (cloudStats, error) {
+// cloudRow is one row of the layer.
+type cloudRow struct {
+	prefix                netip.Prefix
+	country, city, source string
+}
+
+// writeCloudRows writes the rows of all operators to w sorted by prefix (address, then the broader
+// prefix first). The sort is stable, so for the same prefix the rows of the operator given first
+// come first.
+func writeCloudRows(w *csv.Writer, operators ...[]cloudRow) {
+	all := slices.Concat(operators...)
+	slices.SortStableFunc(all, func(a, b cloudRow) int {
+		if c := a.prefix.Addr().Compare(b.prefix.Addr()); c != 0 {
+			return c
+		}
+		return a.prefix.Bits() - b.prefix.Bits()
+	})
+	for _, r := range all {
+		w.Write([]string{r.prefix.String(), r.country, "", r.city, r.source})
+	}
+}
+
+// cloudRegionRows is the 68-cloud-regions layer of Amazon (see the top of this file): it reads the
+// region file (data) and the geofeed layer file and returns the rows in address order. Pure: no
+// database, no network. A problem with the region file is a *cloudInputError.
+func cloudRegionRows(data []byte, feedsPath string) ([]cloudRow, cloudStats, error) {
 	var st cloudStats
 	ranges, parse, err := parseCloudRegions(data)
 	st.Parse = parse
 	if err != nil {
-		return st, err
+		return nil, st, err
 	}
 	segs, regions := cloudSegments(ranges)
 	st.Seen = len(regions)
 	feeds, cities, err := readBGPFeeds(feedsPath)
 	if err != nil {
-		return st, err
+		return nil, st, err
 	}
 
 	// Learn: the owned addresses of the geofeed rows with a city, inside each region.
@@ -318,6 +350,7 @@ func cloudRegionRows(data []byte, feedsPath string, w *csv.Writer) (cloudStats, 
 	}
 
 	// Rows: every range of a qualifying region, in address order.
+	var rows []cloudRow
 	spell := map[uint32]string{}
 	for _, s := range segs {
 		key := main[s.region]
@@ -332,11 +365,11 @@ func cloudRegionRows(data []byte, feedsPath string, w *csv.Writer) (cloudStats, 
 		country := cities.keys[key-1].country
 		source := cloudRegionsSource + regions[s.region]
 		for _, p := range rirstats.RangeToPrefixes(addrFrom32(s.start), addrFrom32(s.end)) {
-			w.Write([]string{p.String(), country, "", name, source})
-			st.Rows++
+			rows = append(rows, cloudRow{p, country, name, source})
 		}
 	}
-	return st, nil
+	st.Rows = len(rows)
+	return rows, st, nil
 }
 
 // cloudSpelling is the form of the city written most often in the geofeed layer among the forms
@@ -369,109 +402,4 @@ func cmpCityKey(a, b cityKey) int {
 
 func addrFrom32(a uint32) netip.Addr {
 	return netip.AddrFrom4([4]byte{byte(a >> 24), byte(a >> 16), byte(a >> 8), byte(a)})
-}
-
-// downloadCloudRegions writes the 68-cloud-regions layer from Amazon's region file and the
-// geofeed layer in the layers directory. The file is fetched into downloads with the one shared
-// downloader, capped at cloudRegionsMaxFile; when the fetch fails the saved copy is used while
-// its last confirmation (the modification time of <file>.checked) is younger than
-// cloudRegionsMaxAge. The layer is optional: no geofeed layer, a failed fetch with no usable copy,
-// an unusable file or no qualifying region skips it (src.SkippedLayers, a warning). It never adds
-// to src.StaleLayers, so the health check ping is still sent. Cancellation, or a local file error
-// while reading the saved copy or writing the layer in the layers directory, fails; any problem
-// while fetching or saving the region file (also a local one inside the downloader) only skips
-// the layer. The layers directory is emptied at the start of Download, so no layer
-// file of an earlier run is left when the layer is skipped.
-func (p *Pipeline) downloadCloudRegions(ctx context.Context, client *http.Client, downloads, layers string, now time.Time, src *Source) error {
-	skip := func(format string, args ...any) { p.skipLayer(src, CloudRegionsLayer, format, args...) }
-	feeds := filepath.Join(layers, FeedsLayer)
-	if _, err := os.Stat(feeds); err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		skip("no %s", FeedsLayer)
-		return nil
-	}
-	url := p.cloudRegionsURL
-	if url == "" {
-		url = cloudRegionsURL
-	}
-	saved := filepath.Join(downloads, cloudRegionsFile)
-	status, err := fetchWithin(ctx, download.Capped(client, cloudRegionsMaxFile), url, saved, now, cloudRegionsMaxAge)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		// The address of the region file is public, so the error text may be logged as it is.
-		skip("the region file could not be fetched and there is no recent copy: %v", err)
-		return nil
-	}
-	if info, err := os.Stat(saved); err != nil || info.Size() > cloudRegionsMaxFile {
-		skip("the saved region file is missing or too large")
-		return nil
-	}
-	data, err := os.ReadFile(saved)
-	if err != nil {
-		return err
-	}
-	var stats cloudStats
-	rows, err := writeLayer(filepath.Join(layers, CloudRegionsLayer), func(w *csv.Writer) error {
-		var err error
-		stats, err = cloudRegionRows(data, feeds, w)
-		if err == nil && stats.Rows == 0 {
-			err = ErrNoRows
-		}
-		return err
-	})
-	var inputErr *cloudInputError
-	switch {
-	case errors.As(err, &inputErr):
-		// A bad copy must not be kept as current: fetch it again next run.
-		os.Remove(saved + etagSuffix)
-		os.Remove(saved + ".checked")
-		os.Remove(saved)
-		skip("the region file is unusable: %v", err)
-		return nil
-	case errors.Is(err, ErrNoRows):
-		skip("no region has a main geofeed city")
-		return nil
-	case err != nil:
-		return fmt.Errorf("cloud region rows: %w", err)
-	}
-	src.CloudRegions, src.CloudRegionsSeen = stats.Qualified, stats.Seen
-	src.Rows[CloudRegionsLayer] = rows
-	p.log("download: cloud regions %s: %d of %d regions got a city, %d entries (%d bad), %d rows", status, stats.Qualified, stats.Seen, stats.Parse.Entries, stats.Parse.Bad, rows)
-	return nil
-}
-
-// holdoutCloudRegions recomputes the cloud region layer from the kept feeds file and the region
-// file Download saved, into out, and sets replace[CloudRegionsLayer] to it. It never fetches.
-// When the saved file is missing or unusable, or no region qualifies from the kept feeds, the
-// layer is left out of the holdout build (replace[...] = "") and the returned note says so.
-func (p *Pipeline) holdoutCloudRegions(kept, out string, replace map[string]string) (note string, err error) {
-	replace[CloudRegionsLayer] = ""
-	data, err := os.ReadFile(filepath.Join(p.dir(), "downloads", cloudRegionsFile))
-	if os.IsNotExist(err) {
-		return "; " + CloudRegionsLayer + " left out: no saved region file", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("holdout region file: %w", err)
-	}
-	rows, err := writeLayer(out, func(w *csv.Writer) error {
-		_, err := cloudRegionRows(data, kept, w)
-		return err
-	})
-	var inputErr *cloudInputError
-	if errors.As(err, &inputErr) {
-		return "; " + CloudRegionsLayer + " left out: saved region file unusable", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("holdout cloud region rows: %w", err)
-	}
-	if rows == 0 {
-		os.Remove(out)
-		return "; " + CloudRegionsLayer + " left out: no rows from the kept feeds", nil
-	}
-	replace[CloudRegionsLayer] = out
-	return "", nil
 }

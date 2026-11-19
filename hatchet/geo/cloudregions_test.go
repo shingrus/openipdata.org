@@ -73,8 +73,9 @@ func cloudLayer(t *testing.T, data []byte, feeds string) (string, cloudStats) {
 	t.Helper()
 	var st cloudStats
 	out := layerRows(t, func(w *csv.Writer) error {
-		var err error
-		st, err = cloudRegionRows(data, feeds, w)
+		rows, s, err := cloudRegionRows(data, feeds)
+		st = s
+		writeCloudRows(w, rows)
 		return err
 	})
 	return strings.TrimPrefix(out, feedHeader), st
@@ -356,7 +357,7 @@ func TestCloudRegionsThresholds(t *testing.T) {
 func TestCloudRegionRowsErrors(t *testing.T) {
 	feeds := feedFile(t, "13.0.0.0/20,US,Ashburn")
 	err := func(data []byte, feeds string) error {
-		_, e := layerRowsErr(t, func(w *csv.Writer) error { _, e := cloudRegionRows(data, feeds, w); return e })
+		_, _, e := cloudRegionRows(data, feeds)
 		return e
 	}
 	if e := err([]byte("nope"), feeds); e == nil {
@@ -402,7 +403,10 @@ func newRegionServer(body []byte) *regionServer {
 
 func cloudPipeline(t *testing.T, url string, feedRows ...string) (*Pipeline, string, string) {
 	t.Helper()
-	p := &Pipeline{DataDir: t.TempDir(), cloudRegionsURL: url}
+	// Oracle's file is not found, so a test about Amazon alone stays one.
+	oracle := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(oracle.Close)
+	p := &Pipeline{DataDir: t.TempDir(), cloudRegionsURL: url, oracleRegionsURL: oracle.URL}
 	layers, downloads := p.layersDir(), filepath.Join(p.dir(), "downloads")
 	os.MkdirAll(layers, 0o750)
 	os.MkdirAll(downloads, 0o750)
@@ -444,7 +448,8 @@ func TestDownloadCloudRegions(t *testing.T) {
 	if err := p.downloadCloudRegions(ctx, client, downloads, layers, now, src); err != nil {
 		t.Fatal(err)
 	}
-	if src.skipped(CloudRegionsLayer) || len(src.StaleLayers) != 0 || src.CloudRegions != 1 || src.CloudRegionsSeen != 3 || src.Rows[CloudRegionsLayer] != 1 {
+	if src.skipped(CloudRegionsLayer) || len(src.StaleLayers) != 0 || src.CloudRegions != 1 || src.CloudRegionsSeen != 3 || src.Rows[CloudRegionsLayer] != 1 ||
+		!reflect.DeepEqual(src.CloudRegionsLeftOut, []string{"oracle"}) {
 		t.Fatalf("source %+v", src)
 	}
 	if got := readGzip(t, filepath.Join(layers, CloudRegionsLayer)); got != feedHeader+"52.0.0.0/16,IE,,Dublin,cloud-regions:aws:eu-west-1\n" {
@@ -600,7 +605,7 @@ func TestPrepareHoldoutCloudRegions(t *testing.T) {
 	os.Remove(argsFile)
 	_, _, status, err = p.prepareHoldout(context.Background(), eval)
 	args, _ = os.ReadFile(argsFile)
-	if err != nil || strings.Contains(string(args), "68-cloud-regions") || !strings.Contains(status, CloudRegionsLayer+" left out: no rows") {
+	if err != nil || strings.Contains(string(args), "68-cloud-regions") || !strings.Contains(status, CloudRegionsLayer+" left out: aws: no region has a main geofeed city") {
 		t.Errorf("held out: %v args = %s status = %q", err, args, status)
 	}
 
@@ -610,13 +615,13 @@ func TestPrepareHoldoutCloudRegions(t *testing.T) {
 	os.Remove(argsFile)
 	_, _, status, err = p.prepareHoldout(context.Background(), eval)
 	args, _ = os.ReadFile(argsFile)
-	if err != nil || strings.Contains(string(args), "68-cloud-regions") || !strings.Contains(status, CloudRegionsLayer+" left out: no saved region file") {
+	if err != nil || strings.Contains(string(args), "68-cloud-regions") || !strings.Contains(status, CloudRegionsLayer+" left out: aws: no saved region file") {
 		t.Errorf("no saved file: %v args = %s status = %q", err, args, status)
 	}
 	// An unusable saved file: left out too.
 	os.WriteFile(filepath.Join(downloads, cloudRegionsFile), []byte("nope"), 0o640)
 	_, _, status, err = p.prepareHoldout(context.Background(), eval)
-	if err != nil || !strings.Contains(status, "saved region file unusable") {
+	if err != nil || !strings.Contains(status, "aws: saved region file unusable") {
 		t.Errorf("unusable: %v status = %q", err, status)
 	}
 	// A run whose build skipped the layer has no layer file: the holdout does not add one.
