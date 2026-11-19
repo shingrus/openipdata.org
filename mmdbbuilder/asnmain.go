@@ -2,7 +2,8 @@ package main
 
 // The ASN main city fill (mmdbbuilder geo -asn-main): a guess that gives the
 // cityless addresses of an ASN the one city where the rest of its addresses in
-// that country are. With -fallback three more guesses follow it (fallback.go).
+// that country are. With -fallback three more guesses follow it, and -holders adds a
+// fifth (fallback.go, holders.go).
 //
 // It is the one derived fill done inside the builder, because it needs the
 // merged result of all layers. It is not a layer file.
@@ -41,9 +42,9 @@ const (
 )
 
 // guessSources are the city_sources of the guessed cities, the one list: the ASN main
-// city (80-asn-main) and the three -fallback guesses (82-asn-likely, 84-asn-near,
-// 86-country-main; see fallback.go).
-var guessSources = []string{asnMainSource, asnLikelySource, asnNearSource, countryMainSource}
+// city (80-asn-main), the three -fallback guesses (82-asn-likely, 84-asn-near,
+// 86-country-main; see fallback.go) and the holder city (85-holder-city, -holders).
+var guessSources = []string{asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource}
 
 // isGuessSource reports whether a city_source names a guessed city. Guesses
 // must not count as evidence for anything we build from our own MMDB (the router
@@ -53,7 +54,7 @@ func isGuessSource(source string) bool { return slices.Contains(guessSources, so
 // noSampleSources are the city_sources whose city is weak evidence: a /24 whose city comes
 // from one of them still counts as having no city in the gap list (mmdbbuilder gaps), so
 // sample-names keeps sampling customer PTR names there (a customer name is far more precise).
-// They are the four guesses (guessSources), the BGP community layer (25-bgp), the M-Lab hop
+// They are the five guesses (guessSources), the BGP community layer (25-bgp), the M-Lab hop
 // layer (36-mlab), the whois text layer (37-whois-text: right about 68% of the time, a
 // customer name about 82%) and the ARIN registrant city layer (37-whois-arin: right about 61% of
 // the time; sync-arin-whois walks the gap list, so the /24s it fills must stay in it) and the
@@ -107,14 +108,25 @@ type asnSeg struct{ lo, hi, asn uint32 }
 // nobody, but it still shadows the broader prefixes under it, as in the ASN
 // geofeed layer: its addresses are never given to a broader prefix.
 func readASNPrefixes(path string) ([]asnSeg, error) {
+	segs, _, err := readASNData(path)
+	return segs, err
+}
+
+// addrRange is a range of IPv4 addresses (inclusive).
+type addrRange struct{ lo, hi uint32 }
+
+// readASNData is readASNPrefixes that also returns the announced ranges: the merged union
+// of ALL IPv4 prefixes of the file, a prefix announced by more than one ASN included (it
+// has no segment, but it is announced). Sorted, not overlapping, neighbours merged.
+func readASNData(path string) ([]asnSeg, []addrRange, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 	gz, err := gzip.NewReader(bufio.NewReader(f))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer gz.Close()
 	r := csv.NewReader(gz)
@@ -122,7 +134,7 @@ func readASNPrefixes(path string) ([]asnSeg, error) {
 	r.ReuseRecord = true
 	header, err := r.Read()
 	if err != nil {
-		return nil, fmt.Errorf("read header: %w", err)
+		return nil, nil, fmt.Errorf("read header: %w", err)
 	}
 	col := map[string]int{}
 	for i, name := range header {
@@ -131,7 +143,7 @@ func readASNPrefixes(path string) ([]asnSeg, error) {
 	asnCol, ok1 := col["asn"]
 	prefixCol, ok2 := col["prefix"]
 	if !ok1 || !ok2 {
-		return nil, fmt.Errorf("header %q lacks asn or prefix", strings.Join(header, ","))
+		return nil, nil, fmt.Errorf("header %q lacks asn or prefix", strings.Join(header, ","))
 	}
 	// owner 0 marks an ambiguous prefix.
 	owner := map[netip.Prefix]uint32{}
@@ -145,7 +157,7 @@ func readASNPrefixes(path string) ([]asnSeg, error) {
 			if errors.As(err, &parseErr) {
 				continue
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		if len(rec) <= max(asnCol, prefixCol) {
 			continue
@@ -210,7 +222,16 @@ func readASNPrefixes(path string) ([]asnSeg, error) {
 	for len(stack) > 0 {
 		pop()
 	}
-	return segs, nil
+	// entries are sorted by start, so the union is one pass.
+	var announced []addrRange
+	for _, e := range entries {
+		if n := len(announced); n > 0 && uint64(e.lo) <= uint64(announced[n-1].hi)+1 {
+			announced[n-1].hi = max(announced[n-1].hi, e.hi)
+			continue
+		}
+		announced = append(announced, addrRange{e.lo, e.hi})
+	}
+	return segs, announced, nil
 }
 
 // overlaps calls fn for each part of [lo, hi] that lies in a segment.

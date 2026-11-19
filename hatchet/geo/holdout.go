@@ -316,10 +316,12 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 	mmdbPath = filepath.Join(dir, "holdout.mmdb")
 	// The ASN main city fill is recomputed by the builder from this build's own merged
 	// result, so the held-out feeds never reach it.
-	asnMainArgs, _ := p.asnMainArgs()
+	asnMainArgs, asnMain := p.asnMainArgs()
+	// The holder blocks file is passed as it is: it is not learned from the geofeed rows.
+	holderArgs, _ := p.holderArgs(asnMain == "on")
 	// The fallback guesses are recomputed the same way (the country guess even without the
 	// ASN prefixes).
-	args, err := p.geoArgs(mmdbPath, replace, append(slices.Clone(asnMainArgs), fallbackFlag)...)
+	args, err := p.geoArgs(mmdbPath, replace, slices.Concat(asnMainArgs, holderArgs, []string{fallbackFlag})...)
 	if err != nil {
 		return "", "", "", err
 	}

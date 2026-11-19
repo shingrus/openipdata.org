@@ -10,16 +10,19 @@
 //	Lookup  the gap /24s inside ARIN's address space, one RDAP lookup each (a walk over all /24s
 //	        from a saved cursor, 2 lookups a second) -> records.csv.gz and its journal
 //	Export  the stored records with a city that GeoNames places in the record's own state
-//	        -> 37-whois-arin.csv.gz
+//	        -> 37-whois-arin.csv.gz, and the wider records the same way -> holder-cities.csv.gz
 //	Upload  the layer -> the fixed key LayerKey in the private R2 bucket (build-geo-data reads it),
-//	        and once a day the records file -> RecordsKey (this workflow's own backup)
+//	        the holder blocks file -> HolderCitiesKey (build-geo-data reads it too), and once a day
+//	        the records file -> RecordsKey (this workflow's own backup)
 //
 // Measured on RIPE Atlas: replacing weak answers with the registrant city of ARIN records of at
 // most a /20, keeping only cities that GeoNames places in the record's own state, gives +197 right
 // and -37 lost probes (61% of the 531 rows right). A record wider than a /16 holds the head office
 // (9% right) and is not in the layer; records of at most a /16 whose holder class (derived from the
 // registrant's name, which is never kept) is edu or gov also join it, and wide records up to a /8 are
-// kept with their class in holders.csv for a later guess.
+// kept with their class in holders.csv. Export also writes the holder blocks file (HolderCitiesFile):
+// the registrant city of every record wider than a /20, which build-geo-data gives to the builder
+// for the guess 85-holder-city (only address space that no network announces gets it).
 //
 // The answers are untrusted input: only the range, country, state and city are kept (never a
 // handle or a name), bad answers are counted, and no IP, name or secret is put in a log line,
@@ -45,6 +48,15 @@ const (
 	LayerKey = "internal/layers/" + LayerFile
 
 	layerSource = "whois-city:arin" // the "source" column of the layer rows
+
+	// HolderCitiesFile is the holder blocks file (in DataDir/arin): the city of the registrant for
+	// wide blocks, in the layer format, read by build-geo-data for the guess 85-holder-city. It is
+	// not a layer file.
+	HolderCitiesFile = "holder-cities.csv.gz"
+	// HolderCitiesKey is its fixed key in the private R2 bucket.
+	HolderCitiesKey = "internal/arin/" + HolderCitiesFile
+
+	holderCitySource = "holder-city:arin" // the "source" column of its rows
 
 	// HoldersKey is the fixed key of the daily copy of holders.csv in the private R2 bucket (this
 	// workflow's own backup, like RecordsKey).
@@ -137,6 +149,9 @@ type Pipeline struct {
 
 func (p *Pipeline) dir() string       { return filepath.Join(p.DataDir, "arin") }
 func (p *Pipeline) LayerPath() string { return filepath.Join(p.dir(), LayerFile) }
+
+// HolderCitiesPath is the holder blocks file.
+func (p *Pipeline) HolderCitiesPath() string { return filepath.Join(p.dir(), HolderCitiesFile) }
 
 func (p *Pipeline) log(format string, args ...any) {
 	if p.Progress != nil {

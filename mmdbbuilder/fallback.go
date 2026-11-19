@@ -11,11 +11,16 @@ package main
 //     addresses with a city, no minimum number of addresses.
 //  3. 84-asn-near: the city of the nearest piece of the same group that has a city, when
 //     that piece lies in the same /20. Decided per /24 chunk of the cityless part.
-//  4. 86-country-main: the main city of the country over all addresses with a city, with
+//  4. 85-holder-city: only for address space that no network announces (not even a prefix
+//     announced by two ASNs): the city of the most specific holder block (-holders) that
+//     covers it, when the block's country is the country of the address (holders.go).
+//  5. 86-country-main: the main city of the country over all addresses with a city, with
 //     or without an ASN, when it holds at least 30% of them.
 //
-// Rungs 80 to 84 need the ASN prefixes (-asn-main); 82 to 86 need -fallback. Without
-// -fallback only rung 80 runs, byte for byte as before.
+// Rungs 80 to 84 need the ASN prefixes (-asn-main); 82, 84 and 86 need -fallback; rung 85
+// needs -holders, which needs -asn-main (the announced prefixes say what is unannounced).
+// Without -fallback and -holders only rung 80 runs, byte for byte as before. A part that
+// has an ASN never gets rung 85.
 //
 // All evidence (group sums, pieces, country sums) comes from ONE snapshot of the tree
 // taken after all layers and before anything is inserted, and every cityless part is
@@ -122,16 +127,30 @@ func nearPiece(pieces []piece, x uint32) (rec uint32, ok bool) {
 
 // fillGuesses runs the ladder on the tree and returns one stats entry per rung that ran,
 // in order: 80-asn-main and, with fallback, 82-asn-likely and 84-asn-near (all three only
-// when asnPath, the asn-prefixes file, is given), then with fallback 86-country-main.
+// when asnPath, the asn-prefixes file, is given), then 85-holder-city (only when
+// holdersPath is given, which needs asnPath), then with fallback 86-country-main.
 // recordFor makes the shared record of a place. It only fills: an address that has a
 // city, or another country, is never touched. The result is deterministic.
-func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geoNames, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) ([]geoLayerStats, error) {
+func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geoNames, holdersPath string, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) ([]geoLayerStats, error) {
 	useASN := asnPath != ""
+	useHolders := holdersPath != ""
+	if useHolders && !useASN {
+		return nil, fmt.Errorf("%s: holders need the ASN prefixes", holdersPath)
+	}
 	var segs []asnSeg
+	var announced []addrRange
 	if useASN {
 		var err error
-		if segs, err = readASNPrefixes(asnPath); err != nil {
+		if segs, announced, err = readASNData(asnPath); err != nil {
 			return nil, fmt.Errorf("%s: %w", asnPath, err)
+		}
+	}
+	var holders []holderSeg
+	var holderBlocks, holderSkipped int
+	if useHolders {
+		var err error
+		if holders, holderBlocks, holderSkipped, err = readHolders(holdersPath); err != nil {
+			return nil, fmt.Errorf("%s: %w", holdersPath, err)
 		}
 	}
 	leaves, pairs := treeLeaves(tree) // the snapshot
@@ -207,8 +226,9 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	}
 
 	// Give every cityless part to the first rung that applies, in address order.
-	var r80, r82, r84, r86 rung
-	r80.stats.name, r82.stats.name, r84.stats.name, r86.stats.name = asnMainSource, asnLikelySource, asnNearSource, countryMainSource
+	var r80, r82, r84, r85, r86 rung
+	r80.stats.name, r82.stats.name, r84.stats.name, r85.stats.name, r86.stats.name = asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource
+	r85.stats.skipped = holderSkipped
 	for _, l := range leaves {
 		p := pairs[l.rec]
 		if normCity(p.city) != "" {
@@ -222,7 +242,15 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 		}
 		part := func(a, b uint32, asn uint32, hasASN bool) {
 			if !hasASN {
-				country(a, b)
+				if !useHolders {
+					country(a, b)
+					return
+				}
+				// Nobody announces the part, or two ASNs do: only the unannounced
+				// addresses can get the holder city.
+				splitRange(announced, a, b, country, func(c, d uint32) {
+					holderParts(holders, c, d, p.code, func(e, f uint32, city string) { r85.add(e, f, p.code, city) }, country)
+				})
 				return
 			}
 			key := groupKey{asn, p.code}
@@ -273,6 +301,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	r80.stats.note = fmt.Sprintf("asn-main: %d groups qualified of %d, %d addresses filled", qualified80, len(groups), r80.addrs)
 	r82.stats.note = fmt.Sprintf("asn-likely: %d groups qualified of %d, %d addresses filled", qualified82, len(groups), r82.addrs)
 	r84.stats.note = fmt.Sprintf("asn-near: %d addresses filled", r84.addrs)
+	r85.stats.note = fmt.Sprintf("holder-city: %d blocks, %d addresses filled", holderBlocks, r85.addrs)
 	r86.stats.note = fmt.Sprintf("country-main: %d countries qualified of %d, %d addresses filled", qualifiedCountries, len(countries), r86.addrs)
 	var ran []*rung
 	if useASN {
@@ -280,6 +309,9 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 		if fallback {
 			ran = append(ran, &r82, &r84)
 		}
+	}
+	if useHolders {
+		ran = append(ran, &r85)
 	}
 	if fallback {
 		ran = append(ran, &r86)

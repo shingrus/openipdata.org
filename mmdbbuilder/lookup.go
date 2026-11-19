@@ -205,7 +205,7 @@ type cityStats struct {
 // shown) in the ip2geo MMDB and writes ip<TAB>country<TAB>city to outPath for
 // each one that has a non-empty city, through a temporary file and a rename.
 // The country and city are the record's country_code and city_name. A city that is
-// only a guess (city_source 80-asn-main, 82-asn-likely, 84-asn-near or 86-country-main) is not written: these rows are evidence for
+// only a guess (city_source 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city or 86-country-main) is not written: these rows are evidence for
 // routers, and a guess must not vote.
 func writeCities(mmdbPath, inPath, outPath string) (cityStats, error) {
 	return writeCitiesSource(mmdbPath, inPath, outPath, false, false)

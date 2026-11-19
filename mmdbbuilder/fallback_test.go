@@ -20,7 +20,7 @@ func guessBuild(t *testing.T, dir, layerRows string, asnRows *string, index geoN
 		asn = writeFile(t, filepath.Join(dir, "asn-prefixes.csv.gz"), "asn,prefix\n"+*asnRows)
 	}
 	out := filepath.Join(dir, "out.mmdb")
-	stats, err := buildGeoGuesses([]string{layer}, "", out, false, nil, nil, nil, index, asn, fallback)
+	stats, err := buildGeoGuesses([]string{layer}, "", out, false, nil, nil, nil, index, asn, fallback, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestFallbackLadder(t *testing.T) {
 		t.Errorf("86 note = %q", s.note)
 	}
 
-	// The four guesses are no evidence: gaps lists their /24s, lookup -in writes nothing for them.
+	// The guesses are no evidence: gaps lists their /24s, lookup -in writes nothing for them.
 	gapsOut := filepath.Join(dir, "gaps.txt")
 	if _, err := writeGaps(out, gapsOut); err != nil {
 		t.Fatal(err)

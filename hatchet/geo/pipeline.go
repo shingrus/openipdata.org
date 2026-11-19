@@ -247,7 +247,8 @@ type Source struct {
 
 	// SkippedLayers are the optional layers (see optionalLayers) that are not
 	// in the build this run: they had no rows or no object, or skip_layers
-	// named them.
+	// named them. The holder blocks file of the 85-holder-city guess (not a layer) is listed
+	// by that name when it is missing, old or could not be fetched.
 	SkippedLayers []string `json:"skipped_layers,omitempty"`
 }
 
@@ -476,6 +477,11 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 
 	// 14. The ARIN registrant cities (sync-arin-whois's layer file in R2), put in as it is.
 	if err := p.downloadARIN(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
+		return src, err
+	}
+
+	// 14b. The holder blocks of ARIN (the same workflow's second file), for the 85-holder-city guess.
+	if err := p.downloadHolderCities(ctx, r2.DownloadIfChanged, downloads, now, &src); err != nil {
 		return src, err
 	}
 
@@ -746,6 +752,11 @@ type BuildMMDBOutput struct {
 	// ASNMain is "on" when the build gave the main city of each ASN to its addresses
 	// that have a country and no city (-asn-main, a guess), or "skipped: no ASN prefixes" / "skipped: ASN prefixes unreadable".
 	ASNMain string `json:"asn_main"`
+	// HolderCity is "on" when the build gave the registrant city of ARIN's wide blocks to
+	// unannounced address space inside them (-holders, the guess 85-holder-city; it needs the
+	// ASN main fill), or "skipped: no ASN prefixes" / "skipped: no holder blocks" /
+	// "skipped: holder blocks unreadable".
+	HolderCity string `json:"holder_city"`
 	// Fallback is "on": the build passes -fallback, so the addresses still without a city
 	// get the guesses 82-asn-likely and 84-asn-near (only with the ASN prefixes) and
 	// 86-country-main (always).
@@ -779,7 +790,7 @@ func (p *Pipeline) prepareGeoNames(ctx context.Context) (path, status string) {
 }
 
 // layerSummary matches mmdbbuilder's "layer <name>: R rows, P prefixes, S skipped". The
-// guesses print the same line (layer 80-asn-main, 82-asn-likely, 84-asn-near, 86-country-main),
+// guesses print the same line (layer 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main),
 // so they are in the prefixes of the task output.
 var layerSummary = regexp.MustCompile(`(?m)^layer (\S+): \d+ rows, (\d+) prefixes, (\d+) skipped$`)
 
@@ -921,8 +932,9 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 		}
 	}
 	asnMainArgs, asnMain := p.asnMainArgs()
-	extra = append(extra, asnMainArgs...)
-	extra = append(extra, fallbackFlag)
+	holderArgs, holderCity := p.holderArgs(asnMain == "on")
+	guesses := slices.Concat(asnMainArgs, holderArgs, []string{fallbackFlag}) // the flags of the guesses; the retry without GeoNames passes the same ones
+	extra = append(extra, guesses...)
 	args, err := p.geoArgs(final, nil, extra...)
 	if err != nil {
 		return BuildMMDBOutput{}, err
@@ -932,7 +944,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 		// The builder named the GeoNames file in its error: build again without it.
 		p.log("mmdb: geonames unusable, building without coordinates: %v", err)
 		coordinates = "skipped: the builder could not read the GeoNames file"
-		if args, err = p.geoArgs(final, nil, append(slices.Clone(asnMainArgs), fallbackFlag)...); err == nil {
+		if args, err = p.geoArgs(final, nil, guesses...); err == nil {
 			stdout, err = p.runBuilder(ctx, args)
 		}
 	}
@@ -942,7 +954,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
-	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, Fallback: "on"}
+	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, Fallback: "on"}
 	if m := coordinatesSummary.FindStringSubmatch(stdout); m != nil {
 		out.CoordinatesPlaced, _ = strconv.Atoi(m[1])
 		out.CoordinatesUnplaced, _ = strconv.Atoi(m[2])

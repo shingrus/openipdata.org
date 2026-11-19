@@ -37,6 +37,13 @@ type ExportOutput struct {
 	HoldersPruned     int  `json:"holders_pruned"`               // holder rows older than 300 days deleted
 	HoldersUnreadable bool `json:"holders_unreadable,omitempty"` // holders.csv could not be read or written: the layer is made without it
 
+	HolderCityRecords int `json:"holder_city_records"` // candidates of the holder blocks file (main records wider than a /20, holder rows wider than a /16)
+	HolderCityDropped int `json:"holder_city_dropped"` // of them unplaced, in another state or ambiguous
+	HolderCityRows    int `json:"holder_city_rows"`    // prefixes written to the holder blocks file
+	// HolderCityFile is what happened to the holder blocks file: written, removed (no row), kept
+	// (holders.csv could not be used, the file is left as it is) or failed. A problem never fails the task.
+	HolderCityFile string `json:"holder_city_file,omitempty"`
+
 	Bytes           int64   `json:"bytes"`
 	DurationSeconds float64 `json:"duration_seconds"`
 }
@@ -178,42 +185,66 @@ type layerRow struct {
 // is maxLayerBlock) under exactly the same rules.
 func buildRows(recs, holders []record, idx placeIndex, out *ExportOutput) []layerRow {
 	var rows []layerRow
-	add := func(r record, holder bool) {
-		pl, ok := idx.place(r.Country, r.City)
-		if !ok {
-			out.Unplaced++
-			return
-		}
-		if stateOf(r.Country, pl.admin1) != r.State {
-			out.OtherState++
-			return
-		}
-		if again, ok := idx.place(r.Country, pl.name); !ok || again.id != pl.id {
-			out.Ambiguous++
-			return
-		}
-		for _, p := range rirstats.RangeToPrefixes(addrOf(r.Start), addrOf(r.End)) {
-			rows = append(rows, layerRow{start: u32(p.Addr()), bits: p.Bits(), size: r.size(), prefix: p.String(), country: r.Country, state: r.State, city: pl.name, holder: holder, at: r.LookedUp})
-		}
-	}
+	var c placeCounts
 	for _, r := range recs {
 		if r.size() > maxLayerBlock || r.Country == "" || r.State == "" || r.City == "" {
 			continue
 		}
 		out.Records++
-		add(r, false)
+		rows = append(rows, placeRecord(r, false, idx, &c)...)
 	}
 	for _, r := range holders {
 		if (r.Class != classEdu && r.Class != classGov) || r.size() > maxStoredBlock || r.Country == "" || r.State == "" || r.City == "" {
 			continue
 		}
 		out.HolderCandidates++
-		add(r, true)
+		rows = append(rows, placeRecord(r, true, idx, &c)...)
 	}
-	// By start address, the broader block first. The same prefix can come from two records that
-	// overlap: the one from the smaller record goes first (it is the more specific answer); for the
-	// same range the later looked_up goes first (a holder row and a main record), and a full tie
-	// breaks on the text, so the file is the same every time.
+	out.Unplaced += c.unplaced
+	out.OtherState += c.otherState
+	out.Ambiguous += c.ambiguous
+	kept := sortRows(rows)
+	for _, r := range kept {
+		if r.holder {
+			out.HolderRows++
+		}
+	}
+	return kept
+}
+
+// placeCounts counts the records placeRecord dropped.
+type placeCounts struct{ unplaced, otherState, ambiguous int }
+
+// placeRecord is the placing rule of the layer: the city must be a place GeoNames has in the
+// record's own state, written under its main name, and only when that name places the same place
+// again. It returns the CIDR prefixes of the record as rows, or none (counted in c).
+func placeRecord(r record, holder bool, idx placeIndex, c *placeCounts) []layerRow {
+	pl, ok := idx.place(r.Country, r.City)
+	if !ok {
+		c.unplaced++
+		return nil
+	}
+	if stateOf(r.Country, pl.admin1) != r.State {
+		c.otherState++
+		return nil
+	}
+	if again, ok := idx.place(r.Country, pl.name); !ok || again.id != pl.id {
+		c.ambiguous++
+		return nil
+	}
+	var rows []layerRow
+	for _, p := range rirstats.RangeToPrefixes(addrOf(r.Start), addrOf(r.End)) {
+		rows = append(rows, layerRow{start: u32(p.Addr()), bits: p.Bits(), size: r.size(), prefix: p.String(), country: r.Country, state: r.State, city: pl.name, holder: holder, at: r.LookedUp})
+	}
+	return rows
+}
+
+// sortRows orders rows by start address, the broader block first, and drops repeated prefixes.
+// The same prefix can come from two records that overlap: the one from the smaller record goes
+// first (it is the more specific answer); for the same range the later looked_up goes first (a
+// holder row and a main record), and a full tie breaks on the text, so the file is the same every
+// time. The first row of a prefix stays.
+func sortRows(rows []layerRow) []layerRow {
 	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		switch {
@@ -238,15 +269,40 @@ func buildRows(recs, holders []record, idx placeIndex, out *ExportOutput) []laye
 			continue // the same prefix from two records: the first one stays
 		}
 		kept = append(kept, r)
-		if r.holder {
-			out.HolderRows++
-		}
 	}
 	return kept
 }
 
+// buildHolderCityRows makes the rows of the holder blocks file: main records wider than a /20 and
+// holders.csv rows wider than a /16, whatever their class, with a usable country, state and city,
+// through the placing rule of the layer. It returns the rows, the number of candidates and how
+// many were dropped (unplaced, in another state or ambiguous).
+func buildHolderCityRows(recs, holders []record, idx placeIndex) (rows []layerRow, candidates, dropped int) {
+	var c placeCounts
+	for _, r := range recs {
+		if r.size() <= maxLayerBlock || r.Country == "" || r.State == "" || r.City == "" {
+			continue
+		}
+		candidates++
+		rows = append(rows, placeRecord(r, false, idx, &c)...)
+	}
+	for _, r := range holders {
+		if r.size() <= maxStoredBlock || r.Country == "" || r.State == "" || r.City == "" {
+			continue
+		}
+		candidates++
+		rows = append(rows, placeRecord(r, true, idx, &c)...)
+	}
+	return sortRows(rows), candidates, c.unplaced + c.otherState + c.ambiguous
+}
+
 // writeLayer writes the layer file (gzipped CSV in the geofeed layout) through a temporary file.
 func writeLayer(path string, rows []layerRow) (int64, error) {
+	return writeRows(path, rows, layerSource)
+}
+
+// writeRows is writeLayer with the source text given.
+func writeRows(path string, rows []layerRow, source string) (int64, error) {
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
@@ -257,7 +313,7 @@ func writeLayer(path string, rows []layerRow) (int64, error) {
 	w := csv.NewWriter(gz)
 	w.Write([]string{"prefix", "country", "region", "city", "source"})
 	for _, r := range rows {
-		w.Write([]string{r.prefix, r.country, r.state, r.city, layerSource})
+		w.Write([]string{r.prefix, r.country, r.state, r.city, source})
 	}
 	w.Flush()
 	if err := errors.Join(w.Error(), gz.Close(), f.Close()); err != nil {
@@ -346,6 +402,7 @@ func (p *Pipeline) Export(ctx context.Context, force bool) (ExportOutput, error)
 		if err := os.Remove(p.LayerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return out, err
 		}
+		p.exportHolderCities(recs, holders, idx, &out)
 		out.Skipped = skipNoRows
 		p.log("export: skipped (%s); %d records", skipNoRows, out.Records)
 		return out, nil
@@ -353,8 +410,47 @@ func (p *Pipeline) Export(ctx context.Context, force bool) (ExportOutput, error)
 	if out.Bytes, err = writeLayer(p.LayerPath(), rows); err != nil {
 		return out, fmt.Errorf("write %s: %w", LayerFile, err)
 	}
+	p.exportHolderCities(recs, holders, idx, &out)
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
 	p.log("export: %d records and %d holder candidates, %d unplaced, %d in another state, %d ambiguous; %d rows, %d from holders (%d bytes); %d old removed",
 		out.Records, out.HolderCandidates, out.Unplaced, out.OtherState, out.Ambiguous, out.Rows, out.HolderRows, out.Bytes, out.Pruned)
 	return out, nil
+}
+
+// Results of the holder blocks file (ExportOutput.HolderCityFile).
+const (
+	holderCitiesWritten = "written"
+	holderCitiesRemoved = "removed" // no row: the file is gone
+	holderCitiesKept    = "kept"    // holders.csv could not be used: the file is left as it is
+)
+
+// exportHolderCities writes the holder blocks file. Export calls it right after the layer is
+// written or removed, so it is made also when the layer has no row and never keeps the layer
+// back. A problem with it never fails the task: the result is only in the output and one
+// WARNING. When holders.csv could not be used the file is left as it is: made from the main
+// records alone it would lose every block wider than a /16 until the next good run.
+func (p *Pipeline) exportHolderCities(recs, holders []record, idx placeIndex, out *ExportOutput) {
+	if out.HoldersUnreadable {
+		out.HolderCityFile = holderCitiesKept
+		p.log("export: WARNING the holder blocks file is left as it is (the holders file cannot be used)")
+		return
+	}
+	rows, candidates, dropped := buildHolderCityRows(recs, holders, idx)
+	out.HolderCityRecords, out.HolderCityDropped, out.HolderCityRows = candidates, dropped, len(rows)
+	out.HolderCityFile = holderCitiesWritten
+	var err error
+	if len(rows) == 0 {
+		out.HolderCityFile = holderCitiesRemoved
+		if err = os.Remove(p.HolderCitiesPath()); errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
+	} else {
+		_, err = writeRows(p.HolderCitiesPath(), rows, holderCitySource)
+	}
+	if err != nil {
+		out.HolderCityFile = holdersFailed
+		p.log("export: WARNING the holder blocks file could not be written")
+		return
+	}
+	p.log("export: holder blocks: %d candidates, %d dropped, %d rows", candidates, dropped, len(rows))
 }

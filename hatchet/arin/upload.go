@@ -44,7 +44,10 @@ type UploadOutput struct {
 	BackupRecords int               `json:"backup_records,omitempty"`
 	// HoldersBackup is the result of the daily copy of holders.csv: uploaded, unchanged, recent,
 	// refused, failed, or empty when there is no file. A problem only shows here, it never fails the task.
-	HoldersBackup   string  `json:"holders_backup,omitempty"`
+	HoldersBackup string `json:"holders_backup,omitempty"`
+	// HolderCities is the put status of the holder blocks file (uploaded, unchanged, refreshed),
+	// failed, or empty when there is no file. A problem only shows here, it never fails the task.
+	HolderCities    string  `json:"holder_cities,omitempty"`
 	DurationSeconds float64 `json:"duration_seconds"`
 }
 
@@ -89,6 +92,9 @@ func (p *Pipeline) Upload(ctx context.Context, force bool) (UploadOutput, error)
 		out.Status, out.Bytes = status, fi.Size()
 		p.log("upload: %s (%d bytes)", status, out.Bytes)
 	}
+	if err := p.uploadHolderCities(ctx, put, force, &out); err != nil {
+		return out, err
+	}
 	if err := p.backup(ctx, put, force, &out); err != nil {
 		return out, err
 	}
@@ -97,6 +103,31 @@ func (p *Pipeline) Upload(ctx context.Context, force bool) (UploadOutput, error)
 	}
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
 	return out, nil
+}
+
+// uploadHolderCities puts the holder blocks file at HolderCitiesKey like the layer. A missing file
+// sends nothing (the R2 object stays). Any problem is only counted in the output; only a
+// cancellation is returned.
+func (p *Pipeline) uploadHolderCities(ctx context.Context, put uploadFunc, force bool, out *UploadOutput) error {
+	if _, err := os.Stat(p.HolderCitiesPath()); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			out.HolderCities = holdersFailed
+			p.log("upload: WARNING holder blocks file cannot be read")
+		}
+		return nil
+	}
+	_, status, err := put(ctx, HolderCitiesKey, p.HolderCitiesPath(), publish.PutOptions{Force: force, Refresh: true})
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		out.HolderCities = holdersFailed
+		p.log("upload: WARNING holder blocks file not sent: R2 did not take it")
+		return nil
+	}
+	out.HolderCities = string(status)
+	p.log("upload: holder blocks %s", status)
+	return nil
 }
 
 // backupHolders copies holders.csv, gzipped, to HoldersKey when there is none yet or the last copy is
