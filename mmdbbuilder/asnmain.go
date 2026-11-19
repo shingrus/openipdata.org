@@ -43,9 +43,9 @@ const (
 )
 
 // guessSources are the city_sources of the guessed cities, the one list: the ASN main
-// city (80-asn-main), the three -fallback guesses (82-asn-likely, 84-asn-near,
-// 86-country-main; see fallback.go) and the holder city (85-holder-city, -holders).
-var guessSources = []string{asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource}
+// city (80-asn-main), the four -fallback guesses (82-asn-likely, 84-asn-near,
+// 86-country-main, 88-asn-far; see fallback.go) and the holder city (85-holder-city, -holders).
+var guessSources = []string{asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource, asnFarSource}
 
 // isGuessSource reports whether a city_source names a guessed city. Guesses
 // must not count as evidence for anything we build from our own MMDB (the router
@@ -55,7 +55,7 @@ func isGuessSource(source string) bool { return slices.Contains(guessSources, so
 // noSampleSources are the city_sources whose city is weak evidence: a /24 whose city comes
 // from one of them still counts as having no city in the gap list (mmdbbuilder gaps), so
 // sample-names keeps sampling customer PTR names there (a customer name is far more precise).
-// They are the five guesses (guessSources), the BGP community layer (25-bgp), the M-Lab hop
+// They are the six guesses (guessSources), the BGP community layer (25-bgp), the M-Lab hop
 // layer (36-mlab), the whois text layer (37-whois-text: right about 68% of the time, a
 // customer name about 82%) and the ARIN registrant city layer (37-whois-arin: right about 61% of
 // the time; sync-arin-whois walks the gap list, so the /24s it fills must stay in it) and the

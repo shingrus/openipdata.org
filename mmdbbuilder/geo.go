@@ -100,8 +100,8 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 	return buildGeoGuesses(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, asnMain, false, "")
 }
 
-// buildGeoGuesses is buildGeo with the fallback switch: with fallback, three more guesses
-// follow the ASN main city fill (82-asn-likely, 84-asn-near, 86-country-main; see
+// buildGeoGuesses is buildGeo with the fallback switch: with fallback, more guesses
+// follow the ASN main city fill (82-asn-likely, 84-asn-near, 86-country-main, 88-asn-far; see
 // fallback.go), and with fallback and no asnMain only the country one runs. With holders
 // (the path of a holders file, "" for none; it needs asnMain) the holder city guess runs
 // as well (85-holder-city, holders.go). Without them the output is exactly buildGeo's.

@@ -762,8 +762,8 @@ type BuildMMDBOutput struct {
 	// "skipped: holder blocks unreadable".
 	HolderCity string `json:"holder_city"`
 	// Fallback is "on": the build passes -fallback, so the addresses still without a city
-	// get the guesses 82-asn-likely and 84-asn-near (only with the ASN prefixes) and
-	// 86-country-main (always).
+	// get the guesses 82-asn-likely, 84-asn-near and 88-asn-far (only with the ASN prefixes)
+	// and 86-country-main (always).
 	Fallback string `json:"fallback"`
 	// CoordinatesPlaced and CoordinatesUnplaced count the new records with a city
 	// that got coordinates and that GeoNames could not place (counts only).
@@ -794,7 +794,8 @@ func (p *Pipeline) prepareGeoNames(ctx context.Context) (path, status string) {
 }
 
 // layerSummary matches mmdbbuilder's "layer <name>: R rows, P prefixes, S skipped". The
-// guesses print the same line (layer 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main),
+// guesses print the same line (layer 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main,
+// 88-asn-far),
 // so they are in the prefixes of the task output.
 var layerSummary = regexp.MustCompile(`(?m)^layer (\S+): \d+ rows, (\d+) prefixes, (\d+) skipped$`)
 
@@ -906,8 +907,8 @@ func (p *Pipeline) asnMainArgs() (args []string, status string) {
 	return []string{asnMainFlag, path}, "on"
 }
 
-// fallbackFlag is the "mmdbbuilder geo" flag of the three more guesses (82-asn-likely,
-// 84-asn-near, 86-country-main) for the addresses the ASN main city fill left without a city.
+// fallbackFlag is the "mmdbbuilder geo" flag of the four more guesses (82-asn-likely,
+// 84-asn-near, 86-country-main, 88-asn-far) for the addresses the ASN main city fill left without a city.
 // Every build passes it, also when the ASN prefixes are missing: then only the country
 // guess (86-country-main) runs.
 const fallbackFlag = "-fallback"
