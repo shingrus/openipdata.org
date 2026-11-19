@@ -116,7 +116,7 @@ func TestBuildRows(t *testing.T) {
 		rec("10.3.0.0", "10.3.0.255", "US", "TX", "Foo Town"),
 		rec("10.3.1.0", "10.3.1.255", "", "", ""), // no city: never exported
 	}
-	rows := buildRows(recs, idx, &out)
+	rows := buildRows(recs, nil, idx, &out)
 	var got []string
 	for _, r := range rows {
 		got = append(got, strings.Join([]string{r.prefix, r.country, r.state, r.city}, ","))
@@ -143,7 +143,7 @@ func TestBuildRows(t *testing.T) {
 	rows = buildRows([]record{
 		rec("10.0.1.0", "10.0.1.255", "US", "OR", "Portland"),
 		rec("10.0.1.0", "10.0.1.255", "US", "TX", "Foo Town"),
-	}, idx, &out)
+	}, nil, idx, &out)
 	if len(rows) != 1 {
 		t.Errorf("duplicate prefix: %v", rows)
 	}
@@ -153,7 +153,7 @@ func TestBuildRows(t *testing.T) {
 	rows = buildRows([]record{
 		rec("10.0.1.0", "10.0.2.255", "US", "TX", "Foo Town"),
 		rec("10.0.1.0", "10.0.1.255", "US", "OR", "Portland"),
-	}, idx, &out)
+	}, nil, idx, &out)
 	got = nil
 	for _, r := range rows {
 		got = append(got, r.prefix+","+r.city)

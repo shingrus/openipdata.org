@@ -17,7 +17,9 @@
 // Measured on RIPE Atlas: replacing weak answers with the registrant city of ARIN records of at
 // most a /20, keeping only cities that GeoNames places in the record's own state, gives +197 right
 // and -37 lost probes (61% of the 531 rows right). A record wider than a /16 holds the head office
-// (9% right) and is never stored.
+// (9% right) and is not in the layer; records of at most a /16 whose holder class (derived from the
+// registrant's name, which is never kept) is edu or gov also join it, and wide records up to a /8 are
+// kept with their class in holders.csv for a later guess.
 //
 // The answers are untrusted input: only the range, country, state and city are kept (never a
 // handle or a name), bad answers are counted, and no IP, name or secret is put in a log line,
@@ -43,6 +45,10 @@ const (
 	LayerKey = "internal/layers/" + LayerFile
 
 	layerSource = "whois-city:arin" // the "source" column of the layer rows
+
+	// HoldersKey is the fixed key of the daily copy of holders.csv in the private R2 bucket (this
+	// workflow's own backup, like RecordsKey).
+	HoldersKey = "internal/arin/holders.csv.gz"
 
 	rdapBase      = "https://rdap.arin.net/registry"
 	statsURL      = "https://ftp.arin.net/pub/stats/arin/delegated-arin-extended-latest"
@@ -70,6 +76,8 @@ const (
 	// records of at most this many addresses go into the layer.
 	maxStoredBlock = 65536
 	maxLayerBlock  = 4096
+	// maxHolderBlock: a wider record is dropped even from the holders file (a /8).
+	maxHolderBlock = 16777216
 
 	cycleLength = 180 * 24 * time.Hour // a /24 is asked again about every 180 days
 	pruneAfter  = 300 * 24 * time.Hour // a record not asked again for this long is deleted

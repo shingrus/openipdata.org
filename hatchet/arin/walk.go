@@ -21,6 +21,11 @@ type answer struct {
 // soft budget is used or a stop rule fires. Only a file error or a cancellation is returned.
 func (p *Pipeline) walkAndLook(ctx context.Context, st lookupStore, gap rdns.GapList, ranges arinRanges,
 	cursor int, started time.Time, size int, deadline time.Time, out *LookupOutput) error {
+	skipHolders := out.HoldersRestore == holdersFailed
+	hset := holderSet{}
+	if !skipHolders {
+		hset = loadHolderSet(p.dir())
+	}
 	interval, batch, workers, maxSteps := p.interval, p.batch, p.workers, p.maxSteps
 	if interval == 0 {
 		interval = lookupInterval
@@ -73,8 +78,8 @@ func (p *Pipeline) walkAndLook(ctx context.Context, st lookupStore, gap rdns.Gap
 			// The same stop run after run means the walk is not moving: this line is the only sign.
 			p.log("lookup: WARNING stopped (%s) at position %d; the batch is asked again by the next run", out.Stopped, cursor)
 		}
-		p.log("lookup: %d positions walked, %d targets, %d requests: %d found (%d with a city), %d wide, %d not ARIN, %d not found, %d bad, %d failed, %d rate limited; %d records stored in %d batches; cycle done=%v; stopped=%q",
-			out.Steps, out.Targets, out.Requests, out.Found, out.WithCity, out.Wide, out.NotARIN, out.NotFound, out.Bad, out.Failed, out.RateLimited, out.Stored, out.Batches, out.CycleDone, out.Stopped)
+		p.log("lookup: %d positions walked, %d targets, %d requests: %d found (%d with a city), %d wide, %d not ARIN, %d not found, %d bad, %d failed, %d rate limited; %d records stored in %d batches, %d holders; cycle done=%v; stopped=%q",
+			out.Steps, out.Targets, out.Requests, out.Found, out.WithCity, out.Wide, out.NotARIN, out.NotFound, out.Bad, out.Failed, out.RateLimited, out.Stored, out.Batches, out.HoldersStored, out.CycleDone, out.Stopped)
 	}()
 
 	for cursor < size {
@@ -82,8 +87,9 @@ func (p *Pipeline) walkAndLook(ctx context.Context, st lookupStore, gap rdns.Gap
 			break
 		}
 		picked, end := walk(gap, ranges, at, public, size, cursor, batch, maxSteps)
-		var recs []record
+		var recs, holders []record
 		var kinds map[string]int
+		now := p.clock().UTC()
 		if len(picked) > 0 {
 			// A batch that cannot finish inside the budget is not started: its lookups would be
 			// thrown away and asked again by the next run.
@@ -119,6 +125,13 @@ func (p *Pipeline) walkAndLook(ctx context.Context, st lookupStore, gap rdns.Gap
 				seen[k] = len(recs)
 				recs = append(recs, an.rec)
 			}
+			holders = holdersWanted(answers, hset)
+			if skipHolders && len(holders) > 0 {
+				// R2 may hold a copy of the file that could not be fetched: nothing is appended (a new
+				// file would hide that copy), the next run restores first.
+				out.HoldersSkipped += len(holders)
+				holders = nil
+			}
 			// The position moves past the /24s of a stored batch, and they are not asked again
 			// before the next cycle. A batch with many failed lookups is therefore not stored: the
 			// next run asks it again.
@@ -135,13 +148,32 @@ func (p *Pipeline) walkAndLook(ctx context.Context, st lookupStore, gap rdns.Gap
 				return recs[i].End < recs[j].End
 			})
 		}
-		if err := st.Save(ctx, recs, end, started, p.clock().UTC()); err != nil {
+		// The holders first, synced, before the journal and the position: a crash can only make the
+		// next run ask the batch again and append the same rows again (compaction merges them).
+		if err := appendHolders(p.dir(), holders, now); err != nil {
+			return err
+		}
+		hset.note(holders)
+		if err := st.Save(ctx, recs, end, started, now); err != nil {
 			return err
 		}
 		out.Batches++
 		out.Steps += end - cursor
 		out.Targets += len(picked)
 		out.Stored += len(recs)
+		for _, h := range holders {
+			out.HoldersStored++
+			switch h.Class {
+			case classEdu:
+				out.HoldersEdu++
+			case classGov:
+				out.HoldersGov++
+			case classMil:
+				out.HoldersMil++
+			default:
+				out.HoldersOther++
+			}
+		}
 		out.Found += kinds[kindFound]
 		out.Wide += kinds[kindWide]
 		out.NotARIN += kinds[kindNotARIN]

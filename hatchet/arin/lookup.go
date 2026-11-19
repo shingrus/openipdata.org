@@ -31,6 +31,8 @@ type LookupOutput struct {
 	GapsBuilt  bool   `json:"gaps_built,omitempty"` // mmdbbuilder gaps ran (the MMDB's ETag had changed)
 	Stats      string `json:"stats,omitempty"`      // downloaded, cached, recent or saved copy
 	Restored   bool   `json:"restored,omitempty"`   // the records file was lost and fetched from R2
+	// HoldersRestore is "restored" or "failed" when holders.csv was missing and R2 was asked.
+	HoldersRestore string `json:"holders_restore,omitempty"`
 
 	ARINRanges int `json:"arin_ranges"` // IPv4 ranges of ARIN's stats file (merged)
 	Gaps       int `json:"gaps"`        // /24s in the gap
@@ -49,6 +51,14 @@ type LookupOutput struct {
 	Bad         int `json:"bad"`          // an answer that could not be used
 	Failed      int `json:"failed"`       // no answer after the tries
 	Stored      int `json:"stored"`       // distinct records written
+
+	HoldersStored int `json:"holders_stored"` // rows appended to holders.csv
+	HoldersEdu    int `json:"holders_edu"`    // of them, class edu
+	HoldersGov    int `json:"holders_gov"`    // class gov
+	HoldersMil    int `json:"holders_mil"`    // class mil
+	HoldersOther  int `json:"holders_other"`  // class other
+	// HoldersSkipped counts holder rows not appended because the restore of holders.csv failed.
+	HoldersSkipped int `json:"holders_skipped"`
 
 	CycleDone bool   `json:"cycle_done,omitempty"` // the walk reached the end
 	Stopped   string `json:"stopped,omitempty"`    // "time", "rate limited" or "failing"
@@ -267,6 +277,8 @@ func (p *Pipeline) Lookup(ctx context.Context) (LookupOutput, error) {
 		return out, err
 	}
 	out.Restored = restored
+	// Best effort and independent of the records: a problem only shows in the output.
+	out.HoldersRestore = p.restoreHolders(ctx)
 	if cursor >= size {
 		if now.Before(started.Add(cycleLength)) {
 			out.Skipped = skipCycleDone

@@ -21,15 +21,22 @@ import (
 
 // ExportOutput counts an export run (counts only).
 type ExportOutput struct {
-	Skipped         string  `json:"skipped,omitempty"` // "recent", "no GeoNames" or "no rows" (the old layer file stays)
-	GeoNames        string  `json:"geonames,omitempty"`
-	Records         int     `json:"records"`        // records with a city, of at most a /20
-	Rows            int     `json:"rows"`           // prefixes written
-	Unplaced        int     `json:"unplaced"`       // GeoNames has no place of that name
-	OtherState      int     `json:"other_state"`    // the place is in another state than the record's
-	Ambiguous       int     `json:"ambiguous"`      // the place's main name would be placed elsewhere
-	Pruned          int     `json:"pruned"`         // records older than 300 days deleted
-	StoredRecords   int     `json:"stored_records"` // all records of the file after the compaction
+	Skipped       string `json:"skipped,omitempty"` // "recent", "no GeoNames" or "no rows" (the old layer file stays)
+	GeoNames      string `json:"geonames,omitempty"`
+	Records       int    `json:"records"`        // records with a city, of at most a /20
+	Rows          int    `json:"rows"`           // prefixes written
+	Unplaced      int    `json:"unplaced"`       // GeoNames has no place of that name
+	OtherState    int    `json:"other_state"`    // the place is in another state than the record's
+	Ambiguous     int    `json:"ambiguous"`      // the place's main name would be placed elsewhere
+	Pruned        int    `json:"pruned"`         // records older than 300 days deleted
+	StoredRecords int    `json:"stored_records"` // all records of the file after the compaction
+
+	HolderRecords     int  `json:"holder_records"`               // rows of holders.csv after the compaction
+	HolderCandidates  int  `json:"holder_candidates"`            // of them, edu or gov, at most a /16, with a city
+	HolderRows        int  `json:"holder_rows"`                  // layer rows that came from them
+	HoldersPruned     int  `json:"holders_pruned"`               // holder rows older than 300 days deleted
+	HoldersUnreadable bool `json:"holders_unreadable,omitempty"` // holders.csv could not be read or written: the layer is made without it
+
 	Bytes           int64   `json:"bytes"`
 	DurationSeconds float64 `json:"duration_seconds"`
 }
@@ -158,38 +165,55 @@ type layerRow struct {
 	state   string
 	city    string
 	country string
+	holder  bool  // the row came from holders.csv
+	at      int64 // looked_up of the record the row came from
 }
 
 // buildRows turns the records into layer rows (see the rules in the package comment of
 // the README): the city must be a place GeoNames has in the record's own state, written under its
 // main name, and only when that name places the same place again.
-func buildRows(recs []record, idx placeIndex, out *ExportOutput) []layerRow {
+//
+// holders are the compacted rows of holders.csv: those of class edu or gov, with a usable country,
+// state and city and at most maxStoredBlock addresses (a /16) join the main records (whose own limit
+// is maxLayerBlock) under exactly the same rules.
+func buildRows(recs, holders []record, idx placeIndex, out *ExportOutput) []layerRow {
 	var rows []layerRow
+	add := func(r record, holder bool) {
+		pl, ok := idx.place(r.Country, r.City)
+		if !ok {
+			out.Unplaced++
+			return
+		}
+		if stateOf(r.Country, pl.admin1) != r.State {
+			out.OtherState++
+			return
+		}
+		if again, ok := idx.place(r.Country, pl.name); !ok || again.id != pl.id {
+			out.Ambiguous++
+			return
+		}
+		for _, p := range rirstats.RangeToPrefixes(addrOf(r.Start), addrOf(r.End)) {
+			rows = append(rows, layerRow{start: u32(p.Addr()), bits: p.Bits(), size: r.size(), prefix: p.String(), country: r.Country, state: r.State, city: pl.name, holder: holder, at: r.LookedUp})
+		}
+	}
 	for _, r := range recs {
 		if r.size() > maxLayerBlock || r.Country == "" || r.State == "" || r.City == "" {
 			continue
 		}
 		out.Records++
-		pl, ok := idx.place(r.Country, r.City)
-		if !ok {
-			out.Unplaced++
+		add(r, false)
+	}
+	for _, r := range holders {
+		if (r.Class != classEdu && r.Class != classGov) || r.size() > maxStoredBlock || r.Country == "" || r.State == "" || r.City == "" {
 			continue
 		}
-		if stateOf(r.Country, pl.admin1) != r.State {
-			out.OtherState++
-			continue
-		}
-		if again, ok := idx.place(r.Country, pl.name); !ok || again.id != pl.id {
-			out.Ambiguous++
-			continue
-		}
-		for _, p := range rirstats.RangeToPrefixes(addrOf(r.Start), addrOf(r.End)) {
-			rows = append(rows, layerRow{start: u32(p.Addr()), bits: p.Bits(), size: r.size(), prefix: p.String(), country: r.Country, state: r.State, city: pl.name})
-		}
+		out.HolderCandidates++
+		add(r, true)
 	}
 	// By start address, the broader block first. The same prefix can come from two records that
-	// overlap: the one from the smaller record goes first (it is the more specific answer), and a
-	// full tie breaks on the text, so the file is the same every time.
+	// overlap: the one from the smaller record goes first (it is the more specific answer); for the
+	// same range the later looked_up goes first (a holder row and a main record), and a full tie
+	// breaks on the text, so the file is the same every time.
 	sort.Slice(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		switch {
@@ -199,10 +223,14 @@ func buildRows(recs []record, idx placeIndex, out *ExportOutput) []layerRow {
 			return a.bits < b.bits
 		case a.size != b.size:
 			return a.size < b.size
+		case a.at != b.at:
+			return a.at > b.at // the same range: the later answer wins
 		case a.city != b.city:
 			return a.city < b.city
+		case a.state != b.state:
+			return a.state < b.state
 		}
-		return a.state < b.state
+		return !a.holder && b.holder
 	})
 	kept := rows[:0]
 	for _, r := range rows {
@@ -210,6 +238,9 @@ func buildRows(recs []record, idx placeIndex, out *ExportOutput) []layerRow {
 			continue // the same prefix from two records: the first one stays
 		}
 		kept = append(kept, r)
+		if r.holder {
+			out.HolderRows++
+		}
 	}
 	return kept
 }
@@ -276,6 +307,14 @@ func (p *Pipeline) Export(ctx context.Context, force bool) (ExportOutput, error)
 		return out, err
 	}
 	out.Pruned, out.StoredRecords = pruned, len(recs)
+	// The holders: a file that cannot be read or written only leaves them out.
+	holders, hpruned, herr := compactHolders(p.dir(), p.clock().UTC())
+	if herr != nil {
+		out.HoldersUnreadable = true
+		p.log("export: WARNING the holders file cannot be used; the layer is made without it")
+		holders, hpruned = nil, 0
+	}
+	out.HolderRecords, out.HoldersPruned = len(holders), hpruned
 	geoPath := filepath.Join(p.dir(), geoNamesFile)
 	url := p.geoURL
 	if url == "" {
@@ -299,7 +338,7 @@ func (p *Pipeline) Export(ctx context.Context, force bool) (ExportOutput, error)
 		return out, nil
 	}
 
-	rows := buildRows(recs, idx, &out)
+	rows := buildRows(recs, holders, idx, &out)
 	out.Rows = len(rows)
 	if len(rows) == 0 {
 		// No record is left to make a row from: the layer file goes too, so upload stops renewing
@@ -315,7 +354,7 @@ func (p *Pipeline) Export(ctx context.Context, force bool) (ExportOutput, error)
 		return out, fmt.Errorf("write %s: %w", LayerFile, err)
 	}
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
-	p.log("export: %d records, %d unplaced, %d in another state, %d ambiguous; %d rows (%d bytes); %d old removed",
-		out.Records, out.Unplaced, out.OtherState, out.Ambiguous, out.Rows, out.Bytes, out.Pruned)
+	p.log("export: %d records and %d holder candidates, %d unplaced, %d in another state, %d ambiguous; %d rows, %d from holders (%d bytes); %d old removed",
+		out.Records, out.HolderCandidates, out.Unplaced, out.OtherState, out.Ambiguous, out.Rows, out.HolderRows, out.Bytes, out.Pruned)
 	return out, nil
 }

@@ -85,7 +85,7 @@ func TestParseAnswer(t *testing.T) {
 	if _, kind = parseAnswer(rdapJSON("192.0.0.0", "192.0.255.255", ""), asked); kind != kindFound {
 		t.Errorf("/16: %v", kind)
 	}
-	if rec, kind = parseAnswer(rdapJSON("192.0.0.0", "192.1.255.255", `,"entities":[`+reg+`]`), asked); kind != kindWide || rec.City != "" {
+	if rec, kind = parseAnswer(rdapJSON("192.0.0.0", "192.1.255.255", `,"entities":[`+reg+`]`), asked); kind != kindWide || rec.City != "Springfield" || rec.Class != classOther {
 		t.Errorf("/15: %v %+v", kind, rec)
 	}
 	bad := map[string][]byte{
