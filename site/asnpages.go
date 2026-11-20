@@ -27,6 +27,21 @@ const (
 	orgPathPrefix = "/asn-"
 )
 
+// edgeCache is for a good answer (200, and its 304) of a page that holds no
+// visitor data and changes only when the data is rebuilt: a browser keeps it
+// 5 minutes, a shared cache (Cloudflare) 4 hours. Never for errors or
+// redirects, and never for an answer with part of its data missing (pageCache).
+const edgeCache = "public, max-age=300, s-maxage=14400"
+
+// pageCache is the Cache-Control of a 200 answer: edgeCache when the page is
+// complete, else asnCache, so a shared cache never keeps an incomplete page.
+func pageCache(complete bool) string {
+	if complete {
+		return edgeCache
+	}
+	return asnCache
+}
+
 // The four ranking pages.
 var rankings = []struct{ path, title, desc string }{
 	{"/top-asn-by-ip-address", "Top networks by IPv4 addresses",
@@ -386,7 +401,7 @@ func (s *server) serveRanking(w http.ResponseWriter, r *http.Request, path strin
 	}
 	h := w.Header()
 	pageHeaders(h, s.csp)
-	h.Set("Cache-Control", asnCache)
+	h.Set("Cache-Control", edgeCache)
 	h.Set("ETag", pg.etag)
 	if etagMatches(r.Header.Get("If-None-Match"), pg.etag) {
 		w.WriteHeader(http.StatusNotModified)
@@ -413,6 +428,7 @@ type netRow struct {
 	handle, org, slug, cc, domain string
 	v4                            sql.NullInt64
 	js                            string
+	domainFailed                  bool // the domain read failed (not "no row"): the page is incomplete
 }
 
 var errNoNetwork = errors.New("no such network")
@@ -430,11 +446,8 @@ func readNetwork(ctx context.Context, db *sql.DB, n uint32) (netRow, error) {
 		return r, err
 	}
 	r.handle, r.org, r.slug, r.cc = strings.TrimSpace(handle.String), strings.TrimSpace(org.String), slug.String, cc.String
-	var dom sql.NullString
-	// A missing domain, or a file without that table, only means unknown.
-	if err := db.QueryRowContext(ctx, `SELECT domain FROM asn_domain WHERE asn = ?`, int64(n)).Scan(&dom); err == nil {
-		r.domain = strings.TrimSpace(dom.String)
-	}
+	// A missing domain only means unknown; a failed read leaves it empty and marks the row.
+	r.domain, r.domainFailed = asnDomainRead(ctx, db, n)
 	return r, nil
 }
 
@@ -474,16 +487,16 @@ func (s *server) serveJSON(w http.ResponseWriter, r *http.Request, n uint32) {
 		jsonError(w, r, http.StatusInternalServerError, "error", "no-store")
 		return
 	}
-	w.Header().Set("Cache-Control", asnCache)
+	w.Header().Set("Cache-Control", pageCache(!row.domainFailed))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	writeBody(w, r, http.StatusOK, "application/json", append(b, '\n'))
 }
 
 func (s *server) serveNetwork(w http.ResponseWriter, r *http.Request, n uint32) {
 	var (
-		body []byte
-		code = http.StatusOK
-		rerr error
+		body     []byte
+		complete bool
+		rerr     error
 	)
 	ok := s.asnf.read(func(db *sql.DB, d *asnData) {
 		if n == 0 {
@@ -494,6 +507,7 @@ func (s *server) serveNetwork(w http.ResponseWriter, r *http.Request, n uint32) 
 		if row, rerr = readNetwork(r.Context(), db, n); rerr != nil {
 			return
 		}
+		complete = !row.domainFailed
 		body, rerr = s.renderASN(s.networkView(d, n, row))
 	})
 	switch {
@@ -509,8 +523,8 @@ func (s *server) serveNetwork(w http.ResponseWriter, r *http.Request, n uint32) 
 		plain(w, http.StatusInternalServerError, "error\n")
 	default:
 		pageHeaders(w.Header(), s.csp)
-		w.Header().Set("Cache-Control", asnCache)
-		writeBody(w, r, code, "text/html; charset=utf-8", body)
+		w.Header().Set("Cache-Control", pageCache(complete))
+		writeBody(w, r, http.StatusOK, "text/html; charset=utf-8", body)
 	}
 }
 
@@ -656,7 +670,8 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 		}
 		return int(d.nets[a].asn) - int(d.nets[b].asn)
 	})
-	pl := &place{Title: "Organization", Big: name, Ent: true, Rows: s.orgFacts(r.Context(), d, sorted, total)}
+	rows, complete := s.orgFacts(r.Context(), d, sorted, total)
+	pl := &place{Title: "Organization", Big: name, Ent: true, Rows: rows}
 	if name == "" {
 		pl.Big, pl.None = "Name unknown", true
 	}
@@ -705,7 +720,7 @@ func (s *server) serveOrg(w http.ResponseWriter, r *http.Request, slug string) {
 		return
 	}
 	pageHeaders(w.Header(), s.csp)
-	w.Header().Set("Cache-Control", asnCache)
+	w.Header().Set("Cache-Control", pageCache(complete))
 	writeBody(w, r, http.StatusOK, "text/html; charset=utf-8", body)
 }
 
@@ -783,19 +798,26 @@ func v6KV(v6 float64) kv {
 // as a network page has: its largest network, how many networks, a domain, the
 // country, then the prefix counts and the address space of all its networks.
 // sorted is the organization's networks, most IPv4 addresses first.
-func (s *server) orgFacts(ctx context.Context, d *asnData, sorted []int32, total int64) []kv {
+func (s *server) orgFacts(ctx context.Context, d *asnData, sorted []int32, total int64) (rows []kv, complete bool) {
 	top := &d.nets[sorted[0]]
 	largest := kv{K: "Largest network", V: firstNonEmpty(top.handle, asnText(top.asn)), Href: asnHref(top.asn)}
 	// The domain of the largest network that has one (the first few are tried).
 	domain := kv{K: "Domain", V: dash}
-	s.asnf.read(func(db *sql.DB, _ *asnData) {
+	complete = true
+	if !s.asnf.read(func(db *sql.DB, _ *asnData) {
 		for _, id := range sorted[:min(len(sorted), maxNetworkRows)] {
-			if dom := asnDomain(ctx, db, d.nets[id].asn); dom != "" {
+			dom, failed := asnDomainRead(ctx, db, d.nets[id].asn)
+			if failed {
+				complete = false
+			}
+			if dom != "" {
 				domain = domainKV(dom)
 				return
 			}
 		}
-	})
+	}) {
+		complete = false
+	}
 	// The country with most of the IPv4 addresses (mainCountry); "+N" = other countries.
 	ccs := map[string]bool{}
 	var n4, n6 uint64
@@ -834,7 +856,7 @@ func (s *server) orgFacts(ctx context.Context, d *asnData, sorted []int32, total
 		{K: "IPv6 prefixes", V: count(n6)},
 		{K: "IPv4 addresses", V: fmtInt(total)},
 		v6KV(v6),
-	}
+	}, complete
 }
 
 // asnLink is the page of AS number digits (as the ip2asn MMDB writes it) when

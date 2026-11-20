@@ -395,7 +395,7 @@ func TestPrefixPages(t *testing.T) {
 		if got := strings.Contains(body, noindex); got == c.indexed {
 			t.Errorf("%s: noindex present %v, indexed %v", c.name, got, c.indexed)
 		}
-		if got := w.Header().Get("Cache-Control"); got != "public, max-age=300" {
+		if got := w.Header().Get("Cache-Control"); got != edgeCache {
 			t.Errorf("%s: Cache-Control %q", c.name, got)
 		}
 		for _, x := range c.want {

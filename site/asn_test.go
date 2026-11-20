@@ -7,10 +7,12 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -348,7 +350,7 @@ func TestASNCaps(t *testing.T) {
 func TestASNJSON(t *testing.T) {
 	s, _ := asnServer(t)
 	w := get(s, "GET", "/api/as64500")
-	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != "public, max-age=300" {
+	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != edgeCache {
 		t.Fatalf("status %d, headers %v", w.Code, w.Header())
 	}
 	var out struct {
@@ -608,7 +610,7 @@ func TestASNCacheHeaders(t *testing.T) {
 		if !regexp.MustCompile(`^"[0-9a-f]{24}"$`).MatchString(etag) {
 			t.Errorf("%s: ETag %q", target, etag)
 		}
-		if got := w.Header().Get("Cache-Control"); got != "public, max-age=300" {
+		if got := w.Header().Get("Cache-Control"); got != edgeCache {
 			t.Errorf("%s: Cache-Control %q", target, got)
 		}
 		if again := get(s, "GET", target); again.Header().Get("ETag") != etag || again.Body.String() != w.Body.String() {
@@ -616,7 +618,7 @@ func TestASNCacheHeaders(t *testing.T) {
 		}
 		for _, inm := range []string{etag, "W/" + etag, `"x", ` + etag, "*"} {
 			n := get(s, "GET", target, "If-None-Match", inm)
-			if n.Code != 304 || n.Body.Len() != 0 || n.Header().Get("ETag") != etag || n.Header().Get("Cache-Control") != "public, max-age=300" {
+			if n.Code != 304 || n.Body.Len() != 0 || n.Header().Get("ETag") != etag || n.Header().Get("Cache-Control") != edgeCache {
 				t.Errorf("%s: If-None-Match %q: status %d, body %d bytes, headers %v", target, inm, n.Code, n.Body.Len(), n.Header())
 			}
 		}
@@ -630,11 +632,34 @@ func TestASNCacheHeaders(t *testing.T) {
 			t.Errorf("%s: security headers", target)
 		}
 	}
-	// The other ASN responses: public, five minutes, no ETag needed.
-	for _, target := range []string{"/as64500", "/asn-example-net", "/api/as64500", "/as64999", "/asn-nope", "/api/as64999", "/AS64500"} {
-		if got := get(s, "GET", target).Header().Get("Cache-Control"); got != "public, max-age=300" {
-			t.Errorf("%s: Cache-Control %q", target, got)
+	// Good answers of pages without visitor data: five minutes for a browser, four hours for a shared cache.
+	for _, target := range []string{"/as64500", "/asn-example-net", "/api/as64500", "/as64500/prefixes.txt", "/asn-example-net/prefixes.txt", "/download", "/bulk-ip-lookup"} {
+		w := get(s, "GET", target)
+		if w.Code != 200 || w.Header().Get("Cache-Control") != edgeCache {
+			t.Errorf("%s: %d, Cache-Control %q", target, w.Code, w.Header().Get("Cache-Control"))
 		}
+		if etag := w.Header().Get("ETag"); etag != "" {
+			if n := get(s, "GET", target, "If-None-Match", etag); n.Code != 304 || n.Header().Get("Cache-Control") != edgeCache {
+				t.Errorf("%s: 304: %d, Cache-Control %q", target, n.Code, n.Header().Get("Cache-Control"))
+			}
+		}
+	}
+	// Errors and redirects keep five minutes and never reach a shared cache for longer.
+	for _, c := range []struct {
+		target string
+		code   int
+	}{
+		{"/as64999", 404}, {"/asn-nope", 404}, {"/api/as64999", 404}, {"/AS64500", 301},
+		{"/zzz-asn-list", 404}, {"/prefix/9.9.10.0/24", 404}, {"/as64999/prefixes.txt", 404}, {"/asn-nope/prefixes.txt", 404},
+	} {
+		w := get(s, "GET", c.target)
+		if w.Code != c.code || w.Header().Get("Cache-Control") != "public, max-age=300" || strings.Contains(w.Header().Get("Cache-Control"), "s-maxage") {
+			t.Errorf("%s: %d, Cache-Control %q; want %d, public, max-age=300", c.target, w.Code, w.Header().Get("Cache-Control"), c.code)
+		}
+	}
+	// The results of a pasted list are never cached.
+	if w := post(s, "/bulk-ip-lookup", "ips=203.0.113.9"); w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("bulk POST: %d, Cache-Control %q", w.Code, w.Header().Get("Cache-Control"))
 	}
 }
 
@@ -816,4 +841,65 @@ func TestNoIndex(t *testing.T) {
 	if w := get(fixtureServer(t), "GET", "/as64500"); !strings.Contains(w.Body.String(), tag) {
 		t.Errorf("503 page lacks noindex")
 	}
+}
+
+// A page with part of its data missing keeps five minutes: a shared cache must not hold it for hours.
+func TestIncompletePagesKeepShortCache(t *testing.T) {
+	short := func(name string, w *httptest.ResponseRecorder, code int) {
+		t.Helper()
+		if w.Code != code || w.Header().Get("Cache-Control") != "public, max-age=300" {
+			t.Errorf("%s: %d, Cache-Control %q; want %d, public, max-age=300", name, w.Code, w.Header().Get("Cache-Control"), code)
+		}
+	}
+	// No ip2geo MMDB: the prefix page says "Location unknown" and /download has dashes.
+	path := filepath.Join(t.TempDir(), "asn-openipdata.sqlite3")
+	writeASNFile(t, path, prefixRows())
+	s, err := newServer(filepath.Join(t.TempDir(), "none.mmdb"), "testdata/lookup-asn.mmdb", "X-Real-IP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.public = func(a netip.Addr) bool { return !a.IsLoopback() && !a.IsPrivate() }
+	s.useASN(path)
+	short("prefix without geo", get(s, "GET", "/prefix/198.18.8.0/24"), 200)
+	short("download without geo", get(s, "GET", "/download"), 200)
+	// Everything loaded: the long lifetime.
+	if w := get(prefixServer(t), "GET", "/prefix/198.18.8.0/24"); w.Code != 200 || w.Header().Get("Cache-Control") != edgeCache {
+		t.Errorf("prefix: %d %q", w.Code, w.Header().Get("Cache-Control"))
+	}
+	full, _ := asnServer(t)
+	if w := get(full, "GET", "/download"); w.Code != 200 || w.Header().Get("Cache-Control") != edgeCache {
+		t.Errorf("download, all loaded: %d %q", w.Code, w.Header().Get("Cache-Control"))
+	}
+	// No row is a normal answer.
+	_, p3 := asnServer(t)
+	if d, failed := asnDomainRead(context.Background(), openTestDB(t, p3), 1); d != "" || failed {
+		t.Errorf("no row: %q %v", d, failed)
+	}
+	// A failed domain read (no asn_domain table) on a network, an organization and a prefix page; "no row" stays complete.
+	s2, p2 := asnServer(t)
+	db, err := sql.Open("sqlite", p2+"?_pragma=journal_mode(off)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE asn_domain`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	s2.check()
+	for _, target := range []string{"/as64500", "/asn-example-net", "/api/as64500"} {
+		short(target+" with a failed domain read", get(s2, "GET", target), 200)
+	}
+	if d, failed := asnDomainRead(context.Background(), openTestDB(t, p2), 64500); d != "" || !failed {
+		t.Errorf("failed read: %q %v", d, failed)
+	}
+}
+
+func openTestDB(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }

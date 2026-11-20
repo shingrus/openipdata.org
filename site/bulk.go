@@ -263,7 +263,7 @@ func (s *server) serveBulk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pageHeaders(w.Header(), s.pageCSP(false, false, true, false))
-		servePage(w, r, pg, "text/html; charset=utf-8", asnCache)
+		servePage(w, r, pg, "text/html; charset=utf-8", edgeCache)
 	case http.MethodPost:
 		text, ok := readForm(w, r, "ips")
 		if !ok {

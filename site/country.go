@@ -133,7 +133,7 @@ func (s *server) serveCountry(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		pageHeaders(w.Header(), s.csp)
-		servePage(w, r, pg, "text/html; charset=utf-8", asnCache)
+		servePage(w, r, pg, "text/html; charset=utf-8", edgeCache)
 	}
 	return true
 }

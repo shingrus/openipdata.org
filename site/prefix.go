@@ -404,8 +404,14 @@ func (s *server) servePrefix(w http.ResponseWriter, r *http.Request) {
 		s.notLoaded(w, r)
 		return
 	}
+	complete := s.geo.status().Loaded // no geo reader open: every place is unknown, not a complete page
 	v := s.prefixView(d, p, func(asn uint32) (domain string) {
-		s.asnf.read(func(db *sql.DB, _ *asnData) { domain = asnDomain(r.Context(), db, asn) })
+		s.asnf.read(func(db *sql.DB, _ *asnData) {
+			var failed bool
+			if domain, failed = asnDomainRead(r.Context(), db, asn); failed {
+				complete = false
+			}
+		})
 		return
 	})
 	if v == nil {
@@ -418,7 +424,7 @@ func (s *server) servePrefix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pageHeaders(w.Header(), s.csp)
-	w.Header().Set("Cache-Control", asnCache)
+	w.Header().Set("Cache-Control", pageCache(complete))
 	writeBody(w, r, http.StatusOK, "text/html; charset=utf-8", body)
 }
 

@@ -151,8 +151,16 @@ type dlCache struct {
 // downloadPage returns the rendered page for the files this process has loaded
 // (a file that is not loaded has a dash for its size and date).
 func (s *server) downloadPage() (*cachedPage, error) {
+	pg, _, err := s.downloadPageC()
+	return pg, err
+}
+
+// downloadPageC is downloadPage that also says whether all three files are
+// loaded (else the page has dashes and keeps the short cache).
+func (s *server) downloadPageC() (*cachedPage, bool, error) {
 	geo, asn := s.geo.status(), s.asn.status()
 	sq, _ := s.asnf.status()
+	complete := geo.Loaded && asn.Loaded && sq.Loaded
 	key := dlKey{org: s.origin, files: [3]dlFile{
 		{geoFile, releaseBase + geoFile, "IP to country and city, coordinates", dlSize(geo), dlDate(geo.Built)},
 		{asnFileName, releaseBase + asnFileName, "IP to network", dlSize(asn), dlDate(asn.Built)},
@@ -167,7 +175,7 @@ func (s *server) downloadPage() (*cachedPage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.pg != nil && c.key == key {
-		return c.pg, nil
+		return c.pg, complete, nil
 	}
 	ld := ldDataset{
 		Context: "https://schema.org", Type: "Dataset",
@@ -187,7 +195,7 @@ func (s *server) downloadPage() (*cachedPage, error) {
 	// it, the page keeps the policy of every page with panel.js.
 	b, err := json.Marshal(ld)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	v := &dlView{pageBase: pageBase{
 		HeadJS: template.JS(headJS), ThemeJS: template.JS(themeJS), CSS: downloadCSS,
@@ -197,20 +205,20 @@ func (s *server) downloadPage() (*cachedPage, error) {
 		Sources: sourcesList, GeoFields: geoFields, ASNFields: asnFields, GeoNames: geonamesURL, CC0: cc0URL}
 	body, err := render(s.tmpl, "download.html", v)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	c.key, c.pg = key, newPage(body)
-	return c.pg, nil
+	return c.pg, complete, nil
 }
 
 func (s *server) serveDownload(w http.ResponseWriter, r *http.Request) {
-	pg, err := s.downloadPage()
+	pg, complete, err := s.downloadPageC()
 	if err != nil {
 		plain(w, http.StatusInternalServerError, "error\n")
 		return
 	}
 	pageHeaders(w.Header(), s.pageCSP(false, false, true, false))
-	servePage(w, r, pg, "text/html; charset=utf-8", asnCache)
+	servePage(w, r, pg, "text/html; charset=utf-8", pageCache(complete))
 }
 
 // llmsText is /llms.txt in the llms.txt convention.

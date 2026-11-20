@@ -77,7 +77,7 @@ func TestPrefixListRoutes(t *testing.T) {
 		t.Fatalf("%d %q", w.Code, w.Body.String())
 	}
 	h := w.Header()
-	if h.Get("Content-Type") != "text/plain; charset=utf-8" || h.Get("Cache-Control") != asnCache || h.Get("X-Robots-Tag") != "noindex" || h.Get("ETag") == "" {
+	if h.Get("Content-Type") != "text/plain; charset=utf-8" || h.Get("Cache-Control") != edgeCache || h.Get("X-Robots-Tag") != "noindex" || h.Get("ETag") == "" {
 		t.Errorf("headers %v", h)
 	}
 	if n := get(s, "GET", "/as64500/prefixes.txt", "If-None-Match", h.Get("ETag")); n.Code != 304 || n.Body.Len() != 0 {

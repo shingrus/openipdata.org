@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 )
 
@@ -76,9 +77,16 @@ func joinKV(rows []kv) (kv, bool) {
 // asnDomain reads the domain of one network; a missing value, or a file
 // without the table, is "".
 func asnDomain(ctx context.Context, db *sql.DB, n uint32) string {
-	var dom sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT domain FROM asn_domain WHERE asn = ?`, int64(n)).Scan(&dom); err != nil {
-		return ""
+	dom, _ := asnDomainRead(ctx, db, n)
+	return dom
+}
+
+// asnDomainRead is asnDomain that also says whether the read failed (any error
+// but "no row"): the value is then "" and the page is incomplete.
+func asnDomainRead(ctx context.Context, db *sql.DB, n uint32) (dom string, failed bool) {
+	var v sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT domain FROM asn_domain WHERE asn = ?`, int64(n)).Scan(&v); err != nil {
+		return "", !errors.Is(err, sql.ErrNoRows)
 	}
-	return strings.TrimSpace(dom.String)
+	return strings.TrimSpace(v.String), false
 }

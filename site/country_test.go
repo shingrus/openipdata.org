@@ -112,7 +112,7 @@ func TestCountryPageContent(t *testing.T) {
 	}
 	// ETag and 304; served with the page headers.
 	etag := w.Header().Get("ETag")
-	if etag == "" || w.Header().Get("Cache-Control") != "public, max-age=300" || w.Header().Get("Content-Security-Policy") == "" {
+	if etag == "" || w.Header().Get("Cache-Control") != edgeCache || w.Header().Get("Content-Security-Policy") == "" {
 		t.Errorf("headers %v", w.Header())
 	}
 	if w2 := get(s, "GET", "/germany-asn-list", "If-None-Match", etag); w2.Code != 304 || w2.Body.Len() != 0 {

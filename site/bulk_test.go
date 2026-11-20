@@ -86,7 +86,7 @@ func TestBulkGetPage(t *testing.T) {
 	s := bulkServer(t)
 	w := get(s, "GET", "/bulk-ip-lookup")
 	body := w.Body.String()
-	if w.Code != 200 || w.Header().Get("Cache-Control") != "public, max-age=300" || w.Header().Get("ETag") == "" {
+	if w.Code != 200 || w.Header().Get("Cache-Control") != edgeCache || w.Header().Get("ETag") == "" {
 		t.Fatalf("%d %v", w.Code, w.Header())
 	}
 	if len(bulkDesc) >= 155 {

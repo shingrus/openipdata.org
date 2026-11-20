@@ -22,7 +22,7 @@ func TestDownloadPage(t *testing.T) {
 	s, _ := asnServer(t)
 	w := get(s, "GET", "/download")
 	body := w.Body.String()
-	if w.Code != 200 || w.Header().Get("Cache-Control") != "public, max-age=300" || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+	if w.Code != 200 || w.Header().Get("Cache-Control") != edgeCache || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Fatalf("%d %v", w.Code, w.Header())
 	}
 	t.Logf("rendered size: %d bytes", len(body))

@@ -172,7 +172,7 @@ func (s *server) servePrefixList(w http.ResponseWriter, r *http.Request, p strin
 	}
 	h := w.Header()
 	h.Set("X-Robots-Tag", "noindex")
-	servePage(w, r, newPage(d.idx.prefixList(newASNSet(nums), hint)), "text/plain; charset=utf-8", asnCache)
+	servePage(w, r, newPage(d.idx.prefixList(newASNSet(nums), hint)), "text/plain; charset=utf-8", edgeCache)
 	return true
 }
 
