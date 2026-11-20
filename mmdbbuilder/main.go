@@ -17,7 +17,8 @@
 // applies wins: 82-asn-likely (the ASN's main city at 70%), 84-asn-near (the nearest city of
 // the same ASN and country in the same /20), 86-country-main (the country's main city at
 // 30%, also for addresses with no ASN) and, only where the country has no main city,
-// 88-asn-far (the nearest city of the same ASN and country in the same /16). Without
+// 88-asn-far (the nearest city of the same ASN and country in the same /16) and
+// 89-asn-anywhere (the same without a distance limit). Without
 // -asn-main only 86-country-main runs. See fallback.go.
 // -holders (a holder-cities file, gzipped CSV in the layer layout; needs -asn-main) adds 85-holder-city, which
 // runs before 86-country-main: address space that no network announces gets the city of the
@@ -31,12 +32,12 @@
 //
 // lookup with -in and -out reads an ip2geo MMDB for the IPs of a file (one per
 // line) and writes ip<TAB>country<TAB>city for each one that has a city (a guessed city,
-// 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main or 88-asn-far, is left out); with -with-source each row also has a fourth column, the
+// 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far or 89-asn-anywhere, is left out); with -with-source each row also has a fourth column, the
 // record's city_source, and with -countries an IP that has a country but no city also gets a
 // row (empty city). See lookup.go.
 //
 // gaps lists the IPv4 /24s of an ip2geo MMDB that have a country and no city (a city whose
-// source is one of the six guesses, 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as lines
+// source is one of the seven guesses, 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as lines
 // "<first /24> <count of consecutive /24s> <country>". See gaps.go.
 //
 // stamp rewrites only the metadata section of an MMDB: description.en becomes a
@@ -102,7 +103,7 @@ func runGeo(args []string) {
 	sameCountry := flags.String("same-country", "", "layer file names (comma-separated) whose rows apply only where the country so far is the same or unknown")
 	withinFirst := flags.String("within-first", "", "layer file names (comma-separated) whose rows are used only if no broader than one prefix of the first layer")
 	asnMain := flags.String("asn-main", "", "asn-prefixes.csv.gz (asn,prefix; IPv4 rows used): after all layers, give the main city of an ASN to its addresses in a country that have no city (a guess, city_source 80-asn-main)")
-	fallback := flags.Bool("fallback", false, "after the ASN main city fill, more guesses for addresses still without a city: 82-asn-likely, 84-asn-near, 88-asn-far (all need -asn-main) and 86-country-main")
+	fallback := flags.Bool("fallback", false, "after the ASN main city fill, more guesses for addresses still without a city: 82-asn-likely, 84-asn-near, 88-asn-far, 89-asn-anywhere (all need -asn-main) and 86-country-main")
 	holders := flags.String("holders", "", "holder-cities.csv.gz (layer layout; needs -asn-main): address space that no network announces gets the city of the holder block that covers it (a guess, city_source 85-holder-city)")
 	firstCountry := flags.String("first-country", "", "layer file names (comma-separated) whose rows apply only to the addresses where the first layer gives the row's country")
 	flags.Parse(args)

@@ -222,7 +222,7 @@ func TestFallbackLadder(t *testing.T) {
 	for _, s := range stats[1:] {
 		names = append(names, s.name)
 	}
-	if got := strings.Join(names, " "); got != "80-asn-main 82-asn-likely 84-asn-near 86-country-main 88-asn-far" {
+	if got := strings.Join(names, " "); got != "80-asn-main 82-asn-likely 84-asn-near 86-country-main 88-asn-far 89-asn-anywhere" {
 		t.Errorf("rungs = %s", got)
 	}
 	if s := statsOf(t, stats, asnLikelySource); s.note != "asn-likely: 1 groups qualified of 3, 256 addresses filled" {
@@ -349,11 +349,11 @@ func TestFallbackFlags(t *testing.T) {
 
 	off, offStats := guessBuild(t, t.TempDir(), layer, &asn, nil, false)
 	for _, s := range offStats {
-		if s.name == asnLikelySource || s.name == asnNearSource || s.name == countryMainSource || s.name == asnFarSource {
+		if s.name == asnLikelySource || s.name == asnNearSource || s.name == countryMainSource || s.name == asnFarSource || s.name == asnAnywhereSource {
 			t.Errorf("rung %s ran without -fallback", s.name)
 		}
 	}
-	for _, src := range []string{asnLikelySource, asnNearSource, countryMainSource, asnFarSource} {
+	for _, src := range []string{asnLikelySource, asnNearSource, countryMainSource, asnFarSource, asnAnywhereSource} {
 		if strings.Contains(dump(t, off), src) {
 			t.Errorf("%s in a build without -fallback", src)
 		}
@@ -409,6 +409,20 @@ func TestNearPiece(t *testing.T) {
 	}
 	if _, ok := nearPiece(ps, 70000, asnFarSameBlock); ok {
 		t.Error("block 16: the nearest piece is in another block")
+	}
+	// Block 32 is no limit: a shift of a uint32 by 32 gives 0, so every piece matches.
+	if r, ok := nearPiece(ps, 70000, asnAnywhereBlock); !ok || r != 3 {
+		t.Errorf("block 32: %d %v", r, ok)
+	}
+	far := []piece{{20 << 24, 20<<24 + 255, 7}}
+	if r, ok := nearPiece(far, 200<<24, asnAnywhereBlock); !ok || r != 7 {
+		t.Errorf("block 32, far away: %d %v", r, ok)
+	}
+	if r, ok := nearPiece(far, 4, asnAnywhereBlock); !ok || r != 7 {
+		t.Errorf("block 32, piece after: %d %v", r, ok)
+	}
+	if _, ok := nearPiece(nil, 5, asnAnywhereBlock); ok {
+		t.Error("block 32: no pieces")
 	}
 }
 
@@ -485,7 +499,7 @@ func TestASNFar(t *testing.T) {
 	layer += "10.0.0.0/24,DE,,Berlin,x\n10.0.200.0/24,DE,,Munich,x\n" + // the pieces
 		"10.0.2.0/24,DE,,,x\n" + // same /20 as Berlin: 84
 		"10.0.20.0/24,DE,,,x\n" + // Berlin is the nearest, same /16 but not same /20: 88
-		"10.1.5.0/24,DE,,,x\n" + // the nearest piece is in another /16: nothing
+		"10.1.5.0/24,DE,,,x\n" + // the nearest piece is in another /16: 89
 		"10.8.0.0/24,DE,,,x\n" + // no ASN: nothing
 		"10.0.30.0/24,FR,,,x\n" // a group with no pieces: nothing
 	dir := t.TempDir()
@@ -494,7 +508,7 @@ func TestASNFar(t *testing.T) {
 		"10.0.0.9":  "DE/Berlin/layer",
 		"10.0.2.9":  "DE/Berlin/84-asn-near",
 		"10.0.20.9": "DE/Berlin/88-asn-far",
-		"10.1.5.9":  "DE/<nil>/<nil>",
+		"10.1.5.9":  "DE/Munich/89-asn-anywhere",
 		"10.8.0.9":  "DE/<nil>/<nil>",
 		"10.0.30.9": "FR/<nil>/<nil>",
 	})
@@ -507,12 +521,18 @@ func TestASNFar(t *testing.T) {
 	if s := statsOf(t, stats, countryMainSource); s.rows != 0 || s.note != "country-main: 0 countries qualified of 1, 0 addresses filled" {
 		t.Errorf("86 stats = %+v", s)
 	}
-	if last := stats[len(stats)-1].name; last != asnFarSource {
+	if s := statsOf(t, stats, asnAnywhereSource); s.rows != 1 || s.prefixes != 1 || s.note != "asn-anywhere: 256 addresses filled" {
+		t.Errorf("89 stats = %+v", s)
+	}
+	if last := stats[len(stats)-1].name; last != asnAnywhereSource {
 		t.Errorf("last stats entry = %s", last)
 	}
 	// The guess is like 84-asn-near for the gap list and lookup -in.
 	if !isGuessSource(asnFarSource) || !isWeakCitySource(asnFarSource) {
 		t.Error("88-asn-far must be a guess")
+	}
+	if !isGuessSource("89-asn-anywhere") || !isWeakCitySource("89-asn-anywhere") {
+		t.Error("89-asn-anywhere must be a guess")
 	}
 	gapsOut := filepath.Join(dir, "gaps.txt")
 	if _, err := writeGaps(out, gapsOut); err != nil {
@@ -521,7 +541,7 @@ func TestASNFar(t *testing.T) {
 	if data, _ := os.ReadFile(gapsOut); !strings.Contains(string(data), "10.0.20.0/24 1 DE\n") {
 		t.Errorf("gaps = %q", data)
 	}
-	in := writeFile(t, filepath.Join(dir, "ips.txt"), "10.0.20.9\n10.0.2.9\n10.0.0.9\n")
+	in := writeFile(t, filepath.Join(dir, "ips.txt"), "10.0.20.9\n10.0.2.9\n10.0.0.9\n10.1.5.9\n")
 	citiesOut := filepath.Join(dir, "cities.tsv")
 	if _, err := writeCities(out, in, citiesOut); err != nil {
 		t.Fatal(err)
@@ -603,6 +623,116 @@ func TestASNFarFlags(t *testing.T) {
 				}
 			}
 			checkCities(t, out, map[string]string{"10.0.20.9": "DE/<nil>/<nil>"})
+		})
+	}
+}
+
+// Rung 89: where the country has no main city and the nearest piece is outside the same
+// /16, the chunk gets the nearest piece of its group, however far away.
+func TestASNAnywhere(t *testing.T) {
+	layer, asn := farBase()
+	layer += "10.0.0.0/24,DE,,Berlin,x\n10.0.200.0/24,DE,,Munich,x\n" +
+		"10.0.2.0/24,DE,,,x\n" + // same /20: 84
+		"10.0.20.0/24,DE,,,x\n" + // same /16: 88
+		"10.2.5.0/24,DE,,,x\n" // another /16: 89, the nearest piece is Munich
+	out, stats := guessBuild(t, t.TempDir(), layer, asn, nil, true)
+	checkCities(t, out, map[string]string{
+		"10.0.2.9":  "DE/Berlin/84-asn-near",
+		"10.0.20.9": "DE/Berlin/88-asn-far",
+		"10.2.5.9":  "DE/Munich/89-asn-anywhere",
+	})
+	if s := statsOf(t, stats, asnAnywhereSource); s.rows != 1 || s.prefixes != 1 || s.note != "asn-anywhere: 256 addresses filled" {
+		t.Errorf("89 stats = %+v", s)
+	}
+}
+
+// The nearest piece wins, also across a very large distance.
+func TestASNAnywhereNearest(t *testing.T) {
+	// The chunk 10.2.100.0/24 has its middle at 10.2.100.127.
+	for _, tc := range []struct {
+		name, pieces, want string
+	}{
+		{"the nearer piece wins (after)", "10.0.200.0/24,DE,,Berlin,x\n10.3.20.0/24,DE,,Munich,x\n", "DE/Munich/89-asn-anywhere"},
+		{"the nearer piece wins (before)", "10.1.250.0/24,DE,,Berlin,x\n10.3.20.0/24,DE,,Munich,x\n", "DE/Berlin/89-asn-anywhere"},
+		// Both pieces are 40,000 addresses from the chunk's middle (10.2.100.127), outside its /16.
+		{"equal distance: the bigger piece before", "10.1.200.0/26,DE,,Berlin,x\n10.3.0.191/32,DE,,Munich,x\n", "DE/Berlin/89-asn-anywhere"},
+		{"equal distance: the bigger piece after", "10.1.200.62/32,DE,,Berlin,x\n10.3.0.192/26,DE,,Munich,x\n", "DE/Munich/89-asn-anywhere"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			layer, asn := farBase()
+			// The two far pieces keep rung 82 away (no city holds 70%).
+			layer += tc.pieces + "10.0.0.0/24,DE,,Munich,x\n10.0.1.0/24,DE,,Berlin,x\n" + "10.2.100.0/24,DE,,,x\n"
+			out, _ := guessBuild(t, t.TempDir(), layer, asn, nil, true)
+			checkCities(t, out, map[string]string{"10.2.100.9": tc.want})
+		})
+	}
+	t.Run("across a whole /8", func(t *testing.T) {
+		asn := "100,20.0.0.0/8\n200,200.0.0.0/8\n"
+		// The piece of AS100 is in 20.0.0.0/8; the chunk is in 20.0.0.0/8 too. A group in
+		// 200.0.0.0/8 has a piece far from the chunk.
+		layer := fillerDE() + "20.0.0.0/24,DE,,Berlin,x\n20.0.8.0/24,DE,,Munich,x\n200.0.0.0/24,DE,,,x\n20.128.0.0/24,DE,,,x\n"
+		out, _ := guessBuild(t, t.TempDir(), layer, &asn, nil, true)
+		checkCities(t, out, map[string]string{
+			"20.128.0.9": "DE/Munich/89-asn-anywhere",
+			"200.0.0.9":  "DE/<nil>/<nil>", // AS200 has no piece
+		})
+	})
+	t.Run("one ASN with pieces 180 /8s apart", func(t *testing.T) {
+		asn := "100,20.0.0.0/8\n100,200.0.0.0/8\n"
+		layer := fillerDE() + "20.0.0.0/24,DE,,Berlin,x\n20.0.8.0/24,DE,,Munich,x\n200.0.0.0/24,DE,,,x\n"
+		out, _ := guessBuild(t, t.TempDir(), layer, &asn, nil, true)
+		checkCities(t, out, map[string]string{"200.0.0.9": "DE/Munich/89-asn-anywhere"})
+	})
+}
+
+// In a country with a main city the chunk gets rung 86, never 89.
+func TestASNAnywhereNotWithCountryMain(t *testing.T) {
+	layer, asn := farBase()
+	layer = rows24(8, 0, 200, "DE", "Hamburg") + layer + "10.0.0.0/24,DE,,Berlin,x\n10.0.200.0/24,DE,,Munich,x\n10.2.5.0/24,DE,,,x\n"
+	out, stats := guessBuild(t, t.TempDir(), layer, asn, nil, true)
+	checkCities(t, out, map[string]string{"10.2.5.9": "DE/Hamburg/86-country-main"})
+	if s := statsOf(t, stats, asnAnywhereSource); s.rows != 0 || s.note != "asn-anywhere: 0 addresses filled" {
+		t.Errorf("89 stats = %+v", s)
+	}
+	if strings.Contains(dump(t, out), asnAnywhereSource) {
+		t.Error("89-asn-anywhere in a country with a main city")
+	}
+}
+
+// A chunk filled by rung 89 is not a piece for another chunk. 10.1.100.0/24 is nearer to
+// Berlin (91,008 addresses away) than to Munich and gets Berlin. 10.2.100.0/24 has Munich
+// (91,009 away) as its nearest real piece; with the filled 10.1.100.0/24 counted as a piece
+// (65,408 away), Berlin would be nearer.
+func TestASNAnywhereSnapshot(t *testing.T) {
+	layer, asn := farBase()
+	layer += "10.0.0.0/24,DE,,Berlin,x\n10.3.200.0/24,DE,,Munich,x\n10.1.100.0/24,DE,,,x\n10.2.100.0/24,DE,,,x\n"
+	out, _ := guessBuild(t, t.TempDir(), layer, asn, nil, true)
+	checkCities(t, out, map[string]string{
+		"10.1.100.9": "DE/Berlin/89-asn-anywhere",
+		"10.2.100.9": "DE/Munich/89-asn-anywhere",
+	})
+}
+
+// Rung 89 needs -fallback and the ASN prefixes.
+func TestASNAnywhereFlags(t *testing.T) {
+	layer, asn := farBase()
+	layer += "10.0.0.0/24,DE,,Berlin,x\n10.0.200.0/24,DE,,Munich,x\n10.2.20.0/24,DE,,,x\n"
+	for _, tc := range []struct {
+		name     string
+		asn      *string
+		fallback bool
+	}{{"no -fallback", asn, false}, {"no ASN prefixes", nil, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, stats := guessBuild(t, t.TempDir(), layer, tc.asn, nil, tc.fallback)
+			for _, s := range stats {
+				if s.name == asnAnywhereSource {
+					t.Error("rung 89 ran")
+				}
+			}
+			if strings.Contains(dump(t, out), asnAnywhereSource) {
+				t.Error("89-asn-anywhere record")
+			}
+			checkCities(t, out, map[string]string{"10.2.20.9": "DE/<nil>/<nil>"})
 		})
 	}
 }

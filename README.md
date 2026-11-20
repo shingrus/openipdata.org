@@ -608,7 +608,9 @@ of the task output) and a note line (`asn-likely: G groups qualified of T, A add
 `country-main: C countries qualified of T, A addresses filled`). Measured on RIPE Atlas (build of 2026-11-16, within 50 km):
 `82-asn-likely` right for 161 of 367 probes (44%), `84-asn-near` 134 of 396 (34%), `86-country-main` 587 of 1,331 (44%);
 together +882 right and +1,212 wrong probes (right city of all probes 48.1% to 54.3%, precision of all answers 59.0% to 56.4%).
-A sixth guess, `88-asn-far`, is the last rung of `-fallback` (with the ASN prefixes): a /24 chunk that `84-asn-near` gave nothing, in a country that has no main city (in practice the United States), gets the city of the nearest piece of the same ASN and country when that piece is in the same /16; a country with a main city is unchanged (`86-country-main` as before). It prints `layer 88-asn-far: ...` and `asn-far: A addresses filled`. It is a weak guess for coverage: on a test build of 2026-11-19 it filled 115.7M addresses (about 87.2% to 90.4% of addresses with a city) and was right for 10 of the 49 RIPE Atlas probes it answers (20%).
+A sixth guess, `88-asn-far`, is a rung of `-fallback` (with the ASN prefixes): a /24 chunk that `84-asn-near` gave nothing, in a country that has no main city (in practice the United States), gets the city of the nearest piece of the same ASN and country when that piece is in the same /16; a country with a main city is unchanged (`86-country-main` as before). It prints `layer 88-asn-far: ...` and `asn-far: A addresses filled`. It is a weak guess for coverage: on a test build of 2026-11-19 it filled 115.7M addresses (about 87.2% to 90.4% of addresses with a city) and was right for 10 of the 49 RIPE Atlas probes it answers (20%).
+
+A seventh guess, `89-asn-anywhere`, is the last rung of `-fallback` (with the ASN prefixes): a /24 chunk that `88-asn-far` gave nothing (a country with no main city, nearest piece outside the same /16) gets the city of the nearest piece of the same ASN and country, however far away; a country with a main city is unchanged. It prints `layer 89-asn-anywhere: ...` and `asn-anywhere: A addresses filled`. It is weaker than `88-asn-far`: +268.6M addresses, 15% right on 34 RIPE Atlas probes (build of 2026-11-20).
 
 `mmdbbuilder geo -holders <holder-cities.csv.gz>` adds a fifth guess, `85-holder-city`, before `86-country-main`: IPv4 address space that no network
 announces (not even a prefix announced by several ASNs) and that lies inside a block whose holder has a known city gets that city, when the block's
@@ -950,7 +952,7 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
-`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `35-speedtest-site`, `36-mlab`, `37-whois-arin`, `37-whois-text` or `39-github-geofeeds` as no city too (like the six guesses `80-asn-main`, `82-asn-likely`, `84-asn-near`, `85-holder-city`, `86-country-main` and `88-asn-far`), so customer names keep being sampled there.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `35-speedtest-site`, `36-mlab`, `37-whois-arin`, `37-whois-text` or `39-github-geofeeds` as no city too (like the seven guesses `80-asn-main`, `82-asn-likely`, `84-asn-near`, `85-holder-city`, `86-country-main`, `88-asn-far` and `89-asn-anywhere`), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
 smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
 hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the
@@ -1024,7 +1026,7 @@ mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
-mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the six guesses 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far, or from 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the seven guesses 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far, 89-asn-anywhere, or from 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 
