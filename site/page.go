@@ -43,6 +43,9 @@ var netSrc string
 //go:embed static/api.css
 var apiSrc string
 
+//go:embed static/db.css
+var dbSrc string
+
 //go:embed static/place.css
 var placeSrc string
 
@@ -61,6 +64,7 @@ var (
 	visitorCSS = cssText(visitorSrc)
 	netCSS     = cssText(netSrc)
 	apiCSS     = cssText(apiSrc)
+	dbCSS      = cssText(dbSrc)
 	placeCSS   = cssText(placeSrc)
 	rowsCSS    = cssText(rowsSrc)
 	pfCSS      = cssText(pfSrc)
@@ -85,11 +89,14 @@ func (v *view) homeCSS() template.CSS {
 		}
 	}
 	css += accCSS
-	if v.Net != nil {
-		css += netCSS
+	if v.Net != nil || v.Home {
+		css += netCSS // .cells: the Network panel and the Database panel
 	}
 	if v.API != nil {
 		css += apiCSS
+	}
+	if v.Home {
+		css += dbCSS
 	}
 	return template.CSS(css)
 }
@@ -192,6 +199,7 @@ type pageBase struct {
 	Canon           string      // absolute canonical URL of an indexable page; empty = no tag
 	Input           string      // lookup bar value
 	NoIndex         bool        // lookup, search and error pages: robots noindex
+	Home            bool        // the visitor's own page: the heading in the header and the Database panel
 }
 
 type view struct {
@@ -201,6 +209,7 @@ type view struct {
 	Updated     bool
 	UpdatedISO  string
 	UpdatedText string
+	Rebuilt     string // age of the loaded geo database ("5 hours ago") or a dash: the Database panel
 	Panel       *panel
 	Net         *netPanel // the Network panel (visitor and lookup pages with the network in the ASN data)
 	API         *apiPanel // the API panel below the Network panel; nil = none
@@ -242,6 +251,7 @@ func makeView(s scores) view {
 			makeCard("of addresses have a city", s.Coverage),
 		},
 	}
+	v.Rebuilt = dash
 	if s.Probes > 0 {
 		v.Probes = fmtInt(s.Probes)
 	}
@@ -249,6 +259,7 @@ func makeView(s scores) view {
 		v.Updated = true
 		v.UpdatedISO = s.Built.UTC().Format(time.RFC3339)
 		v.UpdatedText = s.Built.UTC().Format("2 Jan 2006")
+		v.Rebuilt = ageText(s.Built, time.Now())
 	}
 	return v
 }

@@ -10,7 +10,7 @@
 </div>
 </section>
 {{end}}{{with .API}}<section class="panel">
-<div class="head"><h2>API</h2><a class="r" href="/download">Download &rarr;</a></div>
+<div class="head"><h2>API</h2></div>
 <div class="apip">
 <p class="api"><b class="mono" aria-hidden="true">&rsaquo;</b><a class="mono v" href="{{.Href}}">{{.Cmd}}</a><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button></p>
 <pre class="mono">{{.Body}}</pre>
@@ -23,4 +23,14 @@
 {{end}}</div>
 <p class="note">{{if .Probes}}Every build is tested on <span class="mono">{{.Probes}}</span> devices whose real location is known.{{else}}Every build is tested on devices whose real location is known.{{end}}</p>
 </section>
-{{template "bottom" .}}
+{{if .Home}}<section class="panel">
+<div class="head"><h2>Database</h2><a class="r" href="/download">Download &rarr;</a></div>
+<p class="dbp">Country, city, coordinates and network (ASN) of every IPv4 and IPv6 address. Free for any use, no sign-up, no key.</p>
+<div class="cells">
+<div><span>Licence</span><b>CC0</b></div>
+<div><span>Formats</span><b>MMDB, SQLite</b></div>
+<div><span>Rebuilt twice a day</span><b>{{.Rebuilt}}</b></div>
+<div><span>Covers</span><b>IPv4, IPv6</b></div>
+</div>
+</section>
+{{end}}{{template "bottom" .}}

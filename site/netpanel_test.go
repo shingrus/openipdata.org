@@ -116,7 +116,7 @@ func TestNetworkPanelAbsent(t *testing.T) {
 		}
 	}
 	// A visitor with an unknown address.
-	if b := get(s, "GET", "/").Body.String(); strings.Contains(b, `class="cells"`) {
+	if b := get(s, "GET", "/").Body.String(); strings.Contains(b, "<h2>Network</h2>") {
 		t.Error("Network panel for an unknown visitor")
 	}
 	// Not on the other pages.

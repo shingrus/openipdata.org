@@ -193,7 +193,7 @@ func TestAPIPanel(t *testing.T) {
 	if j, k := strings.Index(b, "</section>"), strings.Index(b, "<h2>Accuracy"); !(j < i && i < k) {
 		t.Error("the panel is not between the panels")
 	}
-	if !strings.Contains(b, `<h2>API</h2><a class="r" href="/download">Download &rarr;</a>`) || !strings.Contains(b, `id="i-cp"`) || !strings.Contains(b, `id="i-ck"`) {
+	if !strings.Contains(b, `<h2>API</h2></div>`) || !strings.Contains(b, `id="i-cp"`) || !strings.Contains(b, `id="i-ck"`) {
 		t.Error("panel head or copy symbols missing")
 	}
 	check := func(target, ip, remoteIP string) {

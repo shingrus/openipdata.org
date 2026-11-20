@@ -204,14 +204,14 @@ func TestVisitorPanel(t *testing.T) {
 	// Behind nginx: peer is loopback, the header names the visitor.
 	w := fromPeer(s, "/", "127.0.0.1:5000", "X-Real-IP", "203.0.113.9")
 	body := w.Body.String()
-	for _, x := range []string{"<h2>Your connection</h2>", "<h1>Lisbon</h1>", `value="203.0.113.9"`, "Example Net"} {
+	for _, x := range []string{"<h2>Your connection</h2>", "<h2>Lisbon</h2>", `value="203.0.113.9"`, "Example Net"} {
 		if !strings.Contains(body, x) {
 			t.Errorf("visitor page lacks %q", x)
 		}
 	}
 	// A forged header from a direct, non-loopback peer is ignored.
 	w = fromPeer(s, "/", "198.51.100.1:5000", "X-Real-IP", "203.0.113.9")
-	if b := w.Body.String(); !strings.Contains(b, "<h1>Spain</h1>") || strings.Contains(b, "203.0.113.9") {
+	if b := w.Body.String(); !strings.Contains(b, "<h2>Spain</h2>") || strings.Contains(b, "203.0.113.9") {
 		t.Error("untrusted header was used")
 	}
 	// Loopback with no header: unknown, never 127.0.0.1.

@@ -592,7 +592,10 @@ func TestReportPage(t *testing.T) {
 	if i, j := strings.Index(b, "<dt>Network</dt>"), strings.Index(b, "<dt>DNS resolver</dt>"); i < 0 || j < i {
 		t.Error("report: the Network row is not before the DNS resolver row")
 	}
-	for _, bad := range []string{resolverJS, fillJS, `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>"} {
+	if n := strings.Count(b, "<h1"); n != 1 {
+		t.Errorf("report has %d h1", n)
+	}
+	for _, bad := range []string{resolverJS, fillJS, `class="sh"`, `id="other"`, `id="dns"`, "<h2>Accuracy</h2>", `class="tag"`, "<h2>Database</h2>"} {
 		if strings.Contains(b, bad) {
 			t.Errorf("report has %q", bad)
 		}

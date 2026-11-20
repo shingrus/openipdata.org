@@ -1,7 +1,7 @@
 /* The two halves and the label/value rows: home, lookup and report panels, the status page. */
 .conn{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr)}
-.place h1{position:relative;font-size:clamp(40px,7vw,72px);font-weight:600;line-height:1;letter-spacing:-.035em;overflow-wrap:anywhere}
-.place.none h1{color:var(--faint);font-size:clamp(30px,5vw,48px)}
+.place :is(h1,h2){position:relative;font-size:clamp(40px,7vw,72px);font-weight:600;line-height:1;letter-spacing:-.035em;overflow-wrap:anywhere}
+.place.none :is(h1,h2){color:var(--faint);font-size:clamp(30px,5vw,48px)}
 dl{min-width:0;display:grid;grid-auto-rows:1fr} /* equal rows beside the place block; phone width resets it */
 dl div{display:grid;grid-template-columns:132px minmax(0,1fr);align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
 dl div:last-child{border-bottom:0}

@@ -116,6 +116,8 @@ func TestStylePartsFollowThePage(t *testing.T) {
 		{`<div class="place`, ".place{position:relative"}, // place.css: a page with a place block
 		{`<dl>`, "dl{min-width:0"},                        // rows.css: label/value rows (home, lookup, report panels; the status page)
 		{`<div class="pf">`, ".pf{display:grid"},          // pf.css: the prefix lists
+		{`class="tag"`, ".tag{"},                          // db.css: the heading of the visitor page
+		{`class="dbp"`, ".dbp{"},                          // db.css: the Database panel
 	}
 	as, _ := asnServer(t) // the network, organization and prefix pages are real pages only with ASN data
 	as.public = func(a netip.Addr) bool { return true }
@@ -155,5 +157,88 @@ func TestStylePartsFollowThePage(t *testing.T) {
 		if !seen[p.mark] {
 			t.Errorf("no test page has %s", p.mark)
 		}
+	}
+}
+
+// The heading in the header and the Database panel are on the visitor's own page only.
+func TestHomeHeadingAndDatabasePanel(t *testing.T) {
+	s := fixtureServer(t)
+	parts := []string{
+		`<h1 class="tag">Free IP geolocation database</h1>`,
+		`<h2>Database</h2>`,
+		`<a class="r" href="/download">Download &rarr;</a>`,
+		`Country, city, coordinates and network (ASN) of every IPv4 and IPv6 address. Free for any use, no sign-up, no key.`,
+		`<div><span>Licence</span><b>CC0</b></div>`,
+		`<div><span>Formats</span><b>MMDB, SQLite</b></div>`,
+		`<div><span>Rebuilt twice a day</span><b>`,
+		`<div><span>Covers</span><b>IPv4, IPv6</b></div>`,
+	}
+	for name, b := range map[string]string{
+		"visitor": fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(),
+		"unknown": get(s, "GET", "/").Body.String(),
+	} {
+		if n := strings.Count(b, "<h1"); n != 1 {
+			t.Errorf("%s: %d h1", name, n)
+		}
+		for _, p := range parts {
+			if !strings.Contains(b, p) {
+				t.Errorf("%s: no %q", name, p)
+			}
+		}
+		if strings.Index(b, parts[0]) > strings.Index(b, `<main>`) || strings.Index(b, parts[0]) < strings.Index(b, `<header class="top">`) || strings.Index(b, parts[0]) > strings.Index(b, `aria-label="GitHub"`) {
+			t.Errorf("%s: heading not in the header after the logo", name)
+		}
+		if strings.Index(b, "<h2>Accuracy</h2>") > strings.Index(b, parts[1]) || strings.Index(b, parts[1]) < strings.LastIndex(b, "<section") {
+			t.Errorf("%s: Database is not the last panel, after Accuracy", name)
+		}
+	}
+	if b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(); !strings.Contains(b, "<h2>Lisbon</h2>") {
+		t.Error("the place is not an h2 on the visitor page")
+	}
+	// The API panel head has no link (removed 2026-11-20); the Database head links /download.
+	for name, b := range map[string]string{
+		"visitor": fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(),
+		"lookup":  get(s, "GET", "/?203.0.113.9").Body.String(),
+	} {
+		if !strings.Contains(b, `<div class="head"><h2>API</h2></div>`) {
+			t.Errorf("%s: API head is not only the heading", name)
+		}
+	}
+	if b := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(); !strings.Contains(b, `<div class="head"><h2>Database</h2><a class="r" href="/download">Download &rarr;</a></div>`) {
+		t.Error("the Database head lost its Download link")
+	}
+	// A known build time gives the age, an unknown one a dash.
+	v := makeView(scores{Built: time.Now().Add(-5 * time.Hour)})
+	if v.Rebuilt != "5 hours ago" {
+		t.Errorf("Rebuilt = %q", v.Rebuilt)
+	}
+	if v := makeView(scores{}); v.Rebuilt != dash {
+		t.Errorf("Rebuilt without a build time = %q", v.Rebuilt)
+	}
+	as, _ := asnServer(t)
+	as.public = func(a netip.Addr) bool { return true }
+	for name, b := range map[string]string{
+		"lookup":   get(s, "GET", "/?203.0.113.9").Body.String(),
+		"bad":      get(s, "GET", "/?1.2.3").Body.String(),
+		"search":   get(as, "GET", "/?q=example").Body.String(),
+		"network":  get(as, "GET", "/as64500").Body.String(),
+		"bulk":     get(s, "GET", "/bulk-ip-lookup").Body.String(),
+		"download": get(s, "GET", "/download").Body.String(),
+		"status":   get(s, "GET", "/status").Body.String(),
+	} {
+		for _, p := range []string{`class="tag"`, "<h2>Database</h2>", "Free for any use", "<span>Licence</span>"} {
+			if strings.Contains(b, p) {
+				t.Errorf("%s: has %q", name, p)
+			}
+		}
+		if n := strings.Count(b, "<h1"); n > 1 {
+			t.Errorf("%s: %d h1", name, n)
+		}
+	}
+	if b := get(s, "GET", "/?203.0.113.9").Body.String(); !strings.Contains(b, "<h1>Lisbon</h1>") {
+		t.Error("lookup page lost its h1")
+	}
+	if b := get(as, "GET", "/as64500").Body.String(); !strings.Contains(b, "<h1>") {
+		t.Error("network page lost its h1")
 	}
 }

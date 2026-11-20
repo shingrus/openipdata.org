@@ -452,6 +452,8 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 			v.API = s.apiPanelFor("/json", visitor)
 		}
 	}
+	v.Home = q.kind == "visitor"
+	p.H2 = v.Home // the heading in the header is the page's h1
 	share := p.Share
 	v.Share = share
 	v.Desc, v.Canon = desc, canon

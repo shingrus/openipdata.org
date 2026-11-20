@@ -376,6 +376,7 @@ type panel struct {
 	// BigHref or SubHref: the country name (Big when there is no city, else Sub) links to its country page.
 	BigHref, SubHref string
 	None             bool          // no location: Big is shown grey
+	H2               bool          // the place name is an h2: the visitor's own page has its h1 in the header
 	Map              template.HTML // the outline map behind the place (see worldmap.go), or empty
 	Rows             []row
 	Right            string      // right side of the head (the time of a shared report)

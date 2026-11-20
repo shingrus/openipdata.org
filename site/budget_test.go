@@ -39,7 +39,7 @@ type pageBudget struct {
 // times slower, the memory limit catches the smaller regressions. The comment
 // on each line is what was measured when the limit was set (2026-11-17).
 var pageBudgets = []pageBudget{
-	{"/", 13000, 4700, 110000, 2000 * time.Microsecond},                                    // 11426, 4199, 67537, 25µs
+	{"/", 13000, 4700, 110000, 2000 * time.Microsecond},                                    // 11634, 4239, 75278, 27µs (home heading and Database panel, 2026-11-20; 10185, 3888, 59609, 25µs before)
 	{"/download", 21000, 6900, 40000, 2000 * time.Microsecond},                             // 18649, 6240, 25772, 3µs
 	{"/bulk-ip-lookup", 16200, 5500, 30000, 2000 * time.Microsecond},                       // 14711, 5004, 22714, 2µs
 	{"/as64500", 16100, 5330, 130000, 2000 * time.Microsecond},                             // 14611, 4842, 104124, 77µs (name band and cells, no map, 2026-11-17; limits were 17900 raw, 6350 gz, 140000 alloc; before 16249, 5778, 124460)
@@ -49,7 +49,7 @@ var pageBudgets = []pageBudget{
 	{"/asn-huge-net", 125700, 14100, 2440000, 41000 * time.Microsecond},                    // 114294, 12808, 1947549, 4481µs (name band and cells, no map, 2026-11-17; limits were 131800 raw, 17000 gz, 2530000 alloc; before 119843, 15460, 2092884)
 	{"/prefix/203.0.113.0/24", 15800, 5240, 130000, 2000 * time.Microsecond},               // 14395, 4767, 102611, 67µs (name band and cells, no map, 2026-11-17; limits were 17000 raw, 6000 gz, 150000 alloc; before 15685, 5546, 97560)
 	{"/prefix/198.18.0.0/24", 16200, 5320, 130000, 2000 * time.Microsecond},                // 14767, 4834, 106093, 71µs (name band and cells, no map, 2026-11-17; limits were 15500 raw, 5200 gz; before 13769, 4652, 86304; the Places table grew with the new cells)
-	{"/?203.0.113.5", 20700, 7100, 190000, 2000 * time.Microsecond},                        // 19099, 6550, 125837, 65µs (lowered with the coarse land of the map)
+	{"/?203.0.113.5", 20700, 7100, 190000, 2000 * time.Microsecond},                        // 18801, 6489, 130668, 70µs (API head link removed 2026-11-20; 19099, 6550, 125837, 65µs before; lowered with the coarse land of the map)
 	{"/top-asn-by-ip-address", 30200, 6200, 50000, 2000 * time.Microsecond},                // 27444, 5634, 35018, 2µs (organizations linked, 2026-11-17; raw limit was 27000)
 	{"/list-of-countries-by-ipv4-allocation", 14500, 4900, 30000, 2000 * time.Microsecond}, // 12884, 4377, 19946, 2µs
 	{"/as64500/prefixes.txt", 100, 100, 30000, 2000 * time.Microsecond},                    // 45, 60, 16020, 7µs
