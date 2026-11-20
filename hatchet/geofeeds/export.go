@@ -56,7 +56,7 @@ var layerHeader = []string{"prefix", "country", "region", "city", "source"}
 const dropOtherOwner = "other_owner"
 
 // dropNoCity counts rows of the GitHub layer that have no city: the layer is -same-country and
-// the builder replaces the whole record, so a country-only row would erase a city a lower layer gave.
+// only adds cities, so a row with only a country has nothing to give.
 const dropNoCity = "no_city"
 
 // dropOutsideASN counts rows dropped from a feed that only a domain probe found
@@ -447,7 +447,7 @@ func (p *Pipeline) exportFeed(w, backedW *csv.Writer, idx *owners, inside *prefi
 			return
 		}
 		if githubLayer {
-			// The GitHub layer: no row without a city (the builder replaces the whole record), and
+			// The GitHub layer: no row without a city (the layer only adds cities), and
 			// none broader than a /16 (IPv4) or a /32 (IPv6): nothing ties a repository to the
 			// networks it names.
 			if rec[3] == "" {

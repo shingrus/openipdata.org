@@ -291,6 +291,58 @@ func TestReadLayerShortRows(t *testing.T) {
 	}
 }
 
+// An IPv4 row with a country and no city keeps a city of the same country that another layer
+// wrote; it still replaces a record of another country, a city of its own layer, and a record with
+// no city. An IPv6 row replaces as before.
+func TestBuildGeoCountryOnlyRow(t *testing.T) {
+	dir := t.TempDir()
+	rir := writeFile(t, filepath.Join(dir, "10-rir.csv.gz"), "prefix,country,city\n45.0.0.0/8,US,\n46.0.0.0/8,DE,\n2a00::/16,DE,\n")
+	low := writeFile(t, filepath.Join(dir, "30-low.csv.gz"), "prefix,country,city\n"+
+		"45.1.0.0/16,US,Dallas\n45.2.0.0/16,US,Reno\n46.1.0.0/16,DE,Berlin\n46.2.0.0/16,DE,Munich\n2a00:1::/32,DE,Berlin\n")
+	same := writeFile(t, filepath.Join(dir, "50-same.csv.gz"), "prefix,country,city\n"+
+		"46.1.1.0/24,DE,\n"+ // a same-country layer: Berlin stays
+		"46.2.0.0/16,FR,\n"+ // another country: the row does not apply, Munich stays
+		"45.6.0.0/16,US,\n") // nothing below has a city: the plain record
+	top := writeFile(t, filepath.Join(dir, "70-top.csv.gz"), "prefix,country,city\n"+
+		"45.1.0.0/24,US,\n"+ // the same country: Dallas stays
+		"45.1.1.0/24,US,<b>\n"+ // a city that is refused counts as no city: Dallas stays
+		"45.2.0.0/24,CA,\n"+ // another country: replaces Reno
+		"45.3.0.0/16,US,Austin\n"+
+		"45.3.1.0/24,US,\n"+ // a city of the same layer (the broader row): replaced
+		"45.4.0.0/16,US,\n"+ // no city below
+		"46.1.0.0/24,DE,\n"+ // Berlin stays
+		"2a00:1:1::/48,DE,\n") // IPv6: the rule is IPv4 only, the row replaces Berlin
+	out := filepath.Join(dir, "ip2geo.mmdb")
+	if _, err := buildGeo([]string{rir, low, same, top}, "", out, false, map[string]bool{"50-same.csv.gz": true}, nil, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	us := map[string]any{"country_code": "US", "country_name": "United States"}
+	de := map[string]any{"country_code": "DE", "country_name": "Germany"}
+	city := func(code, name, city, source string) map[string]any {
+		return map[string]any{"country_code": code, "country_name": name, "city_name": city, "city_source": source}
+	}
+	for ip, want := range map[string]map[string]any{
+		"45.1.0.1":    city("US", "United States", "Dallas", "30-low"),
+		"45.1.1.1":    city("US", "United States", "Dallas", "30-low"),
+		"45.1.2.1":    city("US", "United States", "Dallas", "30-low"),
+		"45.2.0.1":    {"country_code": "CA", "country_name": "Canada"},
+		"45.2.1.1":    city("US", "United States", "Reno", "30-low"),
+		"45.3.0.1":    city("US", "United States", "Austin", "70-top"),
+		"45.3.1.1":    us,
+		"45.4.0.1":    us,
+		"45.6.0.1":    us,
+		"46.1.0.1":    city("DE", "Germany", "Berlin", "30-low"),
+		"46.1.1.1":    city("DE", "Germany", "Berlin", "30-low"),
+		"46.2.0.1":    city("DE", "Germany", "Munich", "30-low"),
+		"2a00:1::1":   city("DE", "Germany", "Berlin", "30-low"),
+		"2a00:1:1::1": de,
+	} {
+		if got := lookupGeo(t, out, ip); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %v, want %v", ip, got, want)
+		}
+	}
+}
+
 // city_source names the layer that wrote the city, in every mode; a record
 // without a city has none.
 func TestBuildGeoCitySource(t *testing.T) {
@@ -307,7 +359,7 @@ func TestBuildGeoCitySource(t *testing.T) {
 		"48.0.0.0/24,US,Austin\n")
 	first := writeFile(t, filepath.Join(dir, "70-geofeeds.csv.gz"), "prefix,country,city\n"+
 		"45.0.0.0/24,FR,Lyon\n"+
-		"49.0.0.0/24,US,\n") // no city: replaces Reno and drops city_source
+		"49.0.0.0/24,US,\n") // no city, the same country: Reno of the layer below stays
 	for _, debug := range []bool{false, true} {
 		out := filepath.Join(dir, "ip2geo.mmdb")
 		_, err := buildGeo([]string{rir, plain, same, within, first}, "", out, debug,
@@ -323,7 +375,7 @@ func TestBuildGeoCitySource(t *testing.T) {
 			"48.0.0.1": "60-whois",    // withinFirst
 			"45.0.0.1": "70-geofeeds", // firstCountry
 			"46.0.1.1": "",            // sameCountry row skipped, RIR has no city
-			"49.0.0.1": "",            // a later layer without a city drops it
+			"49.0.0.1": "40-hosting",  // a later row with the same country and no city keeps it
 			"50.0.0.1": "",            // RIR only
 		} {
 			got := lookupGeo(t, out, ip)

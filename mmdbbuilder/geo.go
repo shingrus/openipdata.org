@@ -57,9 +57,15 @@ type place struct{ code, city, source string }
 // buildGeo builds the ip2geo MMDB from the layer files, in order, and writes
 // it to outPath atomically.
 //
-// A layer replaces whatever the layers before it put under its prefixes.
+// A layer replaces whatever the layers before it put under its prefixes (one exception: an IPv4
+// row with a country and no city, see below).
 // Within a layer every prefix is inserted broadest first, so a more specific
 // prefix wins; for a repeated prefix the last row wins.
+//
+// An IPv4 row with a country and no city (in any layer) never erases a city of the same country
+// that another layer wrote: such a network is left as it is (keepCity). Where the country differs,
+// or the city came from a broader row of the same layer, the row replaces the record as usual.
+// IPv6 rows are not changed by this: there the rule was not measured, and no guess fills in.
 //
 // A layer named in sameCountry (by file name) only refines: its rows apply
 // where the layers before it gave the same country or none, so a broad row
@@ -81,8 +87,8 @@ type place struct{ code, city, source string }
 //
 // A record has country_code, country_name, city_name and, when it has a city,
 // city_source: the layer file name without .csv.gz (or .csv) of the layer that
-// wrote the city. A layer replaces the whole record, so city_source always
-// names the layer behind the city; a record without a city has none. With
+// wrote the city. A row replaces the whole record or leaves it as it is, so
+// city_source always names the layer behind the city; a record without a city has none. With
 // debug the record also has network.
 //
 // With a GeoNames index (nil: none), a record whose city the index places
@@ -223,6 +229,9 @@ func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool,
 			if sameCountry[s.name] {
 				insert = whereCountry(record, records[e.place]["country_code"])
 			}
+			if _, hasCity := records[e.place]["city_name"]; !hasCity && e.prefix.Addr().Is4() {
+				insert = keepCity(insert, records[e.place]["country_code"], layerSource(s.name))
+			}
 			parts := e.parts
 			if parts == nil {
 				parts = []netip.Prefix{e.prefix}
@@ -303,6 +312,27 @@ func whereCountry(record mmdbtype.Map, code mmdbtype.DataType) inserter.Func {
 			}
 		}
 		return record, nil
+	}
+}
+
+// keepCity is the rule for an IPv4 row with a country and no city: it leaves a network as it is
+// when the network has that country and a city that another layer wrote, and otherwise does what
+// insert does. So a row that only names the country cannot erase a city of the same country
+// (measured: such rows of the geofeed layer erased the city of 419 RIPE Atlas probes, and the
+// guesses that filled in were right less often). A city that a broader row of the same layer
+// wrote is replaced: within one layer the more specific row is the layer's own statement. The
+// builder does not see a row's region, so a row with a region and no city is treated the same.
+func keepCity(insert inserter.Func, code mmdbtype.DataType, source string) inserter.Func {
+	return func(existing mmdbtype.DataType) (mmdbtype.DataType, error) {
+		if m, ok := existing.(mmdbtype.Map); ok {
+			have, hasCountry := m["country_code"]
+			city, _ := m["city_name"].(mmdbtype.String)
+			src, _ := m["city_source"].(mmdbtype.String)
+			if hasCountry && have.Equal(code) && city != "" && string(src) != source {
+				return existing, nil
+			}
+		}
+		return insert(existing)
 	}
 }
 

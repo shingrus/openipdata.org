@@ -170,8 +170,8 @@ func writeHostingRows(ctx context.Context, dsn string, w *csv.Writer) (int, erro
 
 // ixQuery lists the internet exchange peering LAN prefixes with a 2-letter
 // country (sync-peeringdb already drops the rest) and a city. An exchange
-// without a city stays in the table but not in the layer: as a later layer, a
-// country-only row would erase a city that the lower layers set. Read only.
+// without a city stays in the table but not in the layer: the layer is there
+// for the exchange's city. Read only.
 const ixQuery = `SELECT prefix, upper(btrim(country)), btrim(city)
 	FROM public.geo_ix_pdb
 	WHERE length(btrim(country)) = 2

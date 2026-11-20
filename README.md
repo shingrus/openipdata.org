@@ -349,7 +349,7 @@ found it has finished; a GitHub feed after the `search-github` run that found it
   rate limited`) with the progress saved, while any other 403 or 451 on a tree (a blocked repository) lists it with no files and the run goes on; a failing first search page changes nothing. The token goes only to the API, never to the raw
   host, and never into a log, output or error. `discover` adds each file URL with the source `github` and no block. `export-rows` keeps
   feeds whose sources are exactly `github` out of `70-geofeeds.csv.gz` and its counts and gate, and writes their rows (same ownership
-  check; rows with no city are dropped and counted as `no_city`, because the layer is `-same-country` and a country-only row would erase a lower layer's city) to `out/39-github-geofeeds.csv.gz`, uploaded to `internal/layers/39-github-geofeeds.csv.gz` (`github` in its output; own state file
+  check; rows with no city are dropped and counted as `no_city`, because the layer is `-same-country` and only adds cities) to `out/39-github-geofeeds.csv.gz`, uploaded to `internal/layers/39-github-geofeeds.csv.gz` (`github` in its output; own state file
   `github-upload.json`; no first-upload minimum and no drop limit, since three feeds carry almost all of its rows and one moving to `70-geofeeds` is normal; a problem never fails the task). A github-only feed is skipped as a duplicate when
   a feed of `public.geofeed_urls` that is not github-only and was just read is in the same GitHub repository (a dead URL does not count) or has the same stored rows, and nothing is written for a row with no city or one broader than a /16 (IPv4) or a /32 (IPv6; `too_broad`). Only feeds whose stored copy was just read count for the same-repository rule. Without a github-only feed the file is removed and nothing is uploaded; the R2 object then stays and `build-geo-data` keeps using it until it is 14 days old.
   Records broader than a /16 were right 32% of the time and are left out. The LACNIC rows (468,740, measured 2026-11-17 on top of that)
@@ -630,7 +630,10 @@ The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.c
 directory, sorted by name, to `mmdbbuilder geo`, which has one reader for the format (columns found by
 header). There is no list of layers in the build: the only per-layer rules are in one table keyed by
 layer name (`layerRules`): `25-bgp`, `30-pdb`, `35-speedtest-site`, `36-mlab`, `37-whois-arin`, `37-whois-text`, `38-asn-geofeed` and `39-github-geofeeds` `-same-country`, `40-hosting` `-first-country`, `60-whois`, `68-cloud-regions` and
-`70-geofeeds` `-within-first`; a rule for a file that is not there is not passed.
+`70-geofeeds` `-within-first`; a rule for a file that is not there is not passed. One rule holds for every layer and needs no flag: an IPv4 row
+with a country and no city leaves a network as it is when the network has the same country and a city that another layer wrote, so a
+geofeed row that only names the country does not erase the city of a layer below it (it still replaces a record of another country and a
+city of its own layer's broader row; IPv6 rows replace as before: the rule was measured on IPv4 only). Measured with the real builder on the layer files of the build of 2026-11-20 (id 62): the records of 419 RIPE Atlas probes change from a guess to a layer's city (187 `36-mlab`, 91 `30-pdb`, 39 `60-whois`, 33 `37-whois-text`, 26 `35-rdns-wide`), +37 right and -9 lost probes (right city 59.56% -> 59.75%, precision 60.70% -> 60.89%); 21.2M addresses go from a guess to a layer's city and 0.56M more addresses have a city.
 
 | Task | Runs after | Does |
 |---|---|---|
@@ -678,7 +681,7 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
      with them), `download` skips this layer like the exchange layer; there is no minimum otherwise;
   5. `50-ix`: PeeringDB internet exchange peering LAN prefixes (`public.geo_ix_pdb`): the exchange's country
      and city. A plain layer: it replaces what layers 1 to 4 put under those prefixes. An exchange
-     without a city is left out of the layer (a country-only row would erase a city set below it).
+     without a city is left out of the layer (the layer is there for the exchange's city).
      While the table does not exist or has no rows (before `sync-peeringdb` has run once with the
      exchange prefixes), `download` logs a warning and skips this layer;
   6. `60-whois`: whois geoloc rows that `sync-geofeeds` left in R2 at
