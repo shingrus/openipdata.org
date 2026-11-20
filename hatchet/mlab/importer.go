@@ -64,23 +64,33 @@ func (o ImportOutput) Bad() int {
 // means the newest *.csv or *.csv.gz there. A name with a path separator or a dot-dot is refused,
 // and so is anything but a regular file (no symbolic link).
 func (p *Pipeline) inboxFile(name string) (string, error) {
+	path, found, err := findInput(p.inbox(), name)
+	if err == nil && !found {
+		return "", permanent("the inbox %s has no .csv or .csv.gz file", p.inbox())
+	}
+	return path, err
+}
+
+// findInput is inboxFile for any directory. With an empty name and no CSV in dir (or no dir) it
+// returns found false and no error; the caller decides what that means.
+func findInput(dir, name string) (path string, found bool, err error) {
 	if name != "" {
 		if name != filepath.Base(name) || strings.ContainsAny(name, "/\\\x00") || name == "." || name == ".." {
-			return "", permanent("file must be a base name inside the inbox, not a path")
+			return "", false, permanent("file must be a base name inside the inbox, not a path")
 		}
 		if !isCSVName(name) {
-			return "", permanent("file must end in .csv or .csv.gz")
+			return "", false, permanent("file must end in .csv or .csv.gz")
 		}
-		path := filepath.Join(p.inbox(), name)
+		path := filepath.Join(dir, name)
 		fi, err := os.Lstat(path)
 		if err != nil || !fi.Mode().IsRegular() {
-			return "", permanent("no such file in the inbox: %s", name)
+			return "", false, permanent("no such file in the inbox: %s", name)
 		}
-		return path, nil
+		return path, true, nil
 	}
-	entries, err := os.ReadDir(p.inbox())
+	entries, err := os.ReadDir(dir)
 	if err != nil && !os.IsNotExist(err) {
-		return "", err
+		return "", false, err
 	}
 	type cand struct {
 		name string
@@ -98,7 +108,7 @@ func (p *Pipeline) inboxFile(name string) (string, error) {
 		cands = append(cands, cand{e.Name(), fi.ModTime()})
 	}
 	if len(cands) == 0 {
-		return "", permanent("the inbox %s has no .csv or .csv.gz file", p.inbox())
+		return "", false, nil
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if !cands[i].mod.Equal(cands[j].mod) {
@@ -106,7 +116,7 @@ func (p *Pipeline) inboxFile(name string) (string, error) {
 		}
 		return cands[i].name > cands[j].name
 	})
-	return filepath.Join(p.inbox(), cands[0].name), nil
+	return filepath.Join(dir, cands[0].name), true, nil
 }
 
 func isCSVName(name string) bool {
@@ -177,26 +187,11 @@ func countClients(pairs []pair) int {
 // readCSV streams the CSV (plain or gzip, found by its first bytes), counts into out and returns the
 // merged pairs. The header names the columns; the rows are untrusted.
 func readCSV(ctx context.Context, src io.Reader, out *ImportOutput, minValid, pairLimit int) ([]pair, error) {
-	br := bufio.NewReaderSize(src, 1<<20)
-	var rd io.Reader = br
-	if magic, _ := br.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
-		gz, err := gzip.NewReader(br)
-		if err != nil {
-			return nil, permanent("the input file is not a valid gzip file")
-		}
-		defer gz.Close()
-		rd = gz
-	}
-	r := bufio.NewReaderSize(rd, 64<<10)
-	header, err := readLine(r)
+	r, col, closeFn, err := openCSV(src)
 	if err != nil {
-		return nil, permanent("the input file has no header line")
+		return nil, err
 	}
-	header = bytes.TrimPrefix(header, []byte("\xef\xbb\xbf"))
-	col := map[string]int{}
-	for i, name := range bytes.Split(header, []byte{','}) {
-		col[strings.ToLower(strings.Trim(string(name), " \t\""))] = i
-	}
+	defer closeFn()
 	cClient, ok1 := col["client24"]
 	cHop, ok2 := col["hop_ip"]
 	cFrom, ok3 := col["from_end"]
@@ -315,6 +310,35 @@ func readCSV(ctx context.Context, src io.Reader, out *ImportOutput, minValid, pa
 		out.Days = int(lastDay.Sub(firstDay).Hours()/24) + 1
 	}
 	return pairs, nil
+}
+
+// openCSV wraps src (plain or gzip, found by its first bytes), reads the header line and returns
+// the reader at the first data line with the lower-cased column names mapped to their positions.
+// closeFn must be called when the reader is done.
+func openCSV(src io.Reader) (r *bufio.Reader, col map[string]int, closeFn func(), err error) {
+	br := bufio.NewReaderSize(src, 1<<20)
+	var rd io.Reader = br
+	closeFn = func() {}
+	if magic, _ := br.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		gz, err := gzip.NewReader(br)
+		if err != nil {
+			return nil, nil, nil, permanent("the input file is not a valid gzip file")
+		}
+		closeFn = func() { gz.Close() }
+		rd = gz
+	}
+	r = bufio.NewReaderSize(rd, 64<<10)
+	header, err := readLine(r)
+	if err != nil {
+		closeFn()
+		return nil, nil, nil, permanent("the input file has no header line")
+	}
+	header = bytes.TrimPrefix(header, []byte("\xef\xbb\xbf"))
+	col = map[string]int{}
+	for i, name := range bytes.Split(header, []byte{','}) {
+		col[strings.ToLower(strings.Trim(string(name), " \t\""))] = i
+	}
+	return r, col, closeFn, nil
 }
 
 // trimField drops spaces and quotes around a field.

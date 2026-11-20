@@ -8,7 +8,7 @@
 //	openipdata-worker run-domains                # update-asn-domains
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-bgp [-skip-upload | -force-upload] [-mrt file] # sync-bgp (-mrt: read a local dump, no download, no upload)
-//	openipdata-worker run-mlab [-file path] [-skip-upload | -force-upload] # import-mlab (-file: any local CSV instead of the newest in the inbox)
+//	openipdata-worker run-mlab [-sites] [-file path] [-skip-upload | -force-upload] # import-mlab (-file: any local CSV instead of the newest in the inbox); -sites: import-mlab-sites instead (layer 35-speedtest-site, from the sites inbox or -file)
 //	openipdata-worker run-arin [-skip-upload] [-force-upload] [-force-export] # sync-arin-whois
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
@@ -111,6 +111,16 @@ type ImportMLabInput struct {
 	ForceUpload bool `json:"force_upload"`
 }
 
+// ImportMLabSitesInput is the import-mlab-sites input; there is no cron, the workflow is started by hand.
+type ImportMLabSitesInput struct {
+	// File is the base name of a .csv or .csv.gz file in the sites inbox
+	// (/var/lib/openipdata/mlab/sites-inbox); empty means the newest one there, and with no file
+	// the task does nothing.
+	File string `json:"file"`
+	// ForceUpload sends the layer even when R2 already holds the same bytes.
+	ForceUpload bool `json:"force_upload"`
+}
+
 // SyncARINWhoisInput is the sync-arin-whois input; cron runs use the zero value.
 type SyncARINWhoisInput struct {
 	// ForceUpload sends the layer even when R2 already holds the same bytes, and copies the records
@@ -129,7 +139,7 @@ type BuildGeoInput struct {
 	// (for a manual run after checking that the drop is real).
 	ForcePublish bool `json:"force_publish"`
 	// SkipLayers leaves these optional layer files out of the build and the holdout build,
-	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 36-mlab, 37-whois-arin, 37-whois-text, 38-asn-geofeed, 39-github-geofeeds, 40-hosting, 50-ix, 60-whois,
+	// e.g. ["40-hosting.csv.gz"]; the optional layers are 25-bgp, 35-rdns-wide, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text, 38-asn-geofeed, 39-github-geofeeds, 40-hosting, 50-ix, 60-whois,
 	// 65-rdns, 67-rdns-names and 68-cloud-regions (for manual test runs).
 	SkipLayers []string `json:"skip_layers"`
 }
@@ -370,6 +380,7 @@ func serve(ctx context.Context) error {
 			syncGeofeedsWorkflow(client),
 			syncBGPWorkflow(client),
 			importMLabWorkflow(client),
+			importMLabSitesWorkflow(client),
 			syncARINWhoisWorkflow(client),
 			buildGeoWorkflow(client),
 			resolveIPsWorkflow(client),
@@ -693,6 +704,30 @@ func importMLabWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf.NewTask("upload", func(ctx hatchet.Context, input ImportMLabInput) (mlab.UploadOutput, error) {
 		return newMLabPipeline(taskLog(ctx)).Upload(ctx, input.ForceUpload)
 	}, taskRetry(hatchet.WithParents(locate), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	return wf
+}
+
+// importMLabSitesWorkflow turns the M-Lab reply time export the owner copied into the sites inbox
+// (the lowest reply time between M-Lab's speed test servers and each client /24) into the ip2geo
+// layer 35-speedtest-site in private R2, where build-geo-data reads it. It is its own workflow, so
+// a new reply time export does not run the hop tasks of import-mlab again. There is no cron.
+func importMLabSitesWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("import-mlab-sites",
+		hatchet.WithWorkflowDescription("M-Lab reply time export (sites inbox) -> layer 35-speedtest-site in private R2; started by hand"),
+		hatchet.WithWorkflowConcurrency(oneRunLimit("mlab-sites")),
+	)
+	wf.NewTask("site-layer", func(ctx hatchet.Context, input ImportMLabSitesInput) (mlab.SiteLayerOutput, error) {
+		p := newMLabPipeline(taskLog(ctx))
+		if err := p.CheckUpload(); err != nil {
+			return mlab.SiteLayerOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		out, err := p.SiteLayer(ctx, input.File, mlab.SiteLayerOptions{ForceUpload: input.ForceUpload})
+		// A file or setting problem is fixed by the owner, not by a retry.
+		if errors.Is(err, mlab.ErrPermanent) {
+			err = hatchet.NewNonRetryableError(err)
+		}
+		return out, err
+	}, taskRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
 	return wf
 }
 
@@ -1109,10 +1144,13 @@ func runBGP(ctx context.Context, args []string) error {
 }
 
 // runMLab runs the import-mlab tasks once, in order, without Hatchet. With -file it imports that
-// local CSV (any path); otherwise the newest file of the inbox.
+// local CSV (any path); otherwise the newest file of the inbox. With -sites it runs the task of
+// import-mlab-sites instead (-file then names its local CSV, the default is the newest file of the
+// sites inbox).
 func runMLab(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-mlab", flag.ExitOnError)
 	file := flags.String("file", "", "import this local CSV (plain or .gz) instead of the newest file in the inbox")
+	sites := flags.Bool("sites", false, "run only the site layer (35-speedtest-site) from the reply time export (-file: its local CSV, else the newest file in the sites inbox)")
 	skipUpload := flags.Bool("skip-upload", false, "write the layer file but do not upload it")
 	forceUpload := flags.Bool("force-upload", false, "send the layer even if R2 already holds the same bytes")
 	flags.Parse(args)
@@ -1121,6 +1159,9 @@ func runMLab(ctx context.Context, args []string) error {
 	}
 
 	p := newMLabPipeline(cliLog)
+	if *sites {
+		return runMLabSites(ctx, p, *file, *skipUpload, *forceUpload)
+	}
 	if err := p.CheckPGSQL(); err != nil {
 		return err
 	}
@@ -1149,6 +1190,18 @@ func runMLab(ctx context.Context, args []string) error {
 		return nil
 	}
 	_, err = p.Upload(ctx, *forceUpload)
+	return err
+}
+
+// runMLabSites runs the site-layer task of import-mlab-sites (run-mlab -sites): no database is
+// needed. -file names the local CSV; without it the newest file of the sites inbox is used.
+func runMLabSites(ctx context.Context, p *mlab.Pipeline, file string, skipUpload, forceUpload bool) error {
+	if !skipUpload {
+		if err := p.CheckUpload(); err != nil {
+			return err
+		}
+	}
+	_, err := p.SiteLayer(ctx, "", mlab.SiteLayerOptions{Path: file, SkipUpload: skipUpload, ForceUpload: forceUpload})
 	return err
 }
 

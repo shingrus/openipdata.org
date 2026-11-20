@@ -36,7 +36,7 @@
 // row (empty city). See lookup.go.
 //
 // gaps lists the IPv4 /24s of an ip2geo MMDB that have a country and no city (a city whose
-// source is one of the five guesses, 25-bgp, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as lines
+// source is one of the six guesses, 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as lines
 // "<first /24> <count of consecutive /24s> <country>". See gaps.go.
 //
 // stamp rewrites only the metadata section of an MMDB: description.en becomes a

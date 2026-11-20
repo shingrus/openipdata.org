@@ -22,6 +22,11 @@
 //	              most /16) got from the PTR names of routers near them; applied only
 //	              where the earlier layers give the same country; skipped while the
 //	              table has no such rows
+//	35-speedtest-site  import-mlab-sites (private R2, from the M-Lab reply time export the owner copies
+//	              in by hand): the city of the speed test server for a client /24 whose lowest
+//	              reply time to it is at most 5 ms; applied only where the earlier layers give the
+//	              same country; skipped while the object is missing or older than 45 days (the
+//	              health check ping is still sent)
 //	36-mlab       import-mlab (private R2, from the M-Lab traceroute export the owner copies in
 //	              by hand): the city of the router hops before each client /24; applied only
 //	              where the earlier layers give the same country; skipped while the object is
@@ -142,7 +147,7 @@ const (
 //   - -same-country: the PeeringDB rows only refine. An ASN's city must not
 //     replace more specific networks that the registration data puts in another
 //     country.
-//   - -same-country also holds for the three rDNS layers, the ASN geofeed layer, the BGP community layer, the M-Lab hop layer and the whois text
+//   - -same-country also holds for the three rDNS layers, the ASN geofeed layer, the BGP community layer, the two M-Lab layers (speed test site and hop) and the whois text
 //     layer: they add cities and never change a country (a router name is evidence of a city, not of
 //     who holds the block; the ASN geofeed rows extend an ASN's own geofeed evidence to its other
 //     prefixes; a whois description names a place, but the record's country may be the holder's).
@@ -165,6 +170,7 @@ var layerRules = map[string]string{
 	RDNSWideLayer:     "-same-country",
 	HostingLayer:      "-first-country",
 	WhoisLayer:        "-within-first",
+	MLabSitesLayer:    "-same-country",
 	MLabLayer:         "-same-country",
 	ARINLayer:         "-same-country",
 	WhoisTextLayer:    "-same-country",
@@ -181,7 +187,7 @@ var layerRules = map[string]string{
 // Source.SkippedLayers. Every other layer is required: a run without it fails.
 // Only this list and r2Layers know about layers, and only for reporting;
 // the build takes whatever files the directory holds.
-var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, GitHubFeedsLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer, CloudRegionsLayer}
+var optionalLayers = []string{BGPLayer, RDNSWideLayer, MLabSitesLayer, MLabLayer, ARINLayer, WhoisTextLayer, ASNFeedLayer, GitHubFeedsLayer, HostingLayer, IXLayer, WhoisLayer, RDNSLayer, RDNSNamesLayer, CloudRegionsLayer}
 
 // r2Layers are the layer files that sync-geofeeds uploads; Download fetches
 // them as they are. One that is missing or older than rowsMaxAge also skips
@@ -476,6 +482,11 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 
 	// 13. The M-Lab hop cities (import-mlab's layer file in R2), put in as it is.
 	if err := p.downloadMLab(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
+		return src, err
+	}
+
+	// 13b. The M-Lab speed test site cities (import-mlab-sites' layer file in R2), put in as it is.
+	if err := p.downloadMLabSites(ctx, r2.DownloadIfChanged, downloads, layers, now, &src); err != nil {
 		return src, err
 	}
 

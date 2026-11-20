@@ -197,7 +197,7 @@ func TestRulePlaces(t *testing.T) {
 func TestWriteLayerFormat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), LayerFile)
 	rows := []layerRow{{cl1, "DE", "Berlin"}, {cl2, "FR", "Saint-Étienne, Loire"}}
-	if _, err := writeLayer(path, rows); err != nil {
+	if _, err := writeLayer(path, rows, layerSource); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {

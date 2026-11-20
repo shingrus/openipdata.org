@@ -273,7 +273,7 @@ func vote(pairs []pair, rule, mmdb map[uint32]place, countries map[uint32][2]byt
 
 // writeLayer writes the layer file (gzipped CSV in the geofeed layout) through a temporary file
 // and a rename. Rows are in client order, which is address order.
-func writeLayer(path string, rows []layerRow) (int64, error) {
+func writeLayer(path string, rows []layerRow, source string) (int64, error) {
 	tmp := path + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
@@ -287,7 +287,7 @@ func writeLayer(path string, rows []layerRow) (int64, error) {
 	for _, r := range rows {
 		prefix = appendClient(prefix[:0], r.Client)
 		prefix = append(prefix, ".0/24"...)
-		w.Write([]string{string(prefix), r.Country, "", r.City, layerSource})
+		w.Write([]string{string(prefix), r.Country, "", r.City, source})
 	}
 	w.Flush()
 	if err := errors.Join(w.Error(), gz.Close(), f.Close()); err != nil {
@@ -378,7 +378,7 @@ func (p *Pipeline) Locate(ctx context.Context) (LocateOutput, error) {
 	if err := os.MkdirAll(p.dir(), 0o750); err != nil {
 		return out, err
 	}
-	if out.Bytes, err = writeLayer(p.LayerPath(), rows); err != nil {
+	if out.Bytes, err = writeLayer(p.LayerPath(), rows, layerSource); err != nil {
 		return out, fmt.Errorf("write %s: %w", LayerFile, err)
 	}
 	p.log("locate: %d client /24s, %d hops, %d named, %d with a rule city, %d with an MMDB city (mmdb %s); %d /24s located (%d by rule, %d by MMDB), %d ties, %d without a city",

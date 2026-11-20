@@ -188,6 +188,29 @@ func TestGapsWeakSources(t *testing.T) {
 	}
 }
 
+// A /24 whose city comes from 35-speedtest-site is still a gap, like one from 36-mlab.
+func TestGapsSpeedtestSiteSource(t *testing.T) {
+	dir := t.TempDir()
+	l1 := writeFile(t, filepath.Join(dir, "10-rir.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.0.0/22,DE,,,rir\n")
+	l2 := writeFile(t, filepath.Join(dir, "35-speedtest-site.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.1.0/24,DE,,Munich,speedtest-site\n")
+	l3 := writeFile(t, filepath.Join(dir, "70-geofeeds.csv.gz"), "prefix,country,region,city,source\n"+
+		"20.0.2.0/24,DE,,Berlin,feed\n")
+	db := filepath.Join(dir, "site.mmdb")
+	if _, err := buildGeo([]string{l1, l2, l3}, "", db, false, nil, nil, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "gaps.txt")
+	if _, err := writeGaps(db, out); err != nil {
+		t.Fatal(err)
+	}
+	want := "20.0.0.0/24 2 DE\n20.0.3.0/24 1 DE\n" // 20.0.2.0/24 (geofeed city) is not in it
+	if data, _ := os.ReadFile(out); string(data) != want {
+		t.Errorf("gaps = %q, want %q", data, want)
+	}
+}
+
 // -countries (with -with-source) also writes the IPs that have a country and no city, with an
 // empty city and no source; a guessed city is shown as no city; IPs with no country stay out.
 func TestWriteCitiesCountries(t *testing.T) {

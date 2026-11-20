@@ -1,4 +1,5 @@
-// Package mlab is the import-mlab workflow. M-Lab (Measurement Lab) publishes, under CC0, a
+// Package mlab holds two workflows, import-mlab and import-mlab-sites (see the end of this comment).
+// import-mlab: M-Lab (Measurement Lab) publishes, under CC0, a
 // traceroute from its speed-test server back to every client. The owner exports from BigQuery,
 // by hand about once a month, the last 3 router hops before each client /24 (see the README) and
 // copies the CSV into the inbox (DataDir/mlab/inbox). The workflow turns it into the ip2geo layer
@@ -24,6 +25,11 @@
 // inside the client /24 itself. Only a city in the client /24's country (its country in our MMDB)
 // votes. A tie in both rounds gives none.
 //
+// The second workflow, import-mlab-sites, has one task, SiteLayer. It makes the layer
+// 35-speedtest-site from a second export (the lowest reply time between M-Lab's speed test servers
+// and each client /24, see sites.go). It uses none of the tasks above, and it is a workflow of its
+// own so that a new reply time export does not run them again.
+//
 // Hop IPs are public router addresses, but the CSV is untrusted input: bad rows are counted,
 // never echoed, and no IP is put in a log line, output or returned error.
 package mlab
@@ -32,6 +38,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"time"
 
@@ -44,6 +51,11 @@ const (
 	// LayerKey is the one fixed key in the private R2 bucket, replaced by each upload.
 	LayerKey = "internal/layers/" + LayerFile
 
+	// SiteLayerFile is the second ip2geo layer (35-speedtest-site, see sites.go), made by the workflow
+	// import-mlab-sites (task site-layer) from the reply time export. SiteLayerKey is its fixed key in the private R2 bucket.
+	SiteLayerFile = "35-speedtest-site.csv.gz"
+	SiteLayerKey  = "internal/layers/" + SiteLayerFile
+
 	pairsFile = "pairs.csv.gz"
 	inboxDir  = "inbox"
 
@@ -52,7 +64,7 @@ const (
 
 // mmdbStrongSources are the city_sources of our own MMDB whose city of a hop IP may stand for the
 // router's city: the sources that place a network from its own data. Everything else (80-asn-main,
-// 25-bgp, 30-pdb, 35-rdns-wide, 36-mlab itself, 65-rdns, 67-rdns-names, no source) never counts.
+// 25-bgp, 30-pdb, 35-rdns-wide, 35-speedtest-site, 36-mlab itself, 65-rdns, 67-rdns-names, no source) never counts.
 var mmdbStrongSources = []string{"70-geofeeds", "60-whois", "40-hosting", "50-ix", "38-asn-geofeed"}
 
 // ErrPermanent marks an error that no retry can fix (a bad input file, too few rows). The worker
@@ -90,12 +102,20 @@ type Pipeline struct {
 	maxPairs     int
 	budget       time.Duration
 	batch        int
+
+	minSiteRows      int
+	minSiteLayerRows int
+	geoURL           string
+	dlClient         *http.Client
 }
 
 func (p *Pipeline) dir() string       { return filepath.Join(p.DataDir, "mlab") }
 func (p *Pipeline) inbox() string     { return filepath.Join(p.dir(), inboxDir) }
 func (p *Pipeline) pairsPath() string { return filepath.Join(p.dir(), pairsFile) }
 func (p *Pipeline) LayerPath() string { return filepath.Join(p.dir(), LayerFile) }
+
+func (p *Pipeline) sitesInbox() string    { return filepath.Join(p.dir(), sitesInboxDir) }
+func (p *Pipeline) SiteLayerPath() string { return filepath.Join(p.dir(), SiteLayerFile) }
 
 func (p *Pipeline) log(format string, args ...any) {
 	if p.Progress != nil {
