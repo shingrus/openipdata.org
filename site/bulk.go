@@ -146,16 +146,16 @@ func (s *server) lookupAll(addrs []netip.Addr) []ipJSON {
 }
 
 // tableRows is the results table as the page shows it: the country name, the
-// coordinates as one value, the network as AS number and name.
+// coordinates as one value, the network as AS number and name (the organisation when the handle is unknown: the GeoLite2-ASN file has none).
 func tableRows(res []ipJSON) []bulkRow {
 	out := make([]bulkRow, len(res))
 	for i, j := range res {
-		r := bulkRow{IP: j.IP, Country: j.CountryName, City: j.CityName, Net: j.ASName}
+		r := bulkRow{IP: j.IP, Country: j.CountryName, City: j.CityName, Net: firstNonEmpty(j.ASName, j.Org)}
 		if j.Latitude != nil && j.Longitude != nil {
 			r.Coords = strconv.FormatFloat(*j.Latitude, 'f', -1, 64) + ", " + strconv.FormatFloat(*j.Longitude, 'f', -1, 64)
 		}
 		if j.ASN != 0 {
-			r.Net = strings.TrimSpace("AS" + strconv.FormatUint(uint64(j.ASN), 10) + " " + j.ASName)
+			r.Net = strings.TrimSpace("AS" + strconv.FormatUint(uint64(j.ASN), 10) + " " + r.Net)
 		}
 		out[i] = r
 	}

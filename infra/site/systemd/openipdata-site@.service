@@ -13,8 +13,8 @@ User=openipdata-site
 Group=openipdata-site
 # No env file: the site needs no secrets.
 Environment=LISTEN=127.0.0.1:%i
-Environment=GEO_MMDB=/var/lib/openipdata-site/data/ip2geo-openipdata.mmdb
-Environment=ASN_MMDB=/var/lib/openipdata-site/data/ip2asn-openipdata.mmdb
+Environment=GEO_MMDB=/var/lib/openipdata-site/data/openipdata-org-ip2geo.mmdb
+Environment=ASN_MMDB=/var/lib/openipdata-site/data/openipdata-org-ip2asn.mmdb
 # The ASN pages read this SQLite file (published by the worker, pulled like the MMDBs).
 Environment=ASN_SQLITE=/var/lib/openipdata-site/data/asn-openipdata.sqlite3
 # nginx sends the visitor address in X-Real-IP (see openipdata.org.conf); the site

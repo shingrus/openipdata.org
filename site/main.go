@@ -5,9 +5,9 @@
 //	LISTEN    address to listen on (default 127.0.0.1:8080)
 //	GEO_MMDB  path of the ip2geo MMDB: city and country of an address, and in its
 //	          metadata the scores (default
-//	          /var/lib/openipdata-site/data/ip2geo-openipdata.mmdb)
+//	          /var/lib/openipdata-site/data/openipdata-org-ip2geo.mmdb)
 //	ASN_MMDB  path of the ip2asn MMDB: network, AS number and announced prefix
-//	          (default /var/lib/openipdata-site/data/ip2asn-openipdata.mmdb)
+//	          (default /var/lib/openipdata-site/data/openipdata-org-ip2asn.mmdb)
 //	ASN_SQLITE  path of the SQLite file with the ASN data, published by the
 //	          worker as asn-openipdata.sqlite3 (default
 //	          /var/lib/openipdata-site/data/asn-openipdata.sqlite3)
@@ -558,14 +558,14 @@ func main() {
 	}
 	mmdb := os.Getenv("GEO_MMDB")
 	if mmdb == "" {
-		mmdb = "/var/lib/openipdata-site/data/ip2geo-openipdata.mmdb"
+		mmdb = "/var/lib/openipdata-site/data/openipdata-org-ip2geo.mmdb"
 	}
 	if info, err := os.Stat(mmdb); err == nil && info.IsDir() {
 		fatal("GEO_MMDB", errors.New("is a directory"))
 	}
 	asnDB := os.Getenv("ASN_MMDB")
 	if asnDB == "" {
-		asnDB = "/var/lib/openipdata-site/data/ip2asn-openipdata.mmdb"
+		asnDB = "/var/lib/openipdata-site/data/openipdata-org-ip2asn.mmdb"
 	}
 	if info, err := os.Stat(asnDB); err == nil && info.IsDir() {
 		fatal("ASN_MMDB", errors.New("is a directory"))

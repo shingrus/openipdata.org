@@ -114,6 +114,7 @@ func (f *mmdbFile) within(p netip.Prefix, limit int) (sum placeSum, ok bool) {
 			sum.partial = true
 			continue
 		}
+		g.norm()
 		country := firstNonEmpty(g.CountryName, g.CountryCode)
 		if country == "" {
 			sum.partial = true

@@ -31,12 +31,12 @@ func TestDownloadPage(t *testing.T) {
 		`<meta name="description" content="` + downloadDesc + `">`,
 		`<link rel="canonical" href="https://openipdata.org/download">`,
 		"<h1>Free IP geolocation database</h1>", "City level. CC0. No signup.",
-		`<a href="https://github.com/shingrus/openipdata.org/releases/latest/download/ip2geo-openipdata.mmdb">ip2geo-openipdata.mmdb</a>`,
-		`<a href="https://github.com/shingrus/openipdata.org/releases/latest/download/ip2asn-openipdata.mmdb">ip2asn-openipdata.mmdb</a>`,
+		`<a href="https://github.com/shingrus/openipdata.org/releases/latest/download/openipdata-org-ip2geo.mmdb">openipdata-org-ip2geo.mmdb</a>`,
+		`<a href="https://github.com/shingrus/openipdata.org/releases/latest/download/openipdata-org-ip2asn.mmdb">openipdata-org-ip2asn.mmdb</a>`,
 		`<a href="https://github.com/shingrus/openipdata.org/releases/latest/download/asn-openipdata.sqlite3">asn-openipdata.sqlite3</a>`,
 		"<h2>Prompt for a coding agent</h2>", "<h2>Python</h2>", "<h2>Go</h2>",
 		`<a href="/">Accuracy</a>`, `<a href="https://www.geonames.org/">GeoNames (CC BY 4.0)</a>`, `<a href="https://creativecommons.org/publicdomain/zero/1.0/">Licence: CC0 1.0</a>`,
-		"country_code, country_name, city_name, city_source, latitude, longitude", `value=""`,
+		"country.iso_code, country.names.en, city.names.en, location.latitude, location.longitude, city_source", "GeoLite2-City layout", `value=""`,
 		`<footer class="foot"><a href="/download">Download</a><a href="/bulk-ip-lookup">Bulk lookup</a><a href="/top-asn-by-ip-address">`,
 	} {
 		if !strings.Contains(body, want) {
@@ -100,7 +100,7 @@ func TestDownloadJSONLD(t *testing.T) {
 	if raw["@type"] != "Dataset" || raw["@context"] != "https://schema.org" || raw["license"] != cc0URL || raw["isAccessibleForFree"] != true || raw["url"] != "https://openipdata.org/download" {
 		t.Errorf("fields %v", raw)
 	}
-	if len(d.Distribution) != 3 || !strings.HasSuffix(d.Distribution[0].ContentURL, "/ip2geo-openipdata.mmdb") || d.Distribution[2].EncodingFormat == "" {
+	if len(d.Distribution) != 3 || !strings.HasSuffix(d.Distribution[0].ContentURL, "/openipdata-org-ip2geo.mmdb") || d.Distribution[2].EncodingFormat == "" {
 		t.Errorf("distribution %+v", d.Distribution)
 	}
 	if strings.Count(body, "<script type=\"application/ld+json\">") != 1 || strings.Contains(m[1], "<") {
@@ -153,21 +153,38 @@ func TestDownloadDateOfLoadedFile(t *testing.T) {
 // The code blocks use the field names the builder writes; the Go example must
 // read a real record with the reader this module uses.
 func TestDownloadExamples(t *testing.T) {
-	for _, f := range []string{"country_code", "country_name", "city_name", "latitude", "longitude"} {
-		if !strings.Contains(promptText, f) || !strings.Contains(goText, `maxminddb:"`+f+`"`) {
-			t.Errorf("field %s missing in the prompt or the Go example", f)
+	for _, f := range []string{"country.iso_code", "country.names.en", "city.names.en", "location.latitude", "location.longitude", "autonomous_system_number", "autonomous_system_organization"} {
+		if !strings.Contains(promptText, f) {
+			t.Errorf("field %s missing in the prompt", f)
 		}
 	}
-	if !strings.Contains(pythonText, `rec.get("country_code")`) || !strings.Contains(pythonText, `rec.get("city_name")`) {
-		t.Error("python fields")
+	for _, f := range []string{"iso_code", "names", "en", "country", "city", "location", "latitude", "longitude"} {
+		if !strings.Contains(goText, `maxminddb:"`+f+`"`) {
+			t.Errorf("tag %s missing in the Go example", f)
+		}
+	}
+	for _, line := range []string{"import geoip2.database", `geoip2.database.Reader("openipdata-org-ip2geo.mmdb")`, "r.city(", `geoip2.database.Reader("openipdata-org-ip2asn.mmdb")`, "r.asn("} {
+		if !strings.Contains(pythonText, line) {
+			t.Errorf("python example lacks %q", line)
+		}
 	}
 	// The struct of the Go example, as in goText.
 	type Place struct {
-		CountryCode string   `maxminddb:"country_code"`
-		CountryName string   `maxminddb:"country_name"`
-		CityName    string   `maxminddb:"city_name"`
-		Latitude    *float64 `maxminddb:"latitude"`
-		Longitude   *float64 `maxminddb:"longitude"`
+		Country struct {
+			ISO   string `maxminddb:"iso_code"`
+			Names struct {
+				EN string `maxminddb:"en"`
+			} `maxminddb:"names"`
+		} `maxminddb:"country"`
+		City struct {
+			Names struct {
+				EN string `maxminddb:"en"`
+			} `maxminddb:"names"`
+		} `maxminddb:"city"`
+		Location struct {
+			Latitude  *float64 `maxminddb:"latitude"`
+			Longitude *float64 `maxminddb:"longitude"`
+		} `maxminddb:"location"`
 	}
 	db, err := maxminddb.Open("testdata/lookup-geo.mmdb")
 	if err != nil {
@@ -178,7 +195,7 @@ func TestDownloadExamples(t *testing.T) {
 	if err := db.Lookup(netip.MustParseAddr("203.0.113.9")).Decode(&p); err != nil {
 		t.Fatal(err)
 	}
-	if p.CountryCode == "" || p.CityName == "" || p.Latitude == nil || p.Longitude == nil {
+	if p.Country.ISO != "PT" || p.City.Names.EN != "Lisbon" || p.Location.Latitude == nil || p.Location.Longitude == nil {
 		t.Errorf("record %+v", p)
 	}
 	for _, line := range []string{
@@ -188,8 +205,23 @@ func TestDownloadExamples(t *testing.T) {
 			t.Errorf("example lacks %q", line)
 		}
 	}
-	if !strings.Contains(promptText, "string fields asn, name, org, country_code") || !strings.Contains(promptText, "any field can be absent (often the city and the coordinates)") {
+	if !strings.Contains(promptText, "autonomous_system_organization") || !strings.Contains(promptText, "any field can be absent (often the city and the coordinates)") {
 		t.Error("asn fields")
+	}
+}
+
+// The files are never sold as a drop-in replacement for GeoLite2.
+func TestNoDropInClaim(t *testing.T) {
+	s, _ := asnServer(t)
+	for _, target := range []string{"/download", "/llms.txt"} {
+		if body := strings.ToLower(get(s, "GET", target).Body.String()); strings.Contains(body, "drop-in") || strings.Contains(body, "replacement") {
+			t.Errorf("%s makes a drop-in claim", target)
+		}
+	}
+	for _, text := range []string{promptText, pythonText, goText} {
+		if l := strings.ToLower(text); strings.Contains(l, "drop-in") || strings.Contains(l, "replacement") {
+			t.Error("a drop-in claim in an example")
+		}
 	}
 }
 
@@ -202,8 +234,8 @@ func TestLLMsTxt(t *testing.T) {
 	}
 	for _, want := range []string{
 		"# openipdata.org\n", "\n> ", "## Quick start (agents, LLMs)\n", "\ncurl -sL https://openipdata.org  ", "Fields: `ip`, `country_code`,", "A field is absent when unknown.", "gives `{\"ip\" or \"input\", \"error\"}` instead",
-		releaseBase + "ip2geo-openipdata.mmdb", releaseBase + "ip2asn-openipdata.mmdb", releaseBase + "asn-openipdata.sqlite3",
-		geoFields, asnFields, "not into GeoLite2 model classes", "Any field can be absent (often the city and the coordinates).", "any of them can be absent", "GeoNames (CC BY 4.0)", cc0URL,
+		releaseBase + "openipdata-org-ip2geo.mmdb", releaseBase + "openipdata-org-ip2asn.mmdb", releaseBase + "asn-openipdata.sqlite3",
+		geoFields, asnFields, "geoip2-golang does not open the files", "Any field can be absent (often the city and the coordinates).", "GeoNames (CC BY 4.0)", cc0URL,
 		"https://openipdata.org/download", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/list-of-countries-by-ipv4-allocation",
 		"https://openipdata.org/?<ip>", "https://openipdata.org/as<number>", "https://openipdata.org/prefix/<cidr>", "https://openipdata.org/api/as<number>",
 	} {

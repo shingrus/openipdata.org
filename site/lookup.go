@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -315,9 +316,15 @@ func (f *mmdbFile) lookup(a netip.Addr, v any) (prefix netip.Prefix, ok bool) {
 	if res.Err() != nil || !res.Found() || res.Decode(v) != nil {
 		return netip.Prefix{}, false
 	}
+	if n, ok := v.(interface{ norm() }); ok {
+		n.norm()
+	}
 	return res.Prefix(), true
 }
 
+// geoRecord is a record of the ip2geo MMDB in either layout: the GeoLite2-City
+// layout (nested fields, preferred) or the old flat one. norm() puts what was
+// found into the flat fields, which the rest of the code reads.
 type geoRecord struct {
 	CountryCode string `maxminddb:"country_code"`
 	CountryName string `maxminddb:"country_name"`
@@ -326,6 +333,40 @@ type geoRecord struct {
 	// has neither, so they are optional: (0, 0) is a real place, absent is not.
 	Latitude  *float64 `maxminddb:"latitude"`
 	Longitude *float64 `maxminddb:"longitude"`
+
+	// The GeoLite2-City layout. The flat tags above are for the switch and go once
+	// the server reads only the new files.
+	Country struct {
+		ISO   string `maxminddb:"iso_code"`
+		Names struct {
+			EN string `maxminddb:"en"`
+		} `maxminddb:"names"`
+	} `maxminddb:"country"`
+	City struct {
+		Names struct {
+			EN string `maxminddb:"en"`
+		} `maxminddb:"names"`
+	} `maxminddb:"city"`
+	Location struct {
+		Latitude  *float64 `maxminddb:"latitude"`
+		Longitude *float64 `maxminddb:"longitude"`
+	} `maxminddb:"location"`
+}
+
+// norm makes the flat fields hold the value of the new layout when it has one.
+func (g *geoRecord) norm() {
+	if g.Country.ISO != "" {
+		g.CountryCode = g.Country.ISO
+	}
+	if g.Country.Names.EN != "" {
+		g.CountryName = g.Country.Names.EN
+	}
+	if g.City.Names.EN != "" {
+		g.CityName = g.City.Names.EN
+	}
+	if g.Location.Latitude != nil && g.Location.Longitude != nil {
+		g.Latitude, g.Longitude = g.Location.Latitude, g.Location.Longitude
+	}
 }
 
 // coords returns the place of the city when the record has both numbers and
@@ -341,10 +382,26 @@ func (g *geoRecord) coords() (lat, lon float64, ok bool) {
 	return lat, lon, true
 }
 
+// asnRecord is a record of the ip2asn MMDB in either layout: the GeoLite2-ASN
+// layout (number and organisation, preferred) or the old flat one.
 type asnRecord struct {
 	ASN  string `maxminddb:"asn"`
 	Name string `maxminddb:"name"`
 	Org  string `maxminddb:"org"`
+
+	// The GeoLite2-ASN layout. The flat tags above are for the switch and go once
+	// the server reads only the new files.
+	Number uint32 `maxminddb:"autonomous_system_number"`
+	Holder string `maxminddb:"autonomous_system_organization"`
+}
+
+func (n *asnRecord) norm() {
+	if n.Number != 0 {
+		n.ASN = strconv.FormatUint(uint64(n.Number), 10)
+	}
+	if n.Holder != "" {
+		n.Org = n.Holder
+	}
 }
 
 // part is one piece of a row value: text, or a link when Href is set.

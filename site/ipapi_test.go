@@ -78,9 +78,9 @@ func TestIPJSONFieldsLeftOut(t *testing.T) {
 			t.Errorf("%s: no ip", target)
 		}
 	}
-	// Without ASN data the name is the MMDB's, and the prefix the MMDB network.
+	// Without ASN data the new MMDB layout has no handle (as_name is left out), and the prefix is the MMDB network.
 	m := jsonBody(t, get(s, "GET", "/json/203.0.113.9").Body.String())
-	if m["asn"] != float64(64500) || m["prefix"] != "203.0.113.0/24" || m["as_name"] == nil {
+	if m["asn"] != float64(64500) || m["prefix"] != "203.0.113.0/24" || m["as_name"] != nil || m["org"] != "Example Net" {
 		t.Errorf("without ASN data: %v", m)
 	}
 }

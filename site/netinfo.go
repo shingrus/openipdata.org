@@ -55,6 +55,21 @@ func (s *server) networkInfo(n asnRecord) netSnap {
 	return ns
 }
 
+// handleOf is the handle of the network of a record: from the loaded ASN data
+// by AS number, else the flat name of an old-layout MMDB (the new layout has none).
+func (s *server) handleOf(n asnRecord) string {
+	if _, digits := networkOf(n); digits != "" {
+		if num, _, ok := asNumber(digits); ok && num != 0 {
+			if d := s.asnf.data(); d != nil {
+				if nw, found := d.find(num); found && nw.handle != "" {
+					return nw.handle
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(n.Name)
+}
+
 // rows are the network rows of the connection panel, the same rows in the same
 // order as the head of a prefix page: Organization (linked to its page when it
 // has one; left out when unknown), Network (the handle and the AS number, both

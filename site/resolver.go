@@ -74,7 +74,7 @@ func (s *server) resolverNetwork(a netip.Addr) resolverSnap {
 	var n asnRecord
 	s.asn.lookup(a, &n)
 	_, num := networkOf(n)
-	name := firstNonEmpty(n.Name, n.Org) // the short name (handle), not the organisation
+	name := firstNonEmpty(s.handleOf(n), n.Org) // the short name (handle), not the organisation
 	org := s.orgLink(n)
 	if org == "" && num != "" {
 		org = s.asnLink(num)

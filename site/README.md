@@ -9,8 +9,8 @@ The page is rendered on each request from small in-memory data (the scores and t
 | Variable   | Default                                            | Meaning                                         |
 |------------|----------------------------------------------------|-------------------------------------------------|
 | `LISTEN`   | `127.0.0.1:8080`                                   | address to listen on                            |
-| `GEO_MMDB` | `/var/lib/openipdata-site/data/ip2geo-openipdata.mmdb` | the ip2geo MMDB: city and country of an address, and in its metadata the scores |
-| `ASN_MMDB` | `/var/lib/openipdata-site/data/ip2asn-openipdata.mmdb` | the ip2asn MMDB: network, AS number and announced prefix |
+| `GEO_MMDB` | `/var/lib/openipdata-site/data/openipdata-org-ip2geo.mmdb` | the ip2geo MMDB (GeoLite2-City layout; the old flat file is read too): city and country of an address, and in its metadata the scores |
+| `ASN_MMDB` | `/var/lib/openipdata-site/data/openipdata-org-ip2asn.mmdb` | the ip2asn MMDB (GeoLite2-ASN layout; the old flat file is read too): network, AS number and announced prefix |
 | `ASN_SQLITE` | `/var/lib/openipdata-site/data/asn-openipdata.sqlite3` | the SQLite file of the ASN pages (published by the worker as `asn-openipdata.sqlite3`); missing or unreadable = the ASN pages answer 503 |
 | `REAL_IP_HEADER` | `X-Real-IP` | header that holds the visitor address (the server unit sets it too); set it to empty to use the address of the TCP connection |
 | `TEST_IP` | (empty) | local work only: the visitor address of a request that comes straight from loopback without the `REAL_IP_HEADER` header; never set on a server |
@@ -141,7 +141,7 @@ Nothing is ever made up. A missing or invalid number shows a dash and an empty b
 ## Run locally
 
     cd site
-    GEO_MMDB=../ip2geo-openipdata.mmdb ASN_MMDB=../ip2asn-openipdata.mmdb ASN_SQLITE=../2026-11-14_asn.sqlite3 LISTEN=127.0.0.1:8090 go run .
+    GEO_MMDB=../openipdata-org-ip2geo.mmdb ASN_MMDB=../openipdata-org-ip2asn.mmdb ASN_SQLITE=../2026-11-14_asn.sqlite3 LISTEN=127.0.0.1:8090 go run .
 
 To see the map, build your own tiny geo MMDB with a real prefix and `-geonames` (the commands in "Test" below with a real prefix such as `1.1.1.0/24` as Sydney, AU and a one-line GeoNames file for Sydney) and open `/?1.1.1.1`; a row with a country and no city (for example `8.8.8.0/24`, US) shows the highlighted country. Then open http://127.0.0.1:8090. `../2026-11-14_asn.sqlite3` is a sample of the worker's SQLite file in the repo root (git-ignored; read only, never copy it into `site/`); without `ASN_SQLITE` the ASN pages answer 503. Try `/as15169`, `/asn-google-llc`, `/top-asn-by-ip-address` and `/api/as15169`. A browser caches these pages for 5 minutes: add a query like `?r=2` to see a changed page. Use `/?<ip>` with a public address to see a result (the visitor is unknown locally; to try the visitor path send `curl -H 'X-Real-IP: 1.1.1.1' 127.0.0.1:8090/`). The fixtures in `testdata/` only know documentation addresses, which the page treats as not public, so the tests replace the public check; to see a full panel in a browser build your own tiny MMDBs with a real prefix. `/healthz` answers `ok <version>` (`ok dev` for a local build).
 
@@ -150,21 +150,23 @@ To see the map, build your own tiny geo MMDB with a real prefix and `-geonames` 
     cd site
     go vet ./... && go test -race ./...
 
-`testdata/stamped.mmdb` and `testdata/unstamped.mmdb` are tiny fixtures with documentation addresses (192.0.2.0/24, 2001:db8::/32) and made-up numbers, built with the `geo` and `stamp` commands of `mmdbbuilder`.
+`testdata/stamped.mmdb` and `testdata/unstamped.mmdb` are tiny fixtures with documentation addresses (192.0.2.0/24, 2001:db8::/32) and made-up numbers, built with the `geo` and `stamp` commands of `mmdbbuilder` (flat files) and then `mmdbbuilder convert -db <flat> -out <new>` (GeoLite2-City layout; the stamp in the metadata is kept).
 
-`testdata/lookup-geo.mmdb` and `testdata/lookup-asn.mmdb` are the lookup fixtures, documentation addresses only. `lookup-geo.mmdb`: 203.0.113.0/24 and 2001:db8::/32 are Lisbon, Portugal, with coordinates (38.7167, -9.1333, so they get the map with the aim); 198.51.100.0/24 is Spain with no city (and so no coordinates: the country map); 192.0.2.0/24 is absent (no map). For the prefix pages it also has 198.18.0.0/25 Lisbon, 198.18.0.128/26 Spain with no city (the rest of 198.18.0.0/24 is absent), and 198.18.1.0/25 Lisbon and 198.18.1.128/25 Porto (no coordinates); the source CSV is `203.0.113.0/24,PT,,Lisbon`, `2001:db8::/32,PT,,Lisbon`, `198.51.100.0/24,ES,,`, `198.18.0.0/25,PT,,Lisbon`, `198.18.0.128/26,ES,,`, `198.18.1.0/25,PT,,Lisbon`, `198.18.1.128/25,PT,,Porto`. `stamped.mmdb` and `unstamped.mmdb` have Lisbon with no coordinates (the file as published before coordinates existed: no map). `lookup-asn.mmdb`: AS64500, handle `EXAMPLE-NET`, organisation "Example Net", for 203.0.113.0/24 and 2001:db8::/32. They were made with the repo's `mmdbbuilder` (built from `mmdbbuilder/`, nothing in `site/` is involved):
+`testdata/lookup-geo.mmdb` and `testdata/lookup-asn.mmdb` (the new GeoLite2 layouts) and `lookup-geo-flat.mmdb` and `lookup-asn-flat.mmdb` (the old flat layout, kept for the switch test `TestFlatAndNewLayoutsAgree`) are the lookup fixtures, documentation addresses only. `lookup-geo.mmdb`: 203.0.113.0/24 and 2001:db8::/32 are Lisbon, Portugal, with coordinates (38.7167, -9.1333, so they get the map with the aim); 198.51.100.0/24 is Spain with no city (and so no coordinates: the country map); 192.0.2.0/24 is absent (no map). For the prefix pages it also has 198.18.0.0/25 Lisbon, 198.18.0.128/26 Spain with no city (the rest of 198.18.0.0/24 is absent), and 198.18.1.0/25 Lisbon and 198.18.1.128/25 Porto (no coordinates); the source CSV is `203.0.113.0/24,PT,,Lisbon`, `2001:db8::/32,PT,,Lisbon`, `198.51.100.0/24,ES,,`, `198.18.0.0/25,PT,,Lisbon`, `198.18.0.128/26,ES,,`, `198.18.1.0/25,PT,,Lisbon`, `198.18.1.128/25,PT,,Porto`. `stamped.mmdb` and `unstamped.mmdb` have Lisbon with no coordinates (the file as published before coordinates existed: no map). `lookup-asn.mmdb`: AS64500, handle `EXAMPLE-NET`, organisation "Example Net", for 203.0.113.0/24 and 2001:db8::/32. They were made with the repo's `mmdbbuilder` (built from `mmdbbuilder/`, nothing in `site/` is involved):
 
     # geo: a gzipped CSV in the layer layout, named like a layer
     printf 'prefix,country,region,city,source\n203.0.113.0/24,PT,,Lisbon,fixture\n2001:db8::/32,PT,,Lisbon,fixture\n198.51.100.0/24,ES,,,fixture\n198.18.0.0/25,PT,,Lisbon,fixture\n198.18.0.128/26,ES,,,fixture\n198.18.1.0/25,PT,,Lisbon,fixture\n198.18.1.128/25,PT,,Porto,fixture\n' | gzip -c > 90-fixture.csv.gz
     # one GeoNames-format line (tab separated, 19 columns) for the city; the real cities1000.txt works the same
     printf '2267057\tLisbon\tLisbon\tLisboa,Lisbonne\t38.71667\t-9.13333\tP\tPPLC\tPT\t\t14\t\t\t\t517802\t\t\tEurope/Lisbon\t2024-01-01\n' > cities1000.txt
-    mmdbbuilder geo -out site/testdata/lookup-geo.mmdb -geonames cities1000.txt 90-fixture.csv.gz
+    mmdbbuilder geo -out site/testdata/lookup-geo-flat.mmdb -geonames cities1000.txt 90-fixture.csv.gz
+    mmdbbuilder convert -db site/testdata/lookup-geo-flat.mmdb -out site/testdata/lookup-geo.mmdb -geonames cities1000.txt
 
     # asn: one ipverse-style directory as/64500/aggregated.json
     echo '{"asn":64500,"metadata":{"handle":"EXAMPLE-NET","description":"Example Net","countryCode":"PT"},"prefixes":{"ipv4":["203.0.113.0/24"],"ipv6":["2001:db8::/32"]}}' > as/64500/aggregated.json
-    mmdbbuilder asn -in as -out site/testdata/lookup-asn.mmdb
+    mmdbbuilder asn -in as -out site/testdata/lookup-asn-flat.mmdb
+    mmdbbuilder convert -db site/testdata/lookup-asn-flat.mmdb -out site/testdata/lookup-asn.mmdb
 
-`.gitignore` lets these four `.mmdb` files into Git.
+`.gitignore` lets these six `.mmdb` files into Git.
 
 The map tests (`world_test.go`, `worldmap_test.go`) write a tiny `world.bin` with test code that follows the format comment of `world.go` (round trip, every kind of damage rejected), and cover the embedded file (small states are there), clipping (inside, outside, crossing, a ring that covers the frame), the antimeridian, the projection scale at high latitudes, the path encoding, the three page states, a city without coordinates, invalid coordinates, no map on the ASN pages, the place block layout, and the size limits for the 16 places of the size budget. `go test -bench 'DrawMap|ParseWorld' -run xxx` measures drawing and decoding. `tools/mapdata` has its own tests.
 
@@ -213,7 +215,7 @@ The release `site` must exist first (Actions tab, `Publish site binary`, Run wor
 |-----------------------------------------------|--------------------|----------------------------------------------------------------------------------------------------|
 | `openipdata-site@8080`, `openipdata-site@8081` | `openipdata-site` | the site on `127.0.0.1:<port>` (template, the instance name is the port), from `/opt/openipdata-site/slot-<port>/openipdata-site`, no secrets; one is live, the other idle |
 | `openipdata-site-update` (every 2 min)        | root               | installs a new binary on the idle port, checks it, switches nginx to it; a bad build never touches the live side |
-| `openipdata-mmdb-pull` (every 10 min)         | `openipdata-site`  | downloads `ip2geo-openipdata.mmdb`, `ip2asn-openipdata.mmdb` and `asn-openipdata.sqlite3` from the release `latest` |
+| `openipdata-mmdb-pull` (every 10 min)         | `openipdata-site`  | downloads `openipdata-org-ip2geo.mmdb`, `openipdata-org-ip2asn.mmdb` and `asn-openipdata.sqlite3` from the release `latest` |
 | `openipdata-cf-ips` (weekly, and at install)  | root               | refreshes the Cloudflare ranges in `/etc/nginx/conf.d/cloudflare-realip.conf`, `nginx -t`, reload  |
 
 Paths: scripts in `/opt/openipdata-site/bin`, binaries in `/opt/openipdata-site/releases/<sha256>` with the links `slot-8080` and `slot-8081` pointing at two of them, upstream files in `/etc/nginx/openipdata-site/` (`upstream-8080.conf`, `upstream-8081.conf`) and the link `/etc/nginx/conf.d/openipdata-site-live.conf` to the live one, the MMDBs and the SQLite file in `/var/lib/openipdata-site/data` (public data, with `<name>.key` change keys), updater state in `/var/lib/openipdata-site/state` (root only: `installed.sha256`, `bad.sha256`), settings in `/etc/openipdata-site/openipdata-site.env`, nginx in `/etc/nginx/sites-available/openipdata.org.conf`, `v46.openipdata.org.conf` and `default-deny.conf`.

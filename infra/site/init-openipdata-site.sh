@@ -52,6 +52,9 @@ KNOT_ZONE=/var/lib/knot/zones/$BEACON_ZONE.zone
 ACME_INI=/etc/letsencrypt/openipdata-r-rfc2136.ini
 REDIS_CONF=/etc/redis/redis.conf
 SITE_DROPIN_DIR=/etc/systemd/system/openipdata-site@.service.d
+SITE_UNIT=openipdata-site@.service
+# Data files the site no longer reads (flat layout until 2026-11-21): removed once the live instance runs without them.
+RETIRED_DATA=(ip2geo-openipdata.mmdb ip2asn-openipdata.mmdb)
 BEACON_RUN_AS=openipdata-beacon
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,6 +128,78 @@ fail() {
 # env_value NAME: the last NAME=value line of the env file, without quotes and spaces.
 env_value() {
     sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | tr -d ' \t\r"'"'"
+}
+
+# var_in NAME TEXT: the last NAME=value among the lines of TEXT (empty when none).
+var_in() {
+    sed -n "s/^$1=//p" <<<"$2" | tail -n1 || true
+}
+
+# data_files_ready GEO ASN: both paths given, both files there and not empty.
+data_files_ready() {
+    [[ -n "$1" && -n "$2" && -s "$1" && -s "$2" ]]
+}
+
+# switch_site_unit: installs the repo's site unit when it was deferred (it differs from the installed
+# one), and only when the data files it names are there, so no instance is ever started under a unit
+# that names a missing file. Otherwise the old unit stays and a later run tries again. Call it after
+# the data pull, holding the updater lock.
+switch_site_unit() {
+    ((site_unit_deferred)) || return 0
+    local text geo asn
+    text="$(sed -n 's/^Environment=//p' "$SCRIPT_DIR/systemd/$SITE_UNIT")"
+    geo="$(var_in GEO_MMDB "$text")"
+    asn="$(var_in ASN_MMDB "$text")"
+    if ! data_files_ready "$geo" "$asn"; then
+        log "warning: the new site unit names data files that are not there yet; the old unit stays."
+        log "check the pull (journalctl -u openipdata-mmdb-pull) and run this script again"
+        return 0
+    fi
+    install -m 0644 -o root -g root "$SCRIPT_DIR/systemd/$SITE_UNIT" "/etc/systemd/system/$SITE_UNIT"
+    systemctl daemon-reload
+    site_unit_deferred=0
+    log "installed $SITE_UNIT (its data files are there)"
+}
+
+# restart_for_data_paths: a changed GEO_MMDB or ASN_MMDB reaches the live instance only after a restart
+# (the idle one gets it at the next binary update). The live instance is restarted when the paths it
+# runs with differ from systemd's effective ones (drop-ins included), and only when those files are
+# there. Compared with the running process, so a run that could not restart is repaired by the next.
+# Once the live instance runs on other paths, the retired flat files are removed. Holding the updater lock.
+restart_for_data_paths() {
+    local unit pid eff env want_geo want_asn have_geo have_asn f
+    [[ -n "${live_port:-}" ]] || return 0
+    unit="openipdata-site@$live_port"
+    systemctl is-active --quiet "$unit" || return 0
+    eff="$(systemctl show -p Environment --value "$unit" 2>/dev/null | tr ' ' '\n' || true)"
+    want_geo="$(var_in GEO_MMDB "$eff")"
+    want_asn="$(var_in ASN_MMDB "$eff")"
+    pid="$(systemctl show -p MainPID --value "$unit" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+    env="$(tr '\0' '\n' 2>/dev/null <"/proc/$pid/environ")" || return 0
+    have_geo="$(var_in GEO_MMDB "$env")"
+    have_asn="$(var_in ASN_MMDB "$env")"
+    if [[ "$have_geo" != "$want_geo" || "$have_asn" != "$want_asn" ]]; then
+        if ! data_files_ready "$want_geo" "$want_asn"; then
+            log "warning: $unit still reads $have_geo and $have_asn (no longer updated): the unit's data files are not there yet"
+            log "check the pull (journalctl -u openipdata-mmdb-pull) and run this script again"
+            return 0
+        fi
+        log "restarting $unit: the unit's data files changed"
+        if ! systemctl restart "$unit"; then
+            log "warning: could not restart $unit: journalctl -u $unit"
+            return 0
+        fi
+        have_geo="$want_geo"
+        have_asn="$want_asn"
+    fi
+    for f in "${RETIRED_DATA[@]}"; do
+        [[ "$DATA_DIR/$f" == "$have_geo" || "$DATA_DIR/$f" == "$have_asn" ]] && continue
+        if [[ -e "$DATA_DIR/$f" || -e "$DATA_DIR/$f.key" ]]; then
+            rm -f "$DATA_DIR/$f" "$DATA_DIR/$f.key"
+            log "removed the retired data file $f"
+        fi
+    done
 }
 
 beacon=0          # 1 when the public IPv4 is known: the beacon is installed
@@ -431,10 +506,17 @@ for s in "${SCRIPTS[@]}"; do
 done
 log "installed scripts in $BIN_DIR"
 
+site_unit_deferred=0 # 1: the installed site unit differs from the repo's; it is replaced only after the pull (switch_site_unit)
 for u in "${UNITS[@]}"; do
     # A changed beacon unit (e.g. BEACON_TTL) only takes effect after a restart: beacon_start does it.
     if [[ "$u" == openipdata-beacon.service ]] && ! cmp -s "$SCRIPT_DIR/systemd/$u" "/etc/systemd/system/$u"; then
         beacon_unit_changed=1
+    fi
+    # A changed site unit may name data files that are not pulled yet: an instance started under it now
+    # (a new binary release, a crash) would run without data, so it waits for switch_site_unit.
+    if [[ "$u" == "$SITE_UNIT" && -f "/etc/systemd/system/$u" ]] && ! cmp -s "$SCRIPT_DIR/systemd/$u" "/etc/systemd/system/$u"; then
+        site_unit_deferred=1
+        continue
     fi
     install -m 0644 -o root -g root "$SCRIPT_DIR/systemd/$u" "/etc/systemd/system/$u"
 done
@@ -542,6 +624,16 @@ if [[ ! -e "$OPT_DIR/slot-${live_port:-8080}/openipdata-site" ]]; then
     log "no site binary installed: the GitHub release 'site' does not exist yet or the build was rejected."
     log "run the 'Publish site binary' workflow (Actions tab, Run workflow, on master) first; the timer installs it within 2 minutes."
 fi
+# The site unit switch and the live restart must not interleave with an updater run (link switch, idle check).
+exec 9>/run/openipdata-site-update.lock
+if flock -w 300 9; then
+    switch_site_unit
+    live_port="$(readlink "$LIVE_LINK" | sed -n 's/.*upstream-\([0-9]*\)\.conf$/\1/p')"
+    restart_for_data_paths
+else
+    log "warning: openipdata-site-update holds its lock for more than 300 s; the site unit and data paths are not switched in this run"
+fi
+exec 9>&-
 
 systemctl enable --now "${TIMERS[@]}" >/dev/null
 beacon_start

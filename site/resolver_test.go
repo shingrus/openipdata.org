@@ -144,7 +144,7 @@ func TestResolverRoute(t *testing.T) {
 		{"two tokens", "/resolver?t=" + tok + "&t=" + tok, "$-1\r\n", 400, "{}"},
 		{"not yet", "/resolver?t=" + tok, "$-1\r\n", 404, "{}"},
 		{"redis error", "/resolver?t=" + tok, "-ERR x\r\n", 503, "{}"},
-		{"known", "/resolver?t=" + tok, bulk("203.0.113.9"), 200, `{"ip":"203.0.113.9","name":"EXAMPLE-NET"}`},
+		{"known", "/resolver?t=" + tok, bulk("203.0.113.9"), 200, `{"ip":"203.0.113.9","name":"Example Net"}`},
 		{"unknown network", "/resolver?t=" + tok, bulk("8.8.8.8"), 200, `{"ip":"8.8.8.8"}`},
 		{"private", "/resolver?t=" + tok, bulk("10.0.0.1"), 200, `{}`},
 		{"garbage", "/resolver?t=" + tok, bulk("nope"), 200, `{}`},

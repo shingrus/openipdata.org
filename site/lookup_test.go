@@ -440,3 +440,36 @@ func TestTestAddr(t *testing.T) {
 		t.Error("a non-loopback peer got the test address")
 	}
 }
+
+// During the switch a binary may still read the old flat files: both layouts
+// must give the same values.
+func TestFlatAndNewLayoutsAgree(t *testing.T) {
+	nw, err := newServer("testdata/lookup-geo.mmdb", "testdata/lookup-asn.mmdb", "X-Real-IP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl, err := newServer("testdata/lookup-geo-flat.mmdb", "testdata/lookup-asn-flat.mmdb", "X-Real-IP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"203.0.113.9", "2001:db8::1", "198.51.100.1", "198.18.1.200", "192.0.2.1"} {
+		a := netip.MustParseAddr(ip)
+		g1, n1, _ := nw.addrData(a)
+		g2, n2, _ := fl.addrData(a)
+		if g1.CountryCode != g2.CountryCode || g1.CountryName != g2.CountryName || g1.CityName != g2.CityName {
+			t.Errorf("%s: place %+v / %+v", ip, g1, g2)
+		}
+		la1, lo1, ok1 := g1.coords()
+		la2, lo2, ok2 := g2.coords()
+		if ok1 != ok2 || la1 != la2 || lo1 != lo2 {
+			t.Errorf("%s: coordinates differ", ip)
+		}
+		if n1.ASN != n2.ASN || n1.Org != n2.Org {
+			t.Errorf("%s: network %+v / %+v", ip, n1, n2)
+		}
+	}
+	g, n, _ := nw.addrData(netip.MustParseAddr("203.0.113.9"))
+	if g.CityName != "Lisbon" || g.CountryCode != "PT" || n.ASN != "64500" || n.Org != "Example Net" {
+		t.Errorf("new layout: %+v %+v", g, n)
+	}
+}

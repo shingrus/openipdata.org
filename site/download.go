@@ -23,27 +23,31 @@ const (
 	releaseBase  = "https://github.com/shingrus/openipdata.org/releases/latest/download/"
 	cc0URL       = "https://creativecommons.org/publicdomain/zero/1.0/"
 	geonamesURL  = "https://www.geonames.org/"
-	geoFile      = "ip2geo-openipdata.mmdb"
-	asnFileName  = "ip2asn-openipdata.mmdb"
+	geoFile      = "openipdata-org-ip2geo.mmdb"
+	asnFileName  = "openipdata-org-ip2asn.mmdb"
 	sqliteFile   = "asn-openipdata.sqlite3"
 	downloadPath = "/download"
 
 	downloadTitle = "Free GeoIP database download (MMDB) | openipdata.org"
 	downloadDesc  = "Download the free IP to city and IP to ASN database in MMDB and SQLite. Public domain (CC0), no signup, no key. With examples for Python, Go and AI agents."
 
-	// The record fields of the two MMDBs, as mmdbbuilder writes them (geo.go,
-	// asn.go): all flat, the strings are absent when unknown.
-	geoFields = "country_code, country_name, city_name, city_source, latitude, longitude"
-	asnFields = "asn, name, org, country_code"
+	// The record fields of the two MMDBs, as mmdbbuilder convert writes them: the
+	// GeoLite2-City and GeoLite2-ASN layouts; any field can be absent.
+	geoFields = "country.iso_code, country.names.en, city.names.en, location.latitude, location.longitude, city_source; also continent, location.time_zone"
+	asnFields = "autonomous_system_number, autonomous_system_organization"
 )
 
-const promptText = `Add IP geolocation to this project with the free openipdata.org database (public domain, CC0, no API key). Download ` + releaseBase + geoFile + ` and read it with the MaxMind DB (MMDB) reader library for this language. Each record is a flat map with string fields country_code, country_name, city_name and numbers latitude, longitude; any field can be absent (often the city and the coordinates). Do not use GeoLite2 model classes: decode into a plain map or your own struct. For the network of an address use ` + asnFileName + ` (string fields asn, name, org, country_code). Download the files again once a day.`
+const promptText = `Add IP geolocation to this project with the free openipdata.org database (public domain, CC0, no API key). Download ` + releaseBase + geoFile + ` (GeoLite2-City layout) and read it with the MaxMind DB (MMDB) reader library for this language; Python geoip2 reader.city(ip) works, and geoip2-golang does not open it, so decode with maxminddb-golang into your own struct. Fields: country.iso_code, country.names.en, city.names.en, location.latitude, location.longitude, city_source; any field can be absent (often the city and the coordinates). For the network of an address use ` + asnFileName + ` (GeoLite2-ASN layout: autonomous_system_number, autonomous_system_organization; reader.asn(ip) works). Download the files again once a day.`
 
-const pythonText = `import maxminddb
+const pythonText = `import geoip2.database
 
-with maxminddb.open_database("ip2geo-openipdata.mmdb") as db:
-    rec = db.get("8.8.8.8") or {}
-    print(rec.get("country_code"), rec.get("city_name"))`
+with geoip2.database.Reader("openipdata-org-ip2geo.mmdb") as r:
+    c = r.city("8.8.8.8")
+    print(c.country.iso_code, c.city.name, c.location.latitude)
+
+with geoip2.database.Reader("openipdata-org-ip2asn.mmdb") as r:
+    a = r.asn("8.8.8.8")
+    print(a.autonomous_system_number, a.autonomous_system_organization)`
 
 const goText = `package main
 
@@ -55,15 +59,25 @@ import (
 )
 
 type Place struct {
-	CountryCode string   ` + "`maxminddb:\"country_code\"`" + `
-	CountryName string   ` + "`maxminddb:\"country_name\"`" + `
-	CityName    string   ` + "`maxminddb:\"city_name\"`" + `
-	Latitude    *float64 ` + "`maxminddb:\"latitude\"`" + `
-	Longitude   *float64 ` + "`maxminddb:\"longitude\"`" + `
+	Country struct {
+		ISO   string ` + "`maxminddb:\"iso_code\"`" + `
+		Names struct {
+			EN string ` + "`maxminddb:\"en\"`" + `
+		} ` + "`maxminddb:\"names\"`" + `
+	} ` + "`maxminddb:\"country\"`" + `
+	City struct {
+		Names struct {
+			EN string ` + "`maxminddb:\"en\"`" + `
+		} ` + "`maxminddb:\"names\"`" + `
+	} ` + "`maxminddb:\"city\"`" + `
+	Location struct {
+		Latitude  *float64 ` + "`maxminddb:\"latitude\"`" + `
+		Longitude *float64 ` + "`maxminddb:\"longitude\"`" + `
+	} ` + "`maxminddb:\"location\"`" + `
 }
 
 func main() {
-	db, err := maxminddb.Open("ip2geo-openipdata.mmdb")
+	db, err := maxminddb.Open("openipdata-org-ip2geo.mmdb")
 	if err != nil {
 		panic(err)
 	}
@@ -73,7 +87,7 @@ func main() {
 	if err := db.Lookup(netip.MustParseAddr("8.8.8.8")).Decode(&p); err != nil {
 		panic(err)
 	}
-	fmt.Println(p.CountryCode, p.CityName)
+	fmt.Println(p.Country.ISO, p.City.Names.EN)
 }`
 
 type dlFile struct{ Name, Href, Contains, Size, Updated string }
@@ -162,8 +176,8 @@ func (s *server) downloadPageC() (*cachedPage, bool, error) {
 	sq, _ := s.asnf.status()
 	complete := geo.Loaded && asn.Loaded && sq.Loaded
 	key := dlKey{org: s.origin, files: [3]dlFile{
-		{geoFile, releaseBase + geoFile, "IP to country and city, coordinates", dlSize(geo), dlDate(geo.Built)},
-		{asnFileName, releaseBase + asnFileName, "IP to network", dlSize(asn), dlDate(asn.Built)},
+		{geoFile, releaseBase + geoFile, "IP to country, city, coordinates (GeoLite2-City layout)", dlSize(geo), dlDate(geo.Built)},
+		{asnFileName, releaseBase + asnFileName, "IP to network (GeoLite2-ASN layout)", dlSize(asn), dlDate(asn.Built)},
 		// Both ASN files come from the same build-asn-data run: the SQLite row shows the
 		// build date of the loaded ip2asn MMDB, not the mtime of the local copy (the pull time).
 		{sqliteFile, releaseBase + sqliteFile, "Networks, organizations, prefixes", dlSize(sq), dlDate(asn.Built)},
@@ -252,10 +266,10 @@ func (s *server) llmsText() string {
 		b.WriteString("- [" + f.name + "](" + releaseBase + f.name + "): " + f.what + "\n")
 	}
 	b.WriteString("\n## Record fields\n\n")
-	b.WriteString("- " + geoFile + ": " + geoFields + ". Any field can be absent (often the city and the coordinates).\n")
-	b.WriteString("- " + asnFileName + ": " + asnFields + " (all strings, any of them can be absent).\n")
+	b.WriteString("- " + geoFile + " (GeoLite2-City layout): " + geoFields + ". Any field can be absent (often the city and the coordinates).\n")
+	b.WriteString("- " + asnFileName + " (GeoLite2-ASN layout): " + asnFields + ".\n")
 	b.WriteString("\n## Use\n\n")
-	b.WriteString("Read the MMDB files with any MaxMind DB (MMDB) reader. Records are flat maps: decode into a plain map or your own struct, not into GeoLite2 model classes. The files are rebuilt twice a day; download them again once a day. Examples for Python and Go: [" + o + downloadPath + "](" + o + downloadPath + ").\n")
+	b.WriteString("Read the MMDB files with any MaxMind DB (MMDB) reader: Python geoip2 `city()` and `asn()` work. In Go use maxminddb-golang with your own struct (geoip2-golang does not open the files). Rebuilt twice a day. Examples: [" + o + downloadPath + "](" + o + downloadPath + ").\n")
 	b.WriteString("\n## Licence and sources\n\n")
 	b.WriteString("[CC0 1.0](" + cc0URL + "). " + sourcesText + "\n")
 	b.WriteString("\n## Pages\n\n")
@@ -279,7 +293,7 @@ func (s *server) llmsText() string {
 // GeoNames is where the coordinates come from and needs attribution.
 const sourcesList = "RIR delegation files, ipverse (geo-ip-blocks, asn-ip), PeeringDB, whois and operator geofeeds, router names from traceroutes, RIPE RIS"
 
-const sourcesText = "Sources: " + sourcesList + ". Coordinates: GeoNames (CC BY 4.0)."
+const sourcesText = "Sources: " + sourcesList + ". Place ids, time zones and coordinates: GeoNames (CC BY 4.0)."
 
 func (s *server) serveLLMs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", seoCache)

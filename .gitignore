@@ -25,3 +25,5 @@
 !/site/testdata/unstamped.mmdb
 !/site/testdata/lookup-geo.mmdb
 !/site/testdata/lookup-asn.mmdb
+!/site/testdata/lookup-geo-flat.mmdb
+!/site/testdata/lookup-asn-flat.mmdb

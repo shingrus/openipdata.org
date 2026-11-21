@@ -11,7 +11,7 @@ set -euo pipefail
 GITHUB_REPO="${GITHUB_REPO:-shingrus/openipdata.org}"
 API_URL="${API_URL:-https://api.github.com/repos/$GITHUB_REPO/releases/tags/latest}"
 DATA_DIR="${DATA_DIR:-/var/lib/openipdata-site/data}"
-ASSETS=(ip2geo-openipdata.mmdb ip2asn-openipdata.mmdb asn-openipdata.sqlite3)
+ASSETS=(openipdata-org-ip2geo.mmdb openipdata-org-ip2asn.mmdb asn-openipdata.sqlite3)
 # Not in the release until the worker has published it once: absent with no local copy is "not published yet", not a failure.
 LATE_ASSET=asn-openipdata.sqlite3
 
