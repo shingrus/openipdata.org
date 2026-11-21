@@ -106,6 +106,8 @@ import (
 const (
 	mmdbFileFormat  = "ip2geo-openipdata-%s.mmdb"
 	releaseAsset    = "ip2geo-openipdata.mmdb"
+	compatAsset     = "openipdata-org-ip2geo.mmdb" // the GeoLite2-City layout of the same data
+	compatFileFmt   = "openipdata-org-ip2geo-%s.mmdb"
 	keepOutputDirs  = 3
 	dateTagLayout   = "20060102"
 	dateFolderShape = "2006-01-02"
@@ -999,6 +1001,71 @@ type PublishOutput struct {
 	// R2 compares the object's sha256 metadata, the release the asset's digest.
 	R2Unchanged      bool `json:"r2_unchanged,omitempty"`
 	ReleaseUnchanged bool `json:"release_unchanged,omitempty"`
+	// Compat is the GeoLite2-layout file made by "mmdbbuilder convert": "uploaded",
+	// "unchanged" (R2 and the release both already had it) or "failed: <fixed reason>".
+	// A failure never fails Publish.
+	Compat      string `json:"compat,omitempty"`
+	CompatBytes int64  `json:"compat_bytes,omitempty"`
+	// CompatGeoNames is "on" (geoname_id and time zone of placed cities) or "skipped: no GeoNames copy".
+	CompatGeoNames string `json:"compat_geonames,omitempty"`
+}
+
+// convertCompat runs "mmdbbuilder convert" for the MMDB at mmdbPath and returns the new
+// file's path. It only uses an existing GeoNames copy, never downloads one.
+func (p *Pipeline) convertCompat(ctx context.Context, date time.Time, mmdbPath string, out *PublishOutput) (string, error) {
+	path := filepath.Join(filepath.Dir(mmdbPath), fmt.Sprintf(compatFileFmt, date.Format(dateTagLayout)))
+	args := []string{"convert", "-db", mmdbPath, "-out", path}
+	out.CompatGeoNames = "skipped: no GeoNames copy"
+	if txt := filepath.Join(p.evalDir(), geonamesEntry); looksLikeGeoNames(txt) {
+		args = append(args, "-geonames", txt)
+		out.CompatGeoNames = "on"
+	}
+	stdout, err := p.runBuilder(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	p.log("publish: %s", strings.TrimSpace(stdout))
+	out.CompatBytes = outputs.FileSize(path)
+	return path, nil
+}
+
+// publishCompat converts the published MMDB into the GeoLite2-City layout and
+// puts it next to the flat file (R2 key in the same date folder, release asset
+// compatAsset). Any problem gives a "failed: <fixed reason>" status (the detail
+// goes to the log through the builder's own scrubbed error) and never an error;
+// only a cancelled context is returned.
+func (p *Pipeline) publishCompat(ctx context.Context, r2 *publish.R2, release *publish.Release, date time.Time, mmdbPath string, out *PublishOutput) error {
+	fail := func(reason string, err error) error {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		out.Compat = "failed: " + reason
+		p.log("publish: %s file: %s: %v", compatAsset, reason, err)
+		return nil
+	}
+	path, err := p.convertCompat(ctx, date, mmdbPath, out)
+	if err != nil {
+		return fail("convert failed", err)
+	}
+	location, r2Status, err := r2.Put(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(path), path, publish.PutOptions{})
+	if err != nil {
+		return fail("R2 upload failed", err)
+	}
+	p.log("publish: %s (%s)", location, r2Status)
+	link, replaced, err := release.Replace(ctx, path, compatAsset, "")
+	if err != nil {
+		return fail("release upload failed", err)
+	}
+	status := "uploaded"
+	if !replaced {
+		status = "unchanged"
+	}
+	p.log("publish: %s (%s)", link, status)
+	out.Compat = "uploaded"
+	if r2Status == publish.PutUnchanged && !replaced {
+		out.Compat = "unchanged"
+	}
+	return nil
 }
 
 // evalFailure tells why ev cannot be trusted: Evaluate recorded an error, or
@@ -1064,6 +1131,9 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string, ev 
 		releaseStatus = "unchanged"
 	}
 	p.log("publish: %s (%s)", out.ReleaseURL, releaseStatus)
+	if err := p.publishCompat(ctx, r2, release, date, mmdbPath, &out); err != nil {
+		return out, err
+	}
 	if ev.ID == 0 {
 		p.log("publish: no scores row to mark as published")
 	} else if err := p.markPublished(ctx, ev.ID); err != nil {

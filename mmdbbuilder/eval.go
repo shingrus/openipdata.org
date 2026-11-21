@@ -1062,7 +1062,9 @@ func scoreAtlasCities(m *evalMetrics, in evalInputs, ours *maxminddb.Reader, ref
 type gnPlace struct {
 	lat, lon float64
 	pop      int64
-	primary  bool // the key is the place's own name or ascii name, not an alternate
+	primary  bool   // the key is the place's own name or ascii name, not an alternate
+	id       uint32 // the GeoNames id (field 0)
+	tz       string // the time zone (field 17), empty when the line has none
 }
 
 // geoNames maps country code + normalized name to the most populous place of that name.
@@ -1098,7 +1100,12 @@ func loadGeoNames(path string) (geoNames, error) {
 		lat, latErr := strconv.ParseFloat(fields[4], 64)
 		lon, lonErr := strconv.ParseFloat(fields[5], 64)
 		country := normCountry(fields[8])
-		if latErr != nil || lonErr != nil || country == "" {
+		id64, idErr := strconv.ParseUint(fields[0], 10, 32)
+		tz := ""
+		if len(fields) > 17 {
+			tz = strings.TrimSpace(fields[17])
+		}
+		if idErr != nil || latErr != nil || lonErr != nil || country == "" {
 			continue
 		}
 		pop, _ := strconv.ParseInt(fields[14], 10, 64)
@@ -1107,7 +1114,7 @@ func loadGeoNames(path string) (geoNames, error) {
 			old, ok := index[key]
 			// A primary name beats any alternate; otherwise the more populous place wins.
 			if !ok || (primary && !old.primary) || (primary == old.primary && pop > old.pop) {
-				index[key] = gnPlace{lat, lon, pop, primary}
+				index[key] = gnPlace{lat, lon, pop, primary, uint32(id64), tz}
 			}
 		}
 		for _, name := range fields[1:3] {

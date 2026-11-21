@@ -151,6 +151,27 @@ func TestBuildGeoSameCountry(t *testing.T) {
 	}
 }
 
+// A retired code (YU, Yugoslavia) or a made-up one is no country: the row is
+// skipped and the country of the lower layer stays. XK (Kosovo) is a country.
+func TestBuildGeoRetiredCountry(t *testing.T) {
+	dir := t.TempDir()
+	base := writeFile(t, filepath.Join(dir, "rir.csv.gz"), "prefix,country,city\n45.0.0.0/8,RS,\n46.0.0.0/8,RS,\n")
+	whois := writeFile(t, filepath.Join(dir, "whois.csv.gz"), "prefix,country,city\n45.1.0.0/24,YU,\n45.2.0.0/24,ZZ,\n46.1.0.0/24,XK,\n")
+	out := filepath.Join(dir, "ip2geo.mmdb")
+	stats, err := buildGeo([]string{base, whois}, "", out, false, nil, nil, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats[1].skipped != 2 {
+		t.Errorf("skipped = %d, want 2", stats[1].skipped)
+	}
+	for ip, want := range map[string]string{"45.1.0.1": "RS", "45.2.0.1": "RS", "46.1.0.1": "XK"} {
+		if got := lookupGeo(t, out, ip)["country_code"]; got != want {
+			t.Errorf("%s = %v, want %s", ip, got, want)
+		}
+	}
+}
+
 // Rows that third parties write: an IPv6 prefix where the tree keeps IPv4
 // space, a line that does not parse, and a city that is not plain text.
 func TestBuildGeoHostileRows(t *testing.T) {

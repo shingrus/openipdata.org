@@ -173,7 +173,7 @@ func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool,
 					return // delegated space with no country: it only marks a block
 				}
 			}
-			if len(code) != 2 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z' {
+			if !validCountries[code] {
 				warnf(&s, "%s:%d: invalid country code %q", s.name, line, code)
 				return
 			}
@@ -499,6 +499,20 @@ func readLayer(path string, fn func(line int, prefix, code, city string)) error 
 		fn(line, rec[prefixCol], rec[countryCol], city)
 	}
 }
+
+// validCountries are the codes of countries today: tzdata's ISO 3166 list plus
+// XK (Kosovo). A layer row with any other code (a retired one such as YU,
+// Yugoslavia) is skipped like an invalid code, so the country of a lower layer stays.
+var validCountries = func() map[string]bool {
+	valid := map[string]bool{"XK": true}
+	for _, line := range strings.Split(countriesTab, "\n") {
+		code, _, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if ok && len(code) == 2 && code[0] >= 'A' && code[0] <= 'Z' && code[1] >= 'A' && code[1] <= 'Z' {
+			valid[code] = true
+		}
+	}
+	return valid
+}()
 
 // loadNames returns country names by code: the names file (code<TAB>name)
 // first, then the embedded tzdata list for codes it lacks.

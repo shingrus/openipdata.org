@@ -842,7 +842,7 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			err = hatchet.NewNonRetryableError(err)
 		}
 		return out, err
-	}, taskRetry(hatchet.WithParents(download, mmdb, eval), hatchet.WithExecutionTimeout(30*time.Minute))...)
+	}, taskRetry(hatchet.WithParents(download, mmdb, eval), hatchet.WithExecutionTimeout(45*time.Minute))...)
 
 	return wf
 }

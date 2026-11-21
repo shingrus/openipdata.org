@@ -4,6 +4,7 @@ The published data files are dedicated to the public domain under
 CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/):
 
   ip2geo-openipdata.mmdb
+  openipdata-org-ip2geo.mmdb
   ip2asn-openipdata.mmdb
   asn-openipdata.sqlite3
 
@@ -14,5 +15,6 @@ The code of this repository is under the MIT licence (see LICENSE).
 
 Sources: RIR delegation files, ipverse (geo-ip-blocks, asn-ip), PeeringDB,
 whois and operator geofeeds, router names from traceroutes, RIPE RIS.
-The coordinates (latitude, longitude) come from GeoNames (CC BY 4.0,
+The coordinates (latitude, longitude), the GeoNames ids of cities (city.geoname_id),
+time zones and the country and continent ids of openipdata-org-ip2geo.mmdb come from GeoNames (CC BY 4.0,
 https://www.geonames.org/), which asks for attribution.
