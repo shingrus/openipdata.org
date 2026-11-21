@@ -266,6 +266,9 @@ func TestFallbackLadder(t *testing.T) {
 	if !isWeakCitySource("35-speedtest-site") || isGuessSource("35-speedtest-site") {
 		t.Error("35-speedtest-site must be weak (the gap list keeps its /24s) and not a guess")
 	}
+	if !isWeakCitySource("30-pdb") || !isWeakCitySource("35-rdns-wide") || isGuessSource("30-pdb") || isGuessSource("35-rdns-wide") || isWeakCitySource("60-whois") {
+		t.Error("30-pdb and 35-rdns-wide must be weak for sampling and not guesses; 60-whois is not weak")
+	}
 	if !isWeakCitySource("25-bgp") || !isWeakCitySource("36-mlab") || isGuessSource("25-bgp") || isWeakCitySource("70-geofeeds") {
 		t.Error("source lists")
 	}

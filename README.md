@@ -952,7 +952,7 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
-`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `35-speedtest-site`, `36-mlab`, `37-whois-arin`, `37-whois-text` or `39-github-geofeeds` as no city too (like the seven guesses `80-asn-main`, `82-asn-likely`, `84-asn-near`, `85-holder-city`, `86-country-main`, `88-asn-far` and `89-asn-anywhere`), so customer names keep being sampled there.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `30-pdb`, `35-rdns-wide`, `35-speedtest-site`, `36-mlab`, `37-whois-arin`, `37-whois-text` or `39-github-geofeeds` as no city too (like the seven guesses `80-asn-main`, `82-asn-likely`, `84-asn-near`, `85-holder-city`, `86-country-main`, `88-asn-far` and `89-asn-anywhere`), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
 smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
 hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the

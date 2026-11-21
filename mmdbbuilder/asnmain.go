@@ -60,9 +60,12 @@ func isGuessSource(source string) bool { return slices.Contains(guessSources, so
 // M-Lab hop layer (36-mlab), the whois text layer (37-whois-text: right about 68% of the time, a
 // customer name about 82%) and the ARIN registrant city layer (37-whois-arin: right about 61% of
 // the time; sync-arin-whois walks the gap list, so the /24s it fills must stay in it) and the
-// GitHub geofeed layer (39-github-geofeeds: right about 61% of the time, below a customer name).
+// GitHub geofeed layer (39-github-geofeeds: right about 61% of the time, below a customer name),
+// and since 2026-11-21 the PeeringDB layer (30-pdb: about 51%) and the router name layer
+// (35-rdns-wide: about 36%), so sample-names reaches the networks those two cover (AT&T and
+// Orange customer names carry a place code).
 // lookup -in keeps only the guesses out (isGuessSource).
-var noSampleSources = slices.Concat(guessSources, []string{"25-bgp", "35-speedtest-site", "36-mlab", "37-whois-arin", "37-whois-text", "39-github-geofeeds"})
+var noSampleSources = slices.Concat(guessSources, []string{"25-bgp", "30-pdb", "35-rdns-wide", "35-speedtest-site", "36-mlab", "37-whois-arin", "37-whois-text", "39-github-geofeeds"})
 
 // isWeakCitySource reports whether a city_source is one of noSampleSources.
 func isWeakCitySource(source string) bool { return slices.Contains(noSampleSources, source) }
