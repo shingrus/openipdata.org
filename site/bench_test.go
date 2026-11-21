@@ -42,7 +42,7 @@ func benchServer(b *testing.B) *server {
 }
 
 func BenchmarkDownload(b *testing.B)        { benchGet(b, benchServer(b), "/download") }
-func BenchmarkSitemapIndex(b *testing.B)    { benchGet(b, benchServer(b), "/sitemap.xml") }
+func BenchmarkSitemapIndex(b *testing.B)    { benchGet(b, benchServer(b), "/sitemap-index.xml") }
 func BenchmarkSitemapNetworks(b *testing.B) { benchGet(b, benchServer(b), "/sitemap-networks-1.xml") }
 func BenchmarkRobots(b *testing.B)          { benchGet(b, benchServer(b), "/robots.txt") }
 func BenchmarkLLMs(b *testing.B)            { benchGet(b, benchServer(b), "/llms.txt") }
@@ -51,7 +51,7 @@ func BenchmarkLLMs(b *testing.B)            { benchGet(b, benchServer(b), "/llms
 // ETag gives 304.
 func TestCachedRoutesRepeat(t *testing.T) {
 	s, _ := asnServer(t)
-	for _, target := range []string{"/download", "/sitemap.xml", "/sitemap-pages.xml", "/sitemap-networks-1.xml", "/sitemap-organizations-1.xml", "/robots.txt", "/llms.txt"} {
+	for _, target := range []string{"/download", "/sitemap.xml", "/sitemap-index.xml", "/sitemap-networks-1.xml", "/sitemap-organizations-1.xml", "/robots.txt", "/llms.txt"} {
 		a, b := get(s, "GET", target), get(s, "GET", target)
 		if a.Code != 200 || a.Body.String() != b.Body.String() || a.Body.Len() == 0 {
 			t.Errorf("%s: %d, bodies differ", target, a.Code)
@@ -90,7 +90,7 @@ func TestSitemapFollowsReload(t *testing.T) {
 	if o := get(s, "GET", "/sitemap-organizations-1.xml"); !strings.Contains(o.Body.String(), "/asn-new-net<") || o.Header().Get("ETag") == orgBefore.Header().Get("ETag") {
 		t.Error("the organizations sitemap does not show the new organization")
 	}
-	if strings.Contains(get(s, "GET", "/sitemap.xml").Body.String(), "as64999") {
+	if strings.Contains(get(s, "GET", "/sitemap-index.xml").Body.String(), "as64999") {
 		t.Error("index lists a network")
 	}
 }

@@ -111,6 +111,7 @@ type server struct {
 	seo         atomic.Pointer[seoStatic] // robots.txt, llms.txt and the fixed sitemaps for s.origin
 	dl          dlCache                   // the rendered /download page
 	bulk        bulkCache                 // the rendered GET /bulk-ip-lookup page
+	smMain      smMainCache               // the rendered /sitemap.xml
 	cmp         cmpCache                  // the rendered /geolite2-alternative page
 	shareMu     [64]sync.Mutex            // updates of one report run one after another (see updateReport)
 	cspPnl      [8]string                 // csp of a page that has panel.js, by fill (1), res (2) and the Share button (4)

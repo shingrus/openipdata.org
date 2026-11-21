@@ -82,7 +82,7 @@ func TestMaxmindRedirectQuery(t *testing.T) {
 func TestCompareLinks(t *testing.T) {
 	s := fixtureServer(t)
 	for _, c := range []struct{ target, want string }{
-		{"/sitemap-pages.xml", "<loc>https://openipdata.org/geolite2-alternative</loc>"},
+		{"/sitemap.xml", "<loc>https://openipdata.org/geolite2-alternative</loc>"},
 		{"/llms.txt", "https://openipdata.org/geolite2-alternative"},
 		{"/download", `<a href="/geolite2-alternative">Compare with GeoLite2</a>`},
 		{"/", `<a href="/geolite2-alternative">Compare &rarr;</a>`},

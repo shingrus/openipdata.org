@@ -165,12 +165,12 @@ func TestCountrySitemap(t *testing.T) {
 	if w.Code != 200 || fmt.Sprint(u.URLs) != fmt.Sprint(want) || w.Header().Get("ETag") == "" {
 		t.Errorf("sitemap: %d %v", w.Code, u.URLs)
 	}
-	if get(s, "GET", "/sitemap.xml").Body.String() == "" || !strings.Contains(get(s, "GET", "/sitemap.xml").Body.String(), "/sitemap-countries.xml") {
+	if !strings.Contains(get(s, "GET", "/sitemap-index.xml").Body.String(), "/sitemap-countries.xml") {
 		t.Error("the index does not list the countries file")
 	}
-	// Without data the index lists only the fixed file.
-	if b := get(fixtureServer(t), "GET", "/sitemap.xml").Body.String(); strings.Contains(b, "countries") {
-		t.Errorf("index without data: %s", b)
+	// Without data the index is not served.
+	if w := get(fixtureServer(t), "GET", "/sitemap-index.xml"); w.Code != 503 || strings.Contains(w.Body.String(), "countries") {
+		t.Errorf("index without data: %d", w.Code)
 	}
 }
 

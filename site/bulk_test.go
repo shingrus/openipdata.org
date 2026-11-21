@@ -378,7 +378,7 @@ func TestBulkRoutes405(t *testing.T) {
 
 func TestBulkSEO(t *testing.T) {
 	s := bulkServer(t)
-	if b := get(s, "GET", "/sitemap-pages.xml").Body.String(); !strings.Contains(b, "<loc>https://openipdata.org/bulk-ip-lookup</loc>") {
+	if b := get(s, "GET", "/sitemap.xml").Body.String(); !strings.Contains(b, "<loc>https://openipdata.org/bulk-ip-lookup</loc>") {
 		t.Error("sitemap")
 	}
 	l := get(s, "GET", "/llms.txt").Body.String()

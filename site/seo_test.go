@@ -6,6 +6,7 @@ package main
 import (
 	"encoding/xml"
 	"fmt"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -156,7 +157,7 @@ func TestCutWords(t *testing.T) {
 
 func TestRobotsTxt(t *testing.T) {
 	s, _ := asnServer(t)
-	want := "User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nDisallow: /json\nSitemap: https://openipdata.org/sitemap.xml\n"
+	want := "User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nDisallow: /json\nSitemap: https://openipdata.org/sitemap.xml\nSitemap: https://openipdata.org/sitemap-index.xml\n"
 	w := get(s, "GET", "/robots.txt")
 	if w.Code != 200 || w.Body.String() != want {
 		t.Errorf("robots.txt: %d %q", w.Code, w.Body.String())
@@ -178,6 +179,25 @@ func TestRobotsTxt(t *testing.T) {
 
 type urlset struct {
 	URLs []string `xml:"url>loc"`
+}
+
+var lastmodRE = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$`)
+
+// sitemapMods returns the lastmod ("" when absent) of every url of a urlset.
+func sitemapMods(t *testing.T, body string) map[string]string {
+	t.Helper()
+	var u struct {
+		URLs []struct {
+			Loc string `xml:"loc"`
+			Mod string `xml:"lastmod"`
+		} `xml:"url"`
+	}
+	parseXML(t, body, &u)
+	m := map[string]string{}
+	for _, x := range u.URLs {
+		m[x.Loc] = x.Mod
+	}
+	return m
 }
 
 type sitemapIndex struct {
@@ -204,19 +224,41 @@ func TestSitemaps(t *testing.T) {
 		return w.Body.String(), &u
 	}
 
-	// Index: 646 networks with prefixes except AS64502 (none), 5 organizations plus the two big ones.
-	w := get(s, "GET", "/sitemap.xml")
+	w := get(s, "GET", "/sitemap-index.xml")
 	var idx sitemapIndex
 	parseXML(t, w.Body.String(), &idx)
-	want := []string{"https://openipdata.org/sitemap-pages.xml", "https://openipdata.org/sitemap-networks-1.xml", "https://openipdata.org/sitemap-organizations-1.xml", "https://openipdata.org/sitemap-countries.xml"}
-	if fmt.Sprint(idx.Sitemaps) != fmt.Sprint(want) || !strings.Contains(w.Body.String(), `xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`) {
+	want := []string{"https://openipdata.org/sitemap-networks-1.xml", "https://openipdata.org/sitemap-organizations-1.xml", "https://openipdata.org/sitemap-countries.xml"}
+	if fmt.Sprint(idx.Sitemaps) != fmt.Sprint(want) || !strings.Contains(w.Body.String(), `xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"`) || w.Code != 200 {
 		t.Errorf("index %v", idx.Sitemaps)
 	}
 
-	_, pages := check("/sitemap-pages.xml")
-	if fmt.Sprint(pages.URLs) != fmt.Sprint([]string{"https://openipdata.org/", "https://openipdata.org/download", "https://openipdata.org/bulk-ip-lookup", "https://openipdata.org/geolite2-alternative", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/top-asn-by-ipv6",
+	main, pages := check("/sitemap.xml")
+	if !strings.Contains(main, "<urlset") || fmt.Sprint(pages.URLs) != fmt.Sprint([]string{"https://openipdata.org/", "https://openipdata.org/geolite2-alternative", "https://openipdata.org/download", "https://openipdata.org/bulk-ip-lookup", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/top-asn-by-ipv6",
 		"https://openipdata.org/top-organizations-by-ip-address", "https://openipdata.org/list-of-countries-by-ipv4-allocation"}) {
 		t.Errorf("pages %v", pages.URLs)
+	}
+	mods := sitemapMods(t, main)
+	for _, p := range []string{"/", "/geolite2-alternative", "/download", "/top-asn-by-ip-address", "/top-asn-by-ipv6", "/top-organizations-by-ip-address", "/list-of-countries-by-ipv4-allocation"} {
+		if !lastmodRE.MatchString(mods["https://openipdata.org"+p]) {
+			t.Errorf("%s lastmod %q", p, mods["https://openipdata.org"+p])
+		}
+	}
+	if m, ok := mods["https://openipdata.org/bulk-ip-lookup"]; !ok || m != "" {
+		t.Errorf("bulk lastmod %q", m)
+	}
+	if w := get(s, "GET", "/sitemap-pages.xml"); w.Code != 301 || w.Header().Get("Location") != "/sitemap.xml" {
+		t.Errorf("pages: %d %q", w.Code, w.Header().Get("Location"))
+	}
+	if w := get(s, "GET", "/sitemap.xml"); w.Header().Get("ETag") == "" {
+		t.Error("no etag")
+	} else {
+		r := httptest.NewRequest("GET", "/sitemap.xml", nil)
+		r.Header.Set("If-None-Match", w.Header().Get("ETag"))
+		w2 := httptest.NewRecorder()
+		s.ServeHTTP(w2, r)
+		if w2.Code != 304 {
+			t.Errorf("etag: %d", w2.Code)
+		}
 	}
 
 	_, nets := check("/sitemap-networks-1.xml")
@@ -257,9 +299,9 @@ func TestSitemapChunks(t *testing.T) {
 	defer func() { sitemapChunk = old }()
 	s, _ := asnServer(t)
 	var idx sitemapIndex
-	parseXML(t, get(s, "GET", "/sitemap.xml").Body.String(), &idx)
+	parseXML(t, get(s, "GET", "/sitemap-index.xml").Body.String(), &idx)
 	// 645 networks = 7 files; 5 organizations = 1 file.
-	if len(idx.Sitemaps) != 1+7+1+1 || idx.Sitemaps[7] != "https://openipdata.org/sitemap-networks-7.xml" || idx.Sitemaps[8] != "https://openipdata.org/sitemap-organizations-1.xml" {
+	if len(idx.Sitemaps) != 7+1+1 || idx.Sitemaps[6] != "https://openipdata.org/sitemap-networks-7.xml" || idx.Sitemaps[7] != "https://openipdata.org/sitemap-organizations-1.xml" {
 		t.Errorf("index %v", idx.Sitemaps)
 	}
 	seen := map[string]bool{}
@@ -290,17 +332,36 @@ func TestSitemapChunks(t *testing.T) {
 
 func TestSitemapsWithoutData(t *testing.T) {
 	s := fixtureServer(t) // no ASN data
-	var idx sitemapIndex
-	w := get(s, "GET", "/sitemap.xml")
-	parseXML(t, w.Body.String(), &idx)
-	if w.Code != 200 || len(idx.Sitemaps) != 1 || idx.Sitemaps[0] != "https://openipdata.org/sitemap-pages.xml" {
-		t.Errorf("index %d %v", w.Code, idx.Sitemaps)
+	w := get(s, "GET", "/sitemap-index.xml")
+	if w.Code != 503 || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("Retry-After") == "" {
+		t.Errorf("index %d %v", w.Code, w.Header())
 	}
-	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
-		t.Errorf("incomplete index cache %q", cc)
+	// The main sitemap does not need ASN data.
+	if w := get(s, "GET", "/sitemap.xml"); w.Code != 200 || !strings.Contains(w.Body.String(), "<loc>https://openipdata.org/top-asn-by-ipv6</loc>") {
+		t.Errorf("main: %d", w.Code)
 	}
-	if w := get(s, "GET", "/sitemap-pages.xml"); w.Code != 200 {
-		t.Errorf("pages: %d", w.Code)
+	// A file that is not loaded gives no date, never a made-up one.
+	e, err := newServer("", "", "X-Real-IP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := get(e, "GET", "/sitemap.xml").Body.String()
+	if strings.Contains(body, "lastmod") {
+		t.Errorf("dates without data: %s", body)
+	}
+	// ASN MMDB loaded but no SQLite: the rankings (built from SQLite) have no date.
+	m := sitemapMods(t, body2(t, s))
+	if m["https://openipdata.org/top-asn-by-ipv6"] != "" || m["https://openipdata.org/download"] == "" {
+		t.Errorf("mmdb without sqlite: %v", m)
+	}
+	// With the geo file only, the rankings (ASN data) still have no date.
+	g, err := newServer("testdata/lookup-geo.mmdb", "", "X-Real-IP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mods := sitemapMods(t, get(g, "GET", "/sitemap.xml").Body.String())
+	if mods["https://openipdata.org/top-asn-by-ipv6"] != "" || mods["https://openipdata.org/download"] == "" {
+		t.Errorf("geo only: %v", mods)
 	}
 	for _, target := range []string{"/sitemap-networks-1.xml", "/sitemap-organizations-1.xml"} {
 		if w := get(s, "GET", target); w.Code != 503 || w.Header().Get("Retry-After") == "" || w.Header().Get("Cache-Control") != "no-store" {
@@ -323,4 +384,9 @@ func TestSEOHomeVariantsNotIndexed(t *testing.T) {
 	// No client address (no X-Real-IP): "Address unknown".
 	w := get(s, "GET", "/")
 	t.Logf("address unknown home: canonical %q, description %q", canonOf(w.Body.String()), metaOf(w.Body.String(), "description"))
+}
+
+func body2(t *testing.T, s *server) string {
+	t.Helper()
+	return get(s, "GET", "/sitemap.xml").Body.String()
 }

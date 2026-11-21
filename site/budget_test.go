@@ -55,7 +55,7 @@ var pageBudgets = []pageBudget{
 	{"/list-of-countries-by-ipv4-allocation", 14500, 4900, 30000, 2000 * time.Microsecond}, // 12884, 4377, 19946, 2µs
 	{"/as64500/prefixes.txt", 100, 100, 30000, 2000 * time.Microsecond},                    // 45, 60, 16020, 7µs
 	{"/asn-huge-net/prefixes.txt", 100, 70, 60000, 2000 * time.Microsecond},                // 13, 34, 35956, 24µs
-	{"/sitemap.xml", 550, 250, 20000, 2000 * time.Microsecond},                             // 425, 191, 6695, 1µs
+	{"/sitemap.xml", 990, 320, 20000, 2000 * time.Microsecond},                             // 896, 288, 8233, 12µs (main pages with lastmod, 2026-11-21; was the index: 550, 250)
 	{"/sitemap-networks-1.xml", 38000, 2000, 80000, 2000 * time.Microsecond},               // 34295, 1812, 47277, 3µs
 	{"/llms.txt", 3600, 1420, 20000, 2000 * time.Microsecond},                              // 3078, 1190, 9392, 1µs; raised 2026-11-18 for the agent Quick start (owner); 3483, 1359 with the GeoLite2 page line, 2026-11-21
 	{"/robots.txt", 200, 150, 10000, 2000 * time.Microsecond},                              // 124, 107, 6319, 1µs

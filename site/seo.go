@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -130,11 +131,9 @@ func prefixMeta(prefix string, asn uint32, name, place string) (title, desc stri
 
 // seoStatic are the bodies that depend only on the origin, built once for it.
 type seoStatic struct {
-	origin   string
-	robots   []byte
-	llms     []byte
-	pages    *cachedPage // /sitemap-pages.xml
-	emptyIdx []byte      // /sitemap.xml without ASN data (never cached by a client)
+	origin string
+	robots []byte
+	llms   []byte
 }
 
 const xmlHead = `<?xml version="1.0" encoding="UTF-8"?>` + "\n"
@@ -161,22 +160,9 @@ func (s *server) static() *seoStatic {
 	if p := s.seo.Load(); p != nil && p.origin == s.origin {
 		return p
 	}
-	eo := xmlEscape(s.origin)
 	p := &seoStatic{origin: s.origin}
-	p.robots = []byte("User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nDisallow: /json\nSitemap: " + s.canon("/sitemap.xml") + "\n")
+	p.robots = []byte("User-agent: *\nDisallow: /api/\nDisallow: /resolver\nDisallow: /ip\nDisallow: /json\nSitemap: " + s.canon("/sitemap.xml") + "\nSitemap: " + s.canon("/sitemap-index.xml") + "\n")
 	p.llms = []byte(s.llmsText())
-	pg := []byte(urlsetOpen)
-	pg = appendLoc(pg, "url", eo, "/")
-	pg = appendLoc(pg, "url", eo, downloadPath)
-	pg = appendLoc(pg, "url", eo, bulkPath)
-	pg = appendLoc(pg, "url", eo, comparePath)
-	for _, rk := range rankings {
-		pg = appendLoc(pg, "url", eo, rk.path)
-	}
-	pg = append(pg, "</urlset>\n"...)
-	p.pages = newPage(pg)
-	idx := appendLoc([]byte(indexOpen), "sitemap", eo, "/sitemap-pages.xml")
-	p.emptyIdx = append(idx, "</sitemapindex>\n"...)
 	s.seo.Store(p)
 	return p
 }
@@ -302,7 +288,7 @@ func (s *server) sitemapIndex(d *asnData) *cachedPage {
 	m := d.sitemaps()
 	m.idxOnce.Do(func() {
 		eo := xmlEscape(s.origin)
-		b := appendLoc([]byte(indexOpen), "sitemap", eo, "/sitemap-pages.xml")
+		b := []byte(indexOpen)
 		for k := 1; k <= len(m.netF); k++ {
 			b = appendLoc(b, "sitemap", eo, "/sitemap-networks-"+strconv.Itoa(k)+".xml")
 		}
@@ -317,21 +303,93 @@ func (s *server) sitemapIndex(d *asnData) *cachedPage {
 
 const xmlType = "application/xml; charset=utf-8"
 
-// serveSitemap answers /sitemap.xml, /sitemap-pages.xml,
-// /sitemap-networks-<k>.xml and /sitemap-organizations-<k>.xml and reports
-// whether the path was one. The files are built once per data load, on demand.
+// smMainCache holds the one rendered /sitemap.xml, with the key of what it shows.
+type smMainCache struct {
+	mu  sync.Mutex
+	key string
+	pg  *cachedPage
+}
+
+// lastmod is a W3C datetime in UTC, or "" for an unknown time (no tag then).
+func lastmod(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02T15:04:05Z")
+}
+
+func appendURL(b []byte, eo, path, mod string) []byte {
+	b = append(b, "<url><loc>"...)
+	b = append(b, eo...)
+	b = append(b, path...)
+	b = append(b, "</loc>"...)
+	if mod != "" {
+		b = append(b, "<lastmod>"...)
+		b = append(b, mod...)
+		b = append(b, "</lastmod>"...)
+	}
+	return append(b, "</url>\n"...)
+}
+
+// mainSitemap returns /sitemap.xml: the main pages with the build time of the
+// data each one shows (no date when that file is not loaded; none for the
+// static bulk page). It is rendered again only when a date or the origin
+// changes, so a data reload is followed.
+func (s *server) mainSitemap() *cachedPage {
+	var home, dl, rank time.Time
+	home = s.scores.Load().Built
+	geo, asn := s.geo.status(), s.asn.status()
+	if geo.Loaded {
+		dl = geo.Built
+	}
+	if asn.Loaded {
+		if asn.Built.After(dl) {
+			dl = asn.Built
+		}
+		// The rankings are built from the SQLite data and answer 503 without it.
+		if s.asnf.data() != nil {
+			rank = asn.Built
+		}
+	}
+	mods := [3]string{lastmod(home), lastmod(dl), lastmod(rank)}
+	key := s.origin + "|" + mods[0] + "|" + mods[1] + "|" + mods[2]
+	c := &s.smMain
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pg != nil && c.key == key {
+		return c.pg
+	}
+	eo := xmlEscape(s.origin)
+	b := []byte(urlsetOpen)
+	b = appendURL(b, eo, "/", mods[0])
+	b = appendURL(b, eo, comparePath, mods[0])
+	b = appendURL(b, eo, downloadPath, mods[1])
+	b = appendURL(b, eo, bulkPath, "")
+	for _, rk := range rankings {
+		b = appendURL(b, eo, rk.path, mods[2])
+	}
+	c.key, c.pg = key, newPage(append(b, "</urlset>\n"...))
+	return c.pg
+}
+
+// serveSitemap answers /sitemap.xml, /sitemap-index.xml, /sitemap-pages.xml
+// (a redirect), /sitemap-networks-<k>.xml and /sitemap-organizations-<k>.xml
+// and reports whether the path was one. The files are built once per data
+// load, on demand.
 func (s *server) serveSitemap(w http.ResponseWriter, r *http.Request) bool {
 	p := r.URL.Path
 	switch p {
 	case "/sitemap-pages.xml":
-		servePage(w, r, s.static().pages, xmlType, seoCache)
+		w.Header().Set("Cache-Control", seoCache)
+		http.Redirect(w, r, "/sitemap.xml", http.StatusMovedPermanently)
 		return true
 	case "/sitemap.xml":
+		servePage(w, r, s.mainSitemap(), xmlType, seoCache)
+		return true
+	case "/sitemap-index.xml":
 		d := s.asnf.data()
 		if d == nil {
-			w.Header().Set("Cache-Control", "no-store") // an incomplete index is never cached
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			writeBody(w, r, http.StatusOK, xmlType, s.static().emptyIdx)
+			sitemapNotLoaded(w, r) // an incomplete index is never cached
 			return true
 		}
 		servePage(w, r, s.sitemapIndex(d), xmlType, seoCache)
