@@ -3,8 +3,13 @@ package asn
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"openipdata.org/hatchet/publish"
 )
 
 func TestPublishNeedsSettings(t *testing.T) {
@@ -43,6 +48,84 @@ func (f *fakeRelease) Replace(_ context.Context, path, asset, body string) (stri
 		return "", false, errors.New("upload failed")
 	}
 	return "https://example.test/" + asset, !f.unchanged[asset], nil
+}
+
+type fakeR2 struct {
+	status publish.PutStatus
+	err    error
+	keys   []string
+}
+
+func (f *fakeR2) Put(_ context.Context, key, _ string, _ publish.PutOptions) (string, publish.PutStatus, error) {
+	f.keys = append(f.keys, key)
+	if f.err != nil {
+		return "", "", f.err
+	}
+	return "r2://b/" + key, f.status, nil
+}
+
+// builderPipeline has a fake mmdbbuilder (a shell script) in a temp dir.
+func builderPipeline(t *testing.T, script string) (*Pipeline, string) {
+	t.Helper()
+	dir := t.TempDir()
+	builder := filepath.Join(dir, "mmdbbuilder")
+	if err := os.WriteFile(builder, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return &Pipeline{DataDir: dir, MMDBBuilder: builder}, filepath.Join(dir, "ip2asn-openipdata-20261121.mmdb")
+}
+
+var compatDate = time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+
+func TestPublishCompatOutcomes(t *testing.T) {
+	const ok = `echo "$@" > "$(dirname "$0")/args"; echo "convert: 3 networks, 3 with an organization, 0 skipped"; for last; do :; done; echo data > "$last"`
+	cases := []struct {
+		name, script string
+		r2           *fakeR2
+		rel          *fakeRelease
+		want         string
+		wantCalls    int
+	}{
+		{"convert fails", `echo "boom 10.1.2.3" >&2; exit 1`, &fakeR2{}, &fakeRelease{}, "failed: convert failed", 0},
+		{"uploaded", ok, &fakeR2{status: publish.PutUploaded}, &fakeRelease{}, "uploaded", 1},
+		{"r2 unchanged, release replaced", ok, &fakeR2{status: publish.PutUnchanged}, &fakeRelease{}, "uploaded", 1},
+		{"both unchanged", ok, &fakeR2{status: publish.PutUnchanged}, &fakeRelease{unchanged: map[string]bool{compatAsset: true}}, "unchanged", 1},
+		{"r2 fails", ok, &fakeR2{err: errors.New("r2 down")}, &fakeRelease{}, "failed: R2 upload failed", 0},
+		{"release fails", ok, &fakeR2{status: publish.PutUploaded}, &fakeRelease{failOn: compatAsset}, "failed: release upload failed", 1},
+	}
+	for _, tc := range cases {
+		p, mmdb := builderPipeline(t, tc.script)
+		var out PublishOutput
+		if err := p.publishCompat(context.Background(), tc.r2, tc.rel, compatDate, mmdb, &out); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if out.Compat != tc.want || len(tc.rel.calls) != tc.wantCalls || strings.Contains(out.Compat, "10.1.2.3") {
+			t.Errorf("%s: Compat = %q, release calls %v", tc.name, out.Compat, tc.rel.calls)
+		}
+		if tc.wantCalls > 0 {
+			if tc.rel.bodies[compatAsset] != "" || tc.r2.keys[0] != "2026-11-21/openipdata-org-ip2asn-20261121.mmdb" {
+				t.Errorf("%s: body %q, keys %v", tc.name, tc.rel.bodies[compatAsset], tc.r2.keys)
+			}
+			args, _ := os.ReadFile(filepath.Join(p.DataDir, "args"))
+			want := "convert -db " + mmdb + " -out " + filepath.Join(p.DataDir, "openipdata-org-ip2asn-20261121.mmdb")
+			if strings.TrimSpace(string(args)) != want {
+				t.Errorf("%s: args %q, want %q", tc.name, args, want)
+			}
+			if out.CompatBytes == 0 {
+				t.Errorf("%s: CompatBytes = 0", tc.name)
+			}
+		}
+	}
+}
+
+func TestPublishCompatCancelled(t *testing.T) {
+	p, mmdb := builderPipeline(t, `exit 1`)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out PublishOutput
+	if err := p.publishCompat(ctx, &fakeR2{}, &fakeRelease{}, compatDate, mmdb, &out); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
+	}
 }
 
 func TestPublishRelease(t *testing.T) {

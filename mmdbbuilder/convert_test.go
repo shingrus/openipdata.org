@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/maxmind/mmdbwriter/mmdbtype"
@@ -277,5 +278,155 @@ func TestConvertFailures(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(out); string(data) != "previous" {
 		t.Error("a failed convert replaced the output")
+	}
+}
+
+// geoliteASN has the shape of geoip2's ASN model.
+type geoliteASN struct {
+	Number uint   `maxminddb:"autonomous_system_number"`
+	Org    string `maxminddb:"autonomous_system_organization"`
+}
+
+func TestConvertASN(t *testing.T) {
+	root := t.TempDir()
+	asDir := filepath.Join(root, "as")
+	writeASN(t, asDir, "1", `{"asn": 1, "metadata": {"handle": "ONE", "description": "One Inc.", "countryCode": "US"},
+		"prefixes": {"ipv4": ["8.8.8.0/24"], "ipv6": ["2001:db8:1::/48"]}}`)
+	writeASN(t, asDir, "2", `{"asn": 2, "metadata": {"handle": "TWO"}, "prefixes": {"ipv4": ["8.8.0.0/16"], "ipv6": ["2001:db8::/32"]}}`)
+	flat := filepath.Join(root, "ip2asn.mmdb")
+	if _, err := buildASN(asDir, flat, false); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(root, "openipdata-org-ip2asn.mmdb")
+	stats, err := convertMMDB(flat, out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The /16 of AS2 is split around AS1's /24 in the tree, so there are more networks than prefixes.
+	if stats.networks == 0 || stats.withOrg != stats.networks || stats.skipped != 0 {
+		t.Errorf("stats = %+v", stats)
+	}
+	if _, err := os.Stat(out + ".tmp"); err == nil {
+		t.Error("tmp file left")
+	}
+	r, err := maxminddb.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	in, err := maxminddb.Open(flat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	if r.Metadata.DatabaseType != "OpenIPData-ASN (compat=GeoLite2-ASN)" || len(r.Metadata.Languages) != 1 || r.Metadata.Languages[0] != "en" ||
+		r.Metadata.BuildEpoch != in.Metadata.BuildEpoch || r.Metadata.Description["en"] != in.Metadata.Description["en"] {
+		t.Errorf("metadata = %+v", r.Metadata)
+	}
+	// Every input network is there with the same prefix and number.
+	n := 0
+	for res := range in.Networks() {
+		var f flatASN
+		if err := res.Decode(&f); err != nil {
+			t.Fatal(err)
+		}
+		p := res.Prefix()
+		if a := p.Addr().Unmap(); a != p.Addr() && a.Is4() {
+			p = netip.PrefixFrom(a, p.Bits()-96)
+		}
+		got := r.Lookup(p.Addr())
+		var rec geoliteASN
+		if !got.Found() || got.Prefix() != p {
+			t.Fatalf("%s: found %v prefix %v", p, got.Found(), got.Prefix())
+		}
+		if err := got.Decode(&rec); err != nil {
+			t.Fatal(err)
+		}
+		want := f.Org
+		if want == "" {
+			want = f.Name
+		}
+		if strconv.Itoa(int(rec.Number)) != f.ASN || rec.Org != want || want == "" {
+			t.Errorf("%s: %+v, flat %+v", res.Prefix(), rec, f)
+		}
+		var raw map[string]any
+		if err := got.Decode(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) != 2 {
+			t.Errorf("%s: keys = %v", res.Prefix(), raw)
+		}
+		n++
+	}
+	if n != stats.networks {
+		t.Errorf("%d networks read, stats say %d", n, stats.networks)
+	}
+	var one, two geoliteASN
+	r.Lookup(netip.MustParseAddr("8.8.8.8")).Decode(&one)
+	r.Lookup(netip.MustParseAddr("8.8.4.4")).Decode(&two)
+	if one.Number != 1 || one.Org != "One Inc." || two.Number != 2 || two.Org == "" {
+		t.Errorf("one %+v two %+v", one, two)
+	}
+	// The same input gives the same bytes.
+	out2 := filepath.Join(root, "again.mmdb")
+	if _, err := convertMMDB(flat, out2, ""); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := os.ReadFile(out)
+	b, _ := os.ReadFile(out2)
+	if !bytes.Equal(a, b) {
+		t.Error("two runs differ")
+	}
+	// -geonames means nothing for ip2asn.
+	if _, err := convertMMDB(flat, filepath.Join(root, "x.mmdb"), "cities1000.txt"); err == nil {
+		t.Error("ip2asn with -geonames: no error")
+	}
+}
+
+func writeFlatMMDB(t *testing.T, dbType string, recs map[string]mmdbtype.Map) string {
+	t.Helper()
+	w, err := newWriter(dbType, dbType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, rec := range recs {
+		if err := w.Insert(ipNet(netip.MustParsePrefix(p)), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "flat.mmdb")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteTo(f); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	return path
+}
+
+func TestConvertASNSkipsBadNumber(t *testing.T) {
+	recs := map[string]mmdbtype.Map{}
+	for p, asn := range map[string]string{"1.0.0.0/24": "15169", "2.0.0.0/24": "", "3.0.0.0/24": "0", "4.0.0.0/24": "4294967296", "5.0.0.0/24": "x"} {
+		recs[p] = mmdbtype.Map{"asn": mmdbtype.String(asn), "name": mmdbtype.String("N")}
+	}
+	flat := writeFlatMMDB(t, "ip2asn", recs)
+	stats, err := convertMMDB(flat, filepath.Join(t.TempDir(), "out.mmdb"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.networks != 1 || stats.skipped != 4 {
+		t.Errorf("stats = %+v", stats)
+	}
+}
+
+func TestConvertUnknownType(t *testing.T) {
+	flat := writeFlatMMDB(t, "something", map[string]mmdbtype.Map{"1.0.0.0/24": {"a": mmdbtype.String("b")}})
+	if _, err := convertMMDB(flat, filepath.Join(t.TempDir(), "out.mmdb"), ""); err == nil {
+		t.Error("unknown type: no error")
 	}
 }

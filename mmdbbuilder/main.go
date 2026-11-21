@@ -7,7 +7,7 @@
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]
 //	mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>
 //	mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>
-//	mmdbbuilder convert -db <ip2geo.mmdb> -out <openipdata-org-ip2geo.mmdb> [-geonames <cities1000.txt>]
+//	mmdbbuilder convert -db <ip2geo.mmdb|ip2asn.mmdb> -out <openipdata-org-ip2geo.mmdb|openipdata-org-ip2asn.mmdb> [-geonames <cities1000.txt>]
 //	mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]
 //
 // For geo, -geonames adds latitude and longitude to the records whose city it places.
@@ -48,8 +48,10 @@
 // convert turns the flat ip2geo MMDB into a file in the MaxMind GeoLite2-City record layout
 // (continent, country, city, location; English names only; database_type OpenIPData-City). With
 // -geonames a city whose GeoNames place has the record's own coordinates also gets its
-// geoname_id and time zone. The metadata description and build epoch of the input are kept.
-// See convert.go.
+// geoname_id and time zone. A flat ip2asn MMDB becomes the GeoLite2-ASN layout
+// (autonomous_system_number, autonomous_system_organization; database_type
+// "OpenIPData-ASN (compat=GeoLite2-ASN)"). The input's database_type decides which.
+// The metadata description and build epoch of the input are kept. See convert.go.
 //
 // eval scores an ip2geo MMDB (IPv4 only) and prints one JSON object. See eval.go.
 package main
@@ -99,7 +101,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder convert -db <ip2geo.mmdb> -out <file.mmdb> [-geonames <cities1000.txt>]")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder convert -db <ip2geo.mmdb|ip2asn.mmdb> -out <file.mmdb> [-geonames <cities1000.txt>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
 }

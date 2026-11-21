@@ -6,6 +6,7 @@ CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/):
   ip2geo-openipdata.mmdb
   openipdata-org-ip2geo.mmdb
   ip2asn-openipdata.mmdb
+  openipdata-org-ip2asn.mmdb
   asn-openipdata.sqlite3
 
 on the GitHub releases of this repository and in the R2 bucket. Use them for
