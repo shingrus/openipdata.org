@@ -14,8 +14,12 @@ const (
 )
 
 // rdnsLayers are the layers written from public.rdns_geo_layer, by scope, in layer order.
+// 35-rdns-wide is off since 2026-11-21: on RIPE Atlas its city was right for 36% of the
+// 722 probes it answered, below every guess, and a rebuild of that day's layers without it
+// gained 53 and lost 32 probes (right city 59.98% -> 60.13%, precision 60.97% -> 61.12%;
+// moving it below 30-pdb and 25-bgp, or letting it only fill, changed nothing). resolve-ips
+// still writes the scope; adding the line back turns the layer on again.
 var rdnsLayers = []struct{ name, scope string }{
-	{RDNSWideLayer, rdnsWide},
 	{RDNSLayer, rdnsTraced},
 	{RDNSNamesLayer, rdnsNamed},
 }

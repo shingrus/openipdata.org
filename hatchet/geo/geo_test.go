@@ -609,26 +609,30 @@ func TestDownloadRDNSLayers(t *testing.T) {
 		return src, logs
 	}
 	src, _ := run()
-	if len(src.SkippedLayers) != 0 || src.Rows[RDNSWideLayer] != 3 || src.Rows[RDNSLayer] != 2 || src.Rows[RDNSNamesLayer] != 1 {
+	if len(src.SkippedLayers) != 0 || src.Rows[RDNSWideLayer] != 0 || src.Rows[RDNSLayer] != 2 || src.Rows[RDNSNamesLayer] != 1 {
 		t.Fatalf("all scopes: %+v", src)
 	}
 	if got := readGzip(t, filepath.Join(layers, RDNSNamesLayer)); got != "prefix,country,region,city,source\n10.0.0.0/24,DE,,Berlin,\n" {
 		t.Errorf("%s = %q", RDNSNamesLayer, got)
 	}
-	if got, want := fmt.Sprint(scopes), "[wide traced named]"; got != want {
+	if got, want := fmt.Sprint(scopes), "[traced named]"; got != want {
 		t.Errorf("scopes asked = %s, want %s", got, want)
 	}
 	if got := readGzip(t, filepath.Join(layers, RDNSLayer)); got != "prefix,country,region,city,source\n10.0.0.0/24,DE,,Berlin,\n10.1.0.0/24,DE,,Berlin,\n" {
 		t.Errorf("%s = %q", RDNSLayer, got)
 	}
 
-	rows[rdnsWide] = 0
-	os.Remove(filepath.Join(layers, RDNSWideLayer))
-	src, logs := run()
-	if !reflect.DeepEqual(src.SkippedLayers, []string{RDNSWideLayer}) || src.Rows[RDNSLayer] != 2 || len(logs) != 3 || !strings.Contains(logs[0], "WARNING") {
-		t.Fatalf("no wide rows: %+v %v", src, logs)
-	}
 	if _, err := os.Stat(filepath.Join(layers, RDNSWideLayer)); !os.IsNotExist(err) {
+		t.Errorf("35-rdns-wide is off but its file was written: %v", err)
+	}
+
+	rows[rdnsNamed] = 0
+	os.Remove(filepath.Join(layers, RDNSNamesLayer))
+	src, logs := run()
+	if !reflect.DeepEqual(src.SkippedLayers, []string{RDNSNamesLayer}) || src.Rows[RDNSLayer] != 2 || len(logs) != 2 || !strings.Contains(logs[1], "WARNING") {
+		t.Fatalf("no named rows: %+v %v", src, logs)
+	}
+	if _, err := os.Stat(filepath.Join(layers, RDNSNamesLayer)); !os.IsNotExist(err) {
 		t.Errorf("a file for a skipped layer: %v", err)
 	}
 }
