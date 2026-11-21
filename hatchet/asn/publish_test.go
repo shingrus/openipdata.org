@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,55 +76,70 @@ func builderPipeline(t *testing.T, script string) (*Pipeline, string) {
 	return &Pipeline{DataDir: dir, MMDBBuilder: builder}, filepath.Join(dir, "ip2asn-openipdata-20261121.mmdb")
 }
 
-var compatDate = time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+var publishDate = time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
 
-func TestPublishCompatOutcomes(t *testing.T) {
+func TestPublishFiles(t *testing.T) {
 	const ok = `echo "$@" > "$(dirname "$0")/args"; echo "convert: 3 networks, 3 with an organization, 0 skipped"; for last; do :; done; echo data > "$last"`
 	cases := []struct {
 		name, script string
 		r2           *fakeR2
 		rel          *fakeRelease
-		want         string
-		wantCalls    int
+		wantErr      string
+		wantKeys     int
+		wantCalls    []string
 	}{
-		{"convert fails", `echo "boom 10.1.2.3" >&2; exit 1`, &fakeR2{}, &fakeRelease{}, "failed: convert failed", 0},
-		{"uploaded", ok, &fakeR2{status: publish.PutUploaded}, &fakeRelease{}, "uploaded", 1},
-		{"r2 unchanged, release replaced", ok, &fakeR2{status: publish.PutUnchanged}, &fakeRelease{}, "uploaded", 1},
-		{"both unchanged", ok, &fakeR2{status: publish.PutUnchanged}, &fakeRelease{unchanged: map[string]bool{compatAsset: true}}, "unchanged", 1},
-		{"r2 fails", ok, &fakeR2{err: errors.New("r2 down")}, &fakeRelease{}, "failed: R2 upload failed", 0},
-		{"release fails", ok, &fakeR2{status: publish.PutUploaded}, &fakeRelease{failOn: compatAsset}, "failed: release upload failed", 1},
+		{"convert fails: nothing uploaded", `echo "boom" >&2; exit 1`, &fakeR2{}, &fakeRelease{}, "convert to the published layout failed", 0, nil},
+		{"uploaded", ok, &fakeR2{status: publish.PutUploaded}, &fakeRelease{}, "", 2, []string{releaseAsset, releaseSQLite}},
+		{"r2 fails: release untouched", ok, &fakeR2{err: errors.New("r2 down")}, &fakeRelease{}, "r2 down", 1, nil},
+		{"mmdb release fails", ok, &fakeR2{status: publish.PutUploaded}, &fakeRelease{failOn: releaseAsset}, "upload failed", 2, []string{releaseAsset}},
+		{"sqlite release fails after mmdb", ok, &fakeR2{status: publish.PutUploaded}, &fakeRelease{failOn: releaseSQLite}, "the MMDB asset is already updated", 2, []string{releaseAsset, releaseSQLite}},
 	}
 	for _, tc := range cases {
 		p, mmdb := builderPipeline(t, tc.script)
+		sqlite := filepath.Join(p.DataDir, "asn.sqlite3")
+		os.WriteFile(sqlite, []byte("sqlite"), 0o640)
 		var out PublishOutput
-		if err := p.publishCompat(context.Background(), tc.r2, tc.rel, compatDate, mmdb, &out); err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
+		err := p.publishFiles(context.Background(), tc.r2, tc.rel, Source{Commit: "abc"}, publishDate, mmdb, sqlite, &out)
+		if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("%s: err = %v, want %q", tc.name, err, tc.wantErr)
+			continue
 		}
-		if out.Compat != tc.want || len(tc.rel.calls) != tc.wantCalls || strings.Contains(out.Compat, "10.1.2.3") {
-			t.Errorf("%s: Compat = %q, release calls %v", tc.name, out.Compat, tc.rel.calls)
+		if tc.wantKeys == 0 && !errors.Is(err, errConvert) {
+			t.Errorf("%s: err = %v, want errConvert", tc.name, err)
 		}
-		if tc.wantCalls > 0 {
-			if tc.rel.bodies[compatAsset] != "" || tc.r2.keys[0] != "2026-11-21/openipdata-org-ip2asn-20261121.mmdb" {
-				t.Errorf("%s: body %q, keys %v", tc.name, tc.rel.bodies[compatAsset], tc.r2.keys)
+		if len(tc.r2.keys) != tc.wantKeys || !slices.Equal(tc.rel.calls, tc.wantCalls) {
+			t.Errorf("%s: r2 keys %v, release calls %v", tc.name, tc.r2.keys, tc.rel.calls)
+		}
+		for _, k := range tc.r2.keys {
+			if strings.Contains(k, "ip2asn-openipdata") {
+				t.Errorf("%s: the flat file was uploaded: %s", tc.name, k)
+			}
+		}
+		if tc.name == "uploaded" {
+			if tc.r2.keys[0] != "2026-11-21/openipdata-org-ip2asn-20261121.mmdb" || tc.r2.keys[1] != "2026-11-21/asn.sqlite3" {
+				t.Errorf("keys %v", tc.r2.keys)
+			}
+			if !strings.Contains(tc.rel.bodies[releaseAsset], "Built: 2026-11-21") || tc.rel.bodies[releaseSQLite] != "" {
+				t.Errorf("bodies %v", tc.rel.bodies)
 			}
 			args, _ := os.ReadFile(filepath.Join(p.DataDir, "args"))
 			want := "convert -db " + mmdb + " -out " + filepath.Join(p.DataDir, "openipdata-org-ip2asn-20261121.mmdb")
 			if strings.TrimSpace(string(args)) != want {
-				t.Errorf("%s: args %q, want %q", tc.name, args, want)
+				t.Errorf("args %q, want %q", args, want)
 			}
-			if out.CompatBytes == 0 {
-				t.Errorf("%s: CompatBytes = 0", tc.name)
+			if out.Bytes != int64(len("data\n")+len("sqlite")) || len(out.R2) != 2 {
+				t.Errorf("out = %+v", out)
 			}
 		}
 	}
 }
 
-func TestPublishCompatCancelled(t *testing.T) {
+func TestPublishFilesCancelled(t *testing.T) {
 	p, mmdb := builderPipeline(t, `exit 1`)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var out PublishOutput
-	if err := p.publishCompat(ctx, &fakeR2{}, &fakeRelease{}, compatDate, mmdb, &out); !errors.Is(err, context.Canceled) {
+	if err := p.publishFiles(ctx, &fakeR2{}, &fakeRelease{}, Source{}, publishDate, mmdb, "x.sqlite3", &out); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -153,7 +169,7 @@ func TestPublishRelease(t *testing.T) {
 			t.Errorf("%s: err = %v, calls = %v", tc.name, err, f.calls)
 			continue
 		}
-		if f.calls[0] != "ip2asn-openipdata.mmdb" || (len(f.calls) > 1 && f.calls[1] != "asn-openipdata.sqlite3") {
+		if f.calls[0] != "openipdata-org-ip2asn.mmdb" || (len(f.calls) > 1 && f.calls[1] != "asn-openipdata.sqlite3") {
 			t.Errorf("%s: calls = %v", tc.name, f.calls)
 		}
 		if f.bodies[releaseAsset] != "text" || (len(f.calls) > 1 && f.bodies[releaseSQLite] != "") {

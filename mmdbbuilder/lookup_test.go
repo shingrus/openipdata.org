@@ -94,18 +94,14 @@ func TestWriteCitiesKeepsOldOutputOnFailure(t *testing.T) {
 	}
 }
 
-// Records that are not in the "geo" shape (no city_name) give no row.
+// A database whose database_type is neither ip2geo nor a City layout is an error, not an empty answer.
 func TestWriteCitiesOtherRecords(t *testing.T) {
 	dir := t.TempDir()
 	db := refDB(t, filepath.Join(dir, "plain.mmdb"), "plain", [][3]string{{"45.0.0.0/24", "US", ""}})
 	in := writeFile(t, filepath.Join(dir, "ips.txt"), "45.0.0.1\n")
 	out := filepath.Join(dir, "cities.tsv")
-	stats, err := writeCities(db, in, out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if data, _ := os.ReadFile(out); len(data) != 0 || stats.withCity != 0 || stats.lookups != 1 {
-		t.Errorf("rows %q, stats %+v", data, stats)
+	if _, err := writeCities(db, in, out); err == nil || !strings.Contains(err.Error(), "database_type") {
+		t.Errorf("err = %v", err)
 	}
 }
 

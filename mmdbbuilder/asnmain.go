@@ -76,26 +76,74 @@ func evidenceFields(res maxminddb.Result) (country, city string, err error) {
 
 // gapFields is evidenceFields for the gap list: the city of a weak source (see
 // noSampleSources) is left out as well.
-func gapFields(res maxminddb.Result) (country, city string, err error) {
-	country, city, _, err = evidenceRecord(res, isWeakCitySource)
+func gapFields(l geoLayout, res maxminddb.Result) (country, city string, err error) {
+	country, city, _, err = l.evidence(res, isWeakCitySource)
 	return country, city, err
 }
 
-// evidenceRecord decodes country, city and city_source of a record; the city is left out
-// (country only) when drop(city_source) is true. source is the record's own, also when dropped.
+// evidenceRecord decodes country, city and city_source of a record of the flat file
+// (the build output "mmdbbuilder geo" writes); the city is left out (country only)
+// when drop(city_source) is true. source is the record's own, also when dropped.
 func evidenceRecord(res maxminddb.Result, drop func(string) bool) (country, city, source string, err error) {
-	var r struct {
-		Country string `maxminddb:"country_code"`
-		City    string `maxminddb:"city_name"`
-		Source  string `maxminddb:"city_source"`
+	return layoutFlat.evidence(res, drop)
+}
+
+// geoLayout is the record layout of an ip2geo MMDB: the flat build output, or the
+// published GeoLite2-City layout (mmdbbuilder convert).
+type geoLayout int
+
+const (
+	layoutFlat geoLayout = iota // database_type ip2geo: country_code, city_name, city_source
+	layoutCity                  // database_type with "City" (OpenIPData-City): country.iso_code, city.names.en, city_source
+)
+
+// detectLayout reads the layout from the file's database_type, once per run; any
+// other type is an error.
+func detectLayout(r *maxminddb.Reader) (geoLayout, error) {
+	switch t := r.Metadata.DatabaseType; {
+	case t == "ip2geo":
+		return layoutFlat, nil
+	case strings.Contains(t, "City"):
+		return layoutCity, nil
+	default:
+		return 0, fmt.Errorf("database_type %q is neither ip2geo nor a City layout", t)
 	}
-	if err = res.Decode(&r); err != nil {
-		return "", "", "", err
+}
+
+// evidence decodes country, city and city_source in either layout, with the rule of
+// evidenceRecord: the output is the same for the same data in both.
+func (l geoLayout) evidence(res maxminddb.Result, drop func(string) bool) (country, city, source string, err error) {
+	if l == layoutCity {
+		var r struct {
+			Country struct {
+				ISOCode string `maxminddb:"iso_code"`
+			} `maxminddb:"country"`
+			City struct {
+				Names struct {
+					EN string `maxminddb:"en"`
+				} `maxminddb:"names"`
+			} `maxminddb:"city"`
+			Source string `maxminddb:"city_source"`
+		}
+		if err = res.Decode(&r); err != nil {
+			return "", "", "", err
+		}
+		country, city, source = r.Country.ISOCode, r.City.Names.EN, r.Source
+	} else {
+		var r struct {
+			Country string `maxminddb:"country_code"`
+			City    string `maxminddb:"city_name"`
+			Source  string `maxminddb:"city_source"`
+		}
+		if err = res.Decode(&r); err != nil {
+			return "", "", "", err
+		}
+		country, city, source = r.Country, r.City, r.Source
 	}
-	if drop(r.Source) {
-		r.City = ""
+	if drop(source) {
+		city = ""
 	}
-	return r.Country, r.City, r.Source, nil
+	return country, city, source, nil
 }
 
 // asnSeg is a range of IPv4 addresses (inclusive) that belongs to one ASN.

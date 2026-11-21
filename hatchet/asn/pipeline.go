@@ -3,6 +3,7 @@ package asn
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,12 +19,11 @@ import (
 
 const (
 	sourceRepoURL   = "https://github.com/ipverse/asn-ip"
-	mmdbFileFormat  = "ip2asn-openipdata-%s.mmdb"
+	mmdbFileFormat  = "ip2asn-openipdata-%s.mmdb" // the internal flat build output, never published
 	sqliteFileName  = "asn.sqlite3"
-	releaseAsset    = "ip2asn-openipdata.mmdb"
+	releaseAsset    = "openipdata-org-ip2asn.mmdb" // the published file (GeoLite2-ASN layout)
 	releaseSQLite   = "asn-openipdata.sqlite3"
-	compatAsset     = "openipdata-org-ip2asn.mmdb" // the GeoLite2-ASN layout of the same data
-	compatFileFmt   = "openipdata-org-ip2asn-%s.mmdb"
+	publishedFmt    = "openipdata-org-ip2asn-%s.mmdb"
 	keepOutputDirs  = 3
 	dateTagLayout   = "20060102"
 	dateFolderShape = "2006-01-02"
@@ -265,7 +265,8 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 	return ExportOutput{Path: final, SizeBytes: outputs.FileSize(final), Stats: stats}, nil
 }
 
-// PublishOutput lists where the artifacts went.
+// PublishOutput lists where the artifacts went: the published ASN MMDB (GeoLite2-ASN layout, made by
+// "mmdbbuilder convert" from the flat build output) and the SQLite file.
 type PublishOutput struct {
 	Skipped         bool     `json:"skipped,omitempty"`
 	R2              []string `json:"r2,omitempty"` // where the files are
@@ -279,14 +280,9 @@ type PublishOutput struct {
 	// The SQLite file on the same release, reported like the MMDB.
 	ReleaseSQLiteURL       string `json:"release_sqlite_url,omitempty"`
 	ReleaseSQLiteUnchanged bool   `json:"release_sqlite_unchanged,omitempty"`
-	// Compat is the GeoLite2-ASN layout file made by "mmdbbuilder convert": "uploaded",
-	// "unchanged" (R2 and the release both already had it) or "failed: <fixed reason>".
-	// A failure never fails Publish.
-	Compat      string `json:"compat,omitempty"`
-	CompatBytes int64  `json:"compat_bytes,omitempty"`
 }
 
-// r2Putter is what publishCompat needs from R2 (tests fake it).
+// r2Putter is what publishFiles needs from R2 (tests fake it).
 type r2Putter interface {
 	Put(ctx context.Context, key, path string, opts publish.PutOptions) (string, publish.PutStatus, error)
 }
@@ -316,10 +312,12 @@ func (p *Pipeline) CheckPublish() error {
 	return err
 }
 
-// Publish uploads the MMDB and asn.sqlite3 to R2 under <YYYY-MM-DD>/, replaces
-// the MMDB (ip2asn-openipdata.mmdb) and the SQLite file (asn-openipdata.sqlite3)
-// on the rolling GitHub release, adds the GeoLite2-ASN layout file (publishCompat,
-// never a failure), then pings HCPing if set. A file that is
+// Publish converts the flat MMDB build output at mmdbPath into the published
+// GeoLite2-ASN layout file (openipdata-org-ip2asn-<date>.mmdb, next to it; a failed
+// conversion fails Publish before anything is uploaded), uploads that file and
+// asn.sqlite3 to R2 under <YYYY-MM-DD>/, replaces openipdata-org-ip2asn.mmdb and the
+// SQLite file (asn-openipdata.sqlite3) on the rolling GitHub release, then pings
+// HCPing if set. The flat file is never uploaded. A file that is
 // byte-identical to the one already in place is not sent again (an identical file is
 // the published file). Missing settings fail the task, so a misconfiguration
 // cannot go unnoticed.
@@ -334,12 +332,32 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath
 	if err != nil {
 		return out, err
 	}
+	if err := p.publishFiles(ctx, r2, release, src, date, mmdbPath, sqlitePath, &out); err != nil {
+		return out, err
+	}
+	if err := publish.Ping(ctx, p.HCPing); err != nil {
+		p.log("publish: %v", err) // the uploads succeeded; a missed ping only delays the alert
+	}
+	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
+	return out, nil
+}
 
+// errConvert is the fixed error of a failed conversion; the builder's own last
+// stderr lines follow it.
+var errConvert = errors.New("convert to the published layout failed")
+
+// publishFiles converts, then puts the published MMDB and the SQLite file in R2 and
+// replaces both on the release.
+func (p *Pipeline) publishFiles(ctx context.Context, r2 r2Putter, release releaseReplacer, src Source, date time.Time, mmdbPath, sqlitePath string, out *PublishOutput) error {
+	pubPath, err := p.convertPublished(ctx, date, mmdbPath)
+	if err != nil {
+		return err
+	}
 	folder := date.Format(dateFolderShape)
-	for _, path := range []string{mmdbPath, sqlitePath} {
+	for _, path := range []string{pubPath, sqlitePath} {
 		location, status, err := r2.Put(ctx, folder+"/"+filepath.Base(path), path, publish.PutOptions{})
 		if err != nil {
-			return out, err
+			return err
 		}
 		p.log("publish: %s (%s)", location, status)
 		out.R2 = append(out.R2, location)
@@ -348,25 +366,29 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath
 		}
 		out.Bytes += outputs.FileSize(path)
 	}
-
 	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB and the asn SQLite database.\n\nBuilt: %s\nSource: %s@%s",
 		date.Format(dateFolderShape), strings.TrimPrefix(sourceRepoURL, "https://github.com/"), src.Commit)
-	if err := p.publishRelease(ctx, release, mmdbPath, sqlitePath, body, &out); err != nil {
-		return out, err
-	}
-
-	if err := p.publishCompat(ctx, r2, release, date, mmdbPath, &out); err != nil {
-		return out, err
-	}
-
-	if err := publish.Ping(ctx, p.HCPing); err != nil {
-		p.log("publish: %v", err) // the uploads succeeded; a missed ping only delays the alert
-	}
-	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
-	return out, nil
+	return p.publishRelease(ctx, release, pubPath, sqlitePath, body, out)
 }
 
-// publishRelease replaces the MMDB, then the SQLite file, on the rolling release. If
+// convertPublished runs "mmdbbuilder convert" and returns the published file's path.
+func (p *Pipeline) convertPublished(ctx context.Context, date time.Time, mmdbPath string) (string, error) {
+	path := filepath.Join(filepath.Dir(mmdbPath), fmt.Sprintf(publishedFmt, date.Format(dateTagLayout)))
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, p.MMDBBuilder, "convert", "-db", mmdbPath, "-out", path)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return "", cerr
+		}
+		return "", fmt.Errorf("%w: mmdbbuilder convert: %w: %s", errConvert, err, outputs.LastLines(stderr.String(), 5))
+	}
+	p.log("publish: %s", strings.TrimSpace(stdout.String()))
+	return path, nil
+}
+
+// publishRelease replaces the published MMDB, then the SQLite file, on the rolling release. If
 // the MMDB is replaced and the SQLite upload then fails, the task fails (the error
 // is returned, out keeps what was done, and Publish sends no health-check ping), so
 // the half-updated release is seen; nothing is rolled back, and the next run
@@ -388,47 +410,6 @@ func (p *Pipeline) publishRelease(ctx context.Context, release releaseReplacer, 
 	}
 	out.ReleaseSQLiteUnchanged = !replaced
 	p.log("publish: %s (%s)", out.ReleaseSQLiteURL, uploadedOrUnchanged(replaced))
-	return nil
-}
-
-// publishCompat converts the published MMDB into the GeoLite2-ASN layout and puts it
-// next to the flat file (R2 key in the same date folder, release asset compatAsset,
-// the release text kept). Any problem gives a "failed: <fixed reason>" status (the
-// detail goes to the log through the builder's own error) and never an error; only a
-// cancelled context is returned.
-func (p *Pipeline) publishCompat(ctx context.Context, r2 r2Putter, release releaseReplacer, date time.Time, mmdbPath string, out *PublishOutput) error {
-	fail := func(reason string, err error) error {
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-		out.Compat = "failed: " + reason
-		p.log("publish: %s file: %s: %v", compatAsset, reason, err)
-		return nil
-	}
-	path := filepath.Join(filepath.Dir(mmdbPath), fmt.Sprintf(compatFileFmt, date.Format(dateTagLayout)))
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, p.MMDBBuilder, "convert", "-db", mmdbPath, "-out", path)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fail("convert failed", fmt.Errorf("mmdbbuilder convert: %w: %s", err, outputs.LastLines(stderr.String(), 5)))
-	}
-	p.log("publish: %s", strings.TrimSpace(stdout.String()))
-	out.CompatBytes = outputs.FileSize(path)
-	location, r2Status, err := r2.Put(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(path), path, publish.PutOptions{})
-	if err != nil {
-		return fail("R2 upload failed", err)
-	}
-	p.log("publish: %s (%s)", location, r2Status)
-	link, replaced, err := release.Replace(ctx, path, compatAsset, "")
-	if err != nil {
-		return fail("release upload failed", err)
-	}
-	p.log("publish: %s (%s)", link, uploadedOrUnchanged(replaced))
-	out.Compat = "uploaded"
-	if r2Status == publish.PutUnchanged && !replaced {
-		out.Compat = "unchanged"
-	}
 	return nil
 }
 

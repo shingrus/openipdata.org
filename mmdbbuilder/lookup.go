@@ -223,6 +223,10 @@ func writeCitiesSource(mmdbPath, inPath, outPath string, withSource, withCountri
 		return stats, err
 	}
 	defer reader.Close()
+	layout, err := detectLayout(reader)
+	if err != nil {
+		return stats, err
+	}
 	in, err := os.Open(inPath)
 	if err != nil {
 		return stats, err
@@ -256,7 +260,7 @@ func writeCitiesSource(mmdbPath, inPath, outPath string, withSource, withCountri
 		if !result.Found() {
 			continue
 		}
-		country, city, source, err := evidenceRecord(result, isGuessSource)
+		country, city, source, err := layout.evidence(result, isGuessSource)
 		if err != nil {
 			stats.failed++
 			continue

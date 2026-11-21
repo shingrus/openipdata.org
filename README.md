@@ -72,12 +72,12 @@ asn-ip data plus the latest PeeringDB data and domains. `update-asn-domains` and
 | `ingest` | `sync-source` | parses `as/*/aggregated.json` and upserts changed rows into `public.asn` |
 | `build-mmdb` | `ingest` | runs `mmdbbuilder asn` on the synced files → `ip2asn-openipdata-<date>.mmdb` |
 | `export-sqlite` | `ingest` | writes a fresh `asn.sqlite3` (`asn`, `asn_domain`, `asn_geo_pdb`) from Postgres-backed data |
-| `publish` | `build-mmdb`, `export-sqlite` | uploads both files to R2 under `<YYYY-MM-DD>/`, replaces the MMDB and the SQLite file on the rolling GitHub release, pings `HC_PING_ASN` if set |
+| `publish` | `build-mmdb`, `export-sqlite` | runs `mmdbbuilder convert` on the flat MMDB (a failure fails `publish` before anything is uploaded), uploads the converted `openipdata-org-ip2asn-<YYYYMMDD>.mmdb` and the SQLite file to R2 under `<YYYY-MM-DD>/`, replaces `openipdata-org-ip2asn.mmdb` and the SQLite file on the rolling GitHub release, pings `HC_PING_ASN` if set. The flat MMDB is never uploaded |
 
 - Every task checks that the asn-ip checkout is still at the synced commit.
 - Outputs land in `/var/lib/openipdata/out/asn/<date>/`; the newest 3 builds are kept.
-- Published copies: `r2://<bucket>/<YYYY-MM-DD>/ip2asn-openipdata-<YYYYMMDD>.mmdb` and `.../asn.sqlite3`;
-  the MMDB is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2asn-openipdata.mmdb` and the SQLite file at `.../releases/latest/download/asn-openipdata.sqlite3`.
+- Published copies: `r2://<bucket>/<YYYY-MM-DD>/openipdata-org-ip2asn-<YYYYMMDD>.mmdb` and `.../asn.sqlite3`;
+  the MMDB is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/openipdata-org-ip2asn.mmdb` and the SQLite file at `.../releases/latest/download/asn-openipdata.sqlite3`.
 - Publishing needs `R2` and `GITHUB_TOKEN`; a missing setting fails `sync-source`, before the build, without retries. Manual runs can pass
   `{"skip_publish": true}` (or `run-asn -skip-publish`) to build without uploading.
 - Old R2 date folders are removed by a lifecycle rule on the bucket, not by the worker.
@@ -576,7 +576,7 @@ with a city) are kept with their class in `holders.csv`. From them and from the 
 ### `build-geo-data` (`hatchet/geo/`, cron `0 7,19 * * *` UTC)
 
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
-layers before it put under its prefixes. A record has `country_code`, `country_name`, `city_name` and,
+layers before it put under its prefixes. This is the flat build output (internal; `publish` converts it, see below). A flat record has `country_code`, `country_name`, `city_name` and,
 when it has a city, `city_source`: the name of the layer file without `.csv.gz` (e.g. `70-geofeeds`) that wrote
 the city (a record without a city has none). When the build has GeoNames, a record whose city GeoNames
 places (country + name, the most populous place on a clash: the same rule `eval` uses) also has `latitude` and
@@ -642,7 +642,7 @@ city of its own layer's broader row; IPv6 rows replace as before: the rule was m
 | `download` | | empties the layers directory and rebuilds the layer files: RIR stats and geo-ip-blocks from the web, PeeringDB rows and exchange prefixes from Postgres, the whois and geofeed layers from R2. Of `public.asn.json` the `download` task reads only the `prefixes` object (an SQL fragment shared with the announced-prefix read; a document Postgres cannot read as JSON makes the read repeat with the whole json) |
 | `build-mmdb` | `download` | makes the GeoNames copy available, runs `mmdbbuilder geo` on all the layer files (with `-geonames` when the copy is there, `-asn-main` when `download` saved the ASN prefixes, and always `-fallback`) → `ip2geo-openipdata-<date>.mmdb`; the output says `coordinates: on` or `skipped: <reason>`, with the counts of placed and unplaced cities, `asn_main`: `on`, `skipped: no ASN prefixes` or `skipped: ASN prefixes unreadable` (a bad file never fails the build), `holder_city`: `on`, `skipped: no ASN prefixes`, `skipped: no holder blocks` or `skipped: holder blocks unreadable` (`-holders`, the guess `85-holder-city`), and `fallback`: `on` (the guesses `82-asn-likely`, `84-asn-near` and `86-country-main`; without the ASN prefixes only the last one runs) |
 | `evaluate` | `download`, `build-mmdb` | scores the MMDB and the reference databases (DB-IP, MaxMind GeoLite2) against RIPE Atlas (country and city) and our MMDB against a geofeed holdout (`mmdbbuilder eval`) and stores the scores in `public.geo_eval` |
-| `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, uploads the MMDB to R2 under `<YYYY-MM-DD>/`, replaces it on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set |
+| `publish` | `download`, `build-mmdb`, `evaluate` | checks the scores against the last published ones, converts the stamped flat MMDB with `mmdbbuilder convert` into the GeoLite2-City layout (`openipdata-org-ip2geo-<YYYYMMDD>.mmdb`, database type `OpenIPData-City`; a failure fails `publish` before anything is uploaded; if only the GeoNames part fails it is converted again without GeoNames), uploads that file to R2 under `<YYYY-MM-DD>/`, replaces `openipdata-org-ip2geo.mmdb` on the rolling GitHub release, marks the scores as published, pings `HC_PING_GEO` if set. The flat file is never uploaded |
 
 A problem with the evaluation itself (holdout, `mmdbbuilder eval`, Postgres) does not fail the
 `evaluate` task: it is logged and stored in its output as `error`, and `publish` then refuses with
@@ -650,13 +650,13 @@ a non-retryable error until a run with `{"force_publish": true}`. A retry of `ev
 unpublished `public.geo_eval` row of the same date.
 
 Metadata: at its end `evaluate` stamps the built MMDB in place (`mmdbbuilder stamp`, through a `.tmp`
-file and a rename), so the file that `publish` uploads carries its own numbers. `description.en` becomes
+file and a rename), so the file that `publish` converts (the conversion carries the description over) carries its own numbers. `description.en` becomes
 `openipdata.org ip2geo, built <date> <time> UTC` and `description.openipdata` holds a compact JSON
 object: `built_at`, `date_tag`, `eval_id`, `metrics` (the `public.geo_eval` scores) and `eval_error` when the evaluation failed. Only the metadata
 section is rewritten; the search tree and the data are byte for byte the same, so lookups are
 unchanged. Read it with Node `maxmind`: `JSON.parse(reader.metadata.description.openipdata)`, or Go:
 `reader.Metadata.Description["openipdata"]`. A stamp failure does not block publishing: the task
-output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is published.
+output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is converted and published.
 
 - Layers, in order (`38-asn-geofeed`, optional, is described after the list):
   1. `10-rir`: the five RIRs' delegated stats: the country each block was delegated to (IPv4 and IPv6);
@@ -803,7 +803,7 @@ output has `stamp` (`stamped` or `failed: <reason>`) and the unstamped file is p
 - The health check ping skipped for a missing or old R2 layer (see above) makes the health check report
   that `sync-geofeeds` has stopped delivering.
 - Outputs land in `/var/lib/openipdata/out/geo/<date>/`; the newest 3 builds are kept. The MMDB
-  is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/ip2geo-openipdata.mmdb`.
+  is always at `https://github.com/shingrus/openipdata.org/releases/latest/download/openipdata-org-ip2geo.mmdb`.
 - Needs `PGSQL` and `R2` always, and `GITHUB_TOKEN` to publish; a missing setting fails
   `download` without retries. `MAXMIND_LICENSE_KEY` is optional (see below). Manual runs can pass
   `{"skip_publish": true}` (or `run-geo -skip-publish`) to build and evaluate without uploading,
@@ -1024,9 +1024,10 @@ mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <f>] [-maxmind <f
 mmdbbuilder lookup -db <file.mmdb>             # look up builtin public resolver IPs, print a summary
 mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
-mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv  # ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
+mmdbbuilder lookup -db <ip2geo.mmdb or published City file> -in ips.txt -out cities.tsv  # reads both layouts; ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
-mmdbbuilder gaps -db <ip2geo.mmdb> -out gaps.txt  # the IPv4 /24s with a country and no city (a city from one of the seven guesses 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far, 89-asn-anywhere, or from 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder gaps -db <ip2geo.mmdb or published City file> -out gaps.txt  # reads both layouts; the IPv4 /24s with a country and no city (a city from one of the seven guesses 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far, 89-asn-anywhere, or from 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder convert -db <ip2geo.mmdb|ip2asn.mmdb> -out <file.mmdb> [-geonames <cities1000.txt>]  # the published layouts: ip2geo -> GeoLite2-City layout (database_type OpenIPData-City: country.iso_code, city.names.en, location, extra city_source), ip2asn -> GeoLite2-ASN layout (OpenIPData-ASN (compat=GeoLite2-ASN)); used by publish
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```
 

@@ -84,13 +84,13 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | --- | --- | --- | --- |
 | `sync-peeringdb` | `download` → `compute-and-store` | `public.asn_geo_pdb`, `public.geo_ix_pdb` (one transaction; refuses a >10% shrink) | — |
 | `update-asn-domains` | `pdb-domains` → `rdap-domains` (≤3,000 ASNs a run) | `public.asn_domain` | — |
-| `build-asn-data` | `sync-source` → `ingest` → `build-mmdb` + `export-sqlite` → `publish` | `public.asn` (incl. `seen_at`) | `ip2asn-openipdata.mmdb`, `asn.sqlite3` |
+| `build-asn-data` | `sync-source` → `ingest` → `build-mmdb` + `export-sqlite` → `publish` | `public.asn` (incl. `seen_at`) | `openipdata-org-ip2asn.mmdb` (converted in `publish`), `asn.sqlite3` |
 | `sync-geofeeds` | `rdap-lookups`, `probe-domains` and `search-github` beside `discover` → `check-feeds` → `export-rows` | `public.geofeed_urls`; layers `37-whois-text`, `39-github-geofeeds`, `60-whois` and `70-geofeeds` to private R2 | nothing |
 | `sync-bgp` | `download` → `extract` → `upload` | the BGP community values of every IPv4 prefix to private R2 (`internal/bgp/communities.csv.gz`) | nothing |
 | `sync-arin-whois` | `lookup` → `export` → `upload` | records file on the VM; layer `37-whois-arin` to private R2 (`internal/layers/37-whois-arin.csv.gz`) a daily copy of the records (`internal/arin/records.csv.gz`) and of the holders file (`internal/arin/holders.csv.gz`) | nothing |
 | `import-mlab` | `import` → `resolve-names` → `locate` → `upload` | `public.mlab_hop_names`; layer `36-mlab` to private R2 (`internal/layers/36-mlab.csv.gz`) | nothing |
 | `import-mlab-sites` | `site-layer` | layer `35-speedtest-site` to private R2 (`internal/layers/35-speedtest-site.csv.gz`) | nothing |
-| `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `ip2geo-openipdata.mmdb` |
+| `build-geo-data` | `download` → `build-mmdb` → `evaluate` → `publish` | `public.geo_eval` | `openipdata-org-ip2geo.mmdb` (converted in `publish`) |
 | `resolve-ips` | `pick-networks` → `trace` → `resolve-names` → `sample-names` → `locate` | `public.network_traces`, `public.ip_ptr_names`, `public.customer_name_networks`, `public.rdns_geo_layer` (replaced in one transaction; refuses a >10% shrink of the sticky traced rows; candidate, wide and named rows are only counted) | — |
 | `learn-rdns-rules` | `learn` → `import-hoiho` → `propose-codes` (they share the dictionary cache files) | `public.rdns_city_rules` (ranks 1-3 by `learn`, atomic; rank 4 and scoped overrides by `propose-codes`), `public.rdns_hoiho_rules` and `public.rdns_hoiho_rejected_domains` (`import-hoiho`, `-reject-hoiho`), `public.rdns_llm_answers` | — |
 
@@ -210,7 +210,7 @@ Each table has exactly one writer; data between workflows goes through these tab
 | `public.generated_rules` | written outside this repo | `resolve-ips` `locate` (read only) |
 | `hostname_reviews` | written outside this repo | nobody yet |
 
-**Published:** `ip2asn-openipdata.mmdb` and `asn.sqlite3` (R2 date folder + rolling GitHub release), `ip2geo-openipdata.mmdb` (R2 + GitHub release, `releases/latest/download/`).
+**Published:** `openipdata-org-ip2asn.mmdb` and `asn.sqlite3` (R2 date folder + rolling GitHub release), `openipdata-org-ip2geo.mmdb` (R2 + GitHub release, `releases/latest/download/`). Both MMDBs are made by `mmdbbuilder convert` from the flat build outputs `ip2asn-openipdata-<date>.mmdb` and `ip2geo-openipdata-<date>.mmdb` (internal, never uploaded) into the GeoLite2-ASN and GeoLite2-City layouts (`OpenIPData-ASN (compat=GeoLite2-ASN)`, `OpenIPData-City`); a failed conversion fails `publish` before any upload.
 
 ## ip2geo layers
 

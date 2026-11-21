@@ -311,8 +311,8 @@ func (f *fakeStore) DownloadIfChanged(ctx context.Context, key, path, etag strin
 var testNow = time.Date(2026, 11, 12, 0, 30, 0, 0, time.UTC)
 
 const (
-	todayKey     = "2026-11-12/ip2geo-openipdata-20261112.mmdb"
-	yesterdayKey = "2026-11-11/ip2geo-openipdata-20261111.mmdb"
+	todayKey     = "2026-11-12/openipdata-org-ip2geo-20261112.mmdb"
+	yesterdayKey = "2026-11-11/openipdata-org-ip2geo-20261111.mmdb"
 )
 
 func testPipeline(t *testing.T, store objectStore) (*Pipeline, *[]string) {

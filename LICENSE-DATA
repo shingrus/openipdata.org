@@ -3,14 +3,15 @@ openipdata.org data licence
 The published data files are dedicated to the public domain under
 CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/):
 
-  ip2geo-openipdata.mmdb
   openipdata-org-ip2geo.mmdb
-  ip2asn-openipdata.mmdb
   openipdata-org-ip2asn.mmdb
   asn-openipdata.sqlite3
 
 on the GitHub releases of this repository and in the R2 bucket. Use them for
 any purpose, without asking and without attribution.
+
+The two older file names ip2geo-openipdata.mmdb and ip2asn-openipdata.mmdb are
+no longer updated (the last copies stay on the release for now).
 
 The code of this repository is under the MIT licence (see LICENSE).
 

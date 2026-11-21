@@ -781,7 +781,7 @@ func TestIntegrationSampleNamesAndNamedRows(t *testing.T) {
 	w.p.now = func() time.Time { return clock }
 	store := newFakeStore()
 	store.put(todayKey, "e1", "mmdb")
-	store.put("2027-05-12/ip2geo-openipdata-20270512.mmdb", "e1", "mmdb")
+	store.put("2027-05-12/openipdata-org-ip2geo-20270512.mmdb", "e1", "mmdb")
 	w.p.store = store
 	w.p.lookup = func(_ context.Context, _, _, out string) error { return os.WriteFile(out, nil, 0o640) }
 	// The gap: 30.0.1.0/24 and 30.0.2.0/24 (DE), 30.0.3.0/24 (US).

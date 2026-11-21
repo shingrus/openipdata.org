@@ -80,6 +80,10 @@ func writeGaps(mmdbPath, outPath string) (gapStats, error) {
 		return stats, err
 	}
 	defer reader.Close()
+	layout, err := detectLayout(reader)
+	if err != nil {
+		return stats, err
+	}
 	tmp := outPath + ".tmp"
 	out, err := os.Create(tmp)
 	if err != nil {
@@ -114,7 +118,7 @@ func writeGaps(mmdbPath, outPath string) (gapStats, error) {
 		} else if a != p.Addr() {
 			p = netip.PrefixFrom(a, p.Bits()-96)
 		}
-		country, city, err := gapFields(res)
+		country, city, err := gapFields(layout, res)
 		if err != nil {
 			out.Close()
 			return stats, err

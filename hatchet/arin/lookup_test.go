@@ -194,7 +194,7 @@ func newEnv(t *testing.T, rdap *rdapServer, gapN int) *env {
 	stats := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(statsText)) }))
 	t.Cleanup(stats.Close)
 	e.store = &fakeObjects{objects: map[string]publish.ObjectInfo{
-		fmt.Sprintf("%s/ip2geo-openipdata-%s.mmdb", testNow.Format("2006-01-02"), testNow.Format("20060102")): {ETag: "e1"},
+		fmt.Sprintf("%s/openipdata-org-ip2geo-%s.mmdb", testNow.Format("2006-01-02"), testNow.Format("20060102")): {ETag: "e1"},
 	}}
 	e.p = &Pipeline{
 		DataDir:  t.TempDir(),

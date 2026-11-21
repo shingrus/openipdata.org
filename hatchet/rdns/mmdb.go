@@ -27,8 +27,8 @@ const (
 	hopsInFile     = "mmdb-hops.txt" // the router IPs to look up, one per line; removed after the run
 	hopsOutFile    = "mmdb-hops.tsv" // mmdbbuilder lookup's answer: ip, country, city; removed after the run
 
-	// The key shape build-geo-data publishes under: <YYYY-MM-DD>/ip2geo-openipdata-<YYYYMMDD>.mmdb.
-	mmdbKeyFormat    = "%s/ip2geo-openipdata-%s.mmdb"
+	// The key shape build-geo-data publishes under: <YYYY-MM-DD>/openipdata-org-ip2geo-<YYYYMMDD>.mmdb.
+	mmdbKeyFormat    = "%s/openipdata-org-ip2geo-%s.mmdb"
 	mmdbFolderLayout = "2006-01-02"
 	mmdbTagLayout    = "20060102"
 

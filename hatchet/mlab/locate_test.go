@@ -303,7 +303,7 @@ func TestLocateRulesAndMMDB(t *testing.T) {
 	p.store = objects
 	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	p.now = func() time.Time { return now }
-	objects.have["2026-11-14/ip2geo-openipdata-20261114.mmdb"] = true // today's is not there yet: yesterday's
+	objects.have["2026-11-14/openipdata-org-ip2geo-20261114.mmdb"] = true // today's is not there yet: yesterday's
 	var asked []string
 	inner := p.lookup
 	p.lookup = func(ctx context.Context, db, in, out string) error {
@@ -418,7 +418,7 @@ func TestLocateMMDBOnlyAndSkips(t *testing.T) {
 
 func mmdbKeyOf(day time.Time) string {
 	day = day.UTC()
-	return day.Format("2006-01-02") + "/ip2geo-openipdata-" + day.Format("20060102") + ".mmdb"
+	return day.Format("2006-01-02") + "/openipdata-org-ip2geo-" + day.Format("20060102") + ".mmdb"
 }
 
 func readLayer(t *testing.T, path string) string {

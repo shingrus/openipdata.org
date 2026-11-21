@@ -104,10 +104,9 @@ import (
 )
 
 const (
-	mmdbFileFormat  = "ip2geo-openipdata-%s.mmdb"
-	releaseAsset    = "ip2geo-openipdata.mmdb"
-	compatAsset     = "openipdata-org-ip2geo.mmdb" // the GeoLite2-City layout of the same data
-	compatFileFmt   = "openipdata-org-ip2geo-%s.mmdb"
+	mmdbFileFormat  = "ip2geo-openipdata-%s.mmdb"  // the internal flat build output, never published
+	releaseAsset    = "openipdata-org-ip2geo.mmdb" // the published file (GeoLite2-City layout)
+	publishedFmt    = "openipdata-org-ip2geo-%s.mmdb"
 	keepOutputDirs  = 3
 	dateTagLayout   = "20060102"
 	dateFolderShape = "2006-01-02"
@@ -990,7 +989,8 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	return out, nil
 }
 
-// PublishOutput lists where the MMDB went.
+// PublishOutput lists where the published MMDB (the GeoLite2-City layout file
+// made by "mmdbbuilder convert", not the internal flat build output) went.
 type PublishOutput struct {
 	Skipped         bool    `json:"skipped,omitempty"`
 	R2              string  `json:"r2,omitempty"`
@@ -1001,70 +1001,80 @@ type PublishOutput struct {
 	// R2 compares the object's sha256 metadata, the release the asset's digest.
 	R2Unchanged      bool `json:"r2_unchanged,omitempty"`
 	ReleaseUnchanged bool `json:"release_unchanged,omitempty"`
-	// Compat is the GeoLite2-layout file made by "mmdbbuilder convert": "uploaded",
-	// "unchanged" (R2 and the release both already had it) or "failed: <fixed reason>".
-	// A failure never fails Publish.
-	Compat      string `json:"compat,omitempty"`
-	CompatBytes int64  `json:"compat_bytes,omitempty"`
-	// CompatGeoNames is "on" (geoname_id and time zone of placed cities) or "skipped: no GeoNames copy".
-	CompatGeoNames string `json:"compat_geonames,omitempty"`
+	// GeoNames is "on" (geoname_id and time zone of placed cities) or "skipped: no GeoNames copy".
+	GeoNames string `json:"geonames,omitempty"`
 }
 
-// convertCompat runs "mmdbbuilder convert" for the MMDB at mmdbPath and returns the new
-// file's path. It only uses an existing GeoNames copy, never downloads one.
-func (p *Pipeline) convertCompat(ctx context.Context, date time.Time, mmdbPath string, out *PublishOutput) (string, error) {
-	path := filepath.Join(filepath.Dir(mmdbPath), fmt.Sprintf(compatFileFmt, date.Format(dateTagLayout)))
+// errConvert is the fixed error of a failed conversion; the builder's own
+// (scrubbed) last stderr lines follow it, as runBuilder gives them.
+var errConvert = errors.New("convert to the published layout failed")
+
+// convertPublished runs "mmdbbuilder convert" for the flat MMDB at mmdbPath and
+// returns the published file's path (next to it). It only uses an existing
+// GeoNames copy, never downloads one. When the convert with the GeoNames copy fails
+// (the copy may be unreadable beyond its first line), it runs once more without it;
+// only a failure of that run is an error.
+func (p *Pipeline) convertPublished(ctx context.Context, date time.Time, mmdbPath string, out *PublishOutput) (string, error) {
+	path := filepath.Join(filepath.Dir(mmdbPath), fmt.Sprintf(publishedFmt, date.Format(dateTagLayout)))
 	args := []string{"convert", "-db", mmdbPath, "-out", path}
-	out.CompatGeoNames = "skipped: no GeoNames copy"
+	out.GeoNames = "skipped: no GeoNames copy"
+	var stdout string
+	var err error
 	if txt := filepath.Join(p.evalDir(), geonamesEntry); looksLikeGeoNames(txt) {
-		args = append(args, "-geonames", txt)
-		out.CompatGeoNames = "on"
+		out.GeoNames = "on"
+		stdout, err = p.runBuilder(ctx, append(slices.Clone(args), "-geonames", txt))
+		if err != nil && ctx.Err() == nil {
+			p.log("publish: convert with GeoNames failed, converting without it: %v", err)
+			out.GeoNames = "skipped: convert failed with GeoNames"
+			stdout, err = p.runBuilder(ctx, args)
+		}
+	} else {
+		stdout, err = p.runBuilder(ctx, args)
 	}
-	stdout, err := p.runBuilder(ctx, args)
 	if err != nil {
-		return "", err
+		if cerr := ctx.Err(); cerr != nil {
+			return "", cerr
+		}
+		return "", fmt.Errorf("%w: %w", errConvert, err)
 	}
 	p.log("publish: %s", strings.TrimSpace(stdout))
-	out.CompatBytes = outputs.FileSize(path)
 	return path, nil
 }
 
-// publishCompat converts the published MMDB into the GeoLite2-City layout and
-// puts it next to the flat file (R2 key in the same date folder, release asset
-// compatAsset). Any problem gives a "failed: <fixed reason>" status (the detail
-// goes to the log through the builder's own scrubbed error) and never an error;
-// only a cancelled context is returned.
-func (p *Pipeline) publishCompat(ctx context.Context, r2 *publish.R2, release *publish.Release, date time.Time, mmdbPath string, out *PublishOutput) error {
-	fail := func(reason string, err error) error {
-		if cerr := ctx.Err(); cerr != nil {
-			return cerr
-		}
-		out.Compat = "failed: " + reason
-		p.log("publish: %s file: %s: %v", compatAsset, reason, err)
-		return nil
-	}
-	path, err := p.convertCompat(ctx, date, mmdbPath, out)
+// r2Putter is what publishFiles needs from R2 (tests fake it).
+type r2Putter interface {
+	Put(ctx context.Context, key, path string, opts publish.PutOptions) (string, publish.PutStatus, error)
+}
+
+// releaseReplacer is what publishFiles needs from the GitHub release (tests fake it).
+type releaseReplacer interface {
+	Replace(ctx context.Context, path, assetName, body string) (link string, replaced bool, err error)
+}
+
+// publishFiles converts the flat MMDB, then puts the converted file in R2 under
+// <date folder>/ and replaces it on the release. A failed step stops the later ones.
+func (p *Pipeline) publishFiles(ctx context.Context, r2 r2Putter, release releaseReplacer, date time.Time, mmdbPath string, out *PublishOutput) error {
+	pubPath, err := p.convertPublished(ctx, date, mmdbPath, out)
 	if err != nil {
-		return fail("convert failed", err)
+		return err
 	}
-	location, r2Status, err := r2.Put(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(path), path, publish.PutOptions{})
-	if err != nil {
-		return fail("R2 upload failed", err)
+	var r2Status publish.PutStatus
+	if out.R2, r2Status, err = r2.Put(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(pubPath), pubPath, publish.PutOptions{}); err != nil {
+		return err
 	}
-	p.log("publish: %s (%s)", location, r2Status)
-	link, replaced, err := release.Replace(ctx, path, compatAsset, "")
-	if err != nil {
-		return fail("release upload failed", err)
+	out.R2Unchanged = r2Status == publish.PutUnchanged
+	p.log("publish: %s (%s)", out.R2, r2Status)
+	out.Bytes = outputs.FileSize(pubPath)
+	var replaced bool
+	if out.ReleaseURL, replaced, err = release.Replace(ctx, pubPath, releaseAsset, ""); err != nil {
+		return err
 	}
-	status := "uploaded"
+	out.ReleaseUnchanged = !replaced
+	releaseStatus := "uploaded"
 	if !replaced {
-		status = "unchanged"
+		releaseStatus = "unchanged"
 	}
-	p.log("publish: %s (%s)", link, status)
-	out.Compat = "uploaded"
-	if r2Status == publish.PutUnchanged && !replaced {
-		out.Compat = "unchanged"
-	}
+	p.log("publish: %s (%s)", out.ReleaseURL, releaseStatus)
 	return nil
 }
 
@@ -1081,7 +1091,9 @@ func evalFailure(ev EvalOutput) string {
 }
 
 // Publish first checks the publish gate against the latest published scores
-// (ErrGate; force skips it), then uploads the MMDB to R2 under <YYYY-MM-DD>/,
+// (ErrGate; force skips it), then converts the flat build output at mmdbPath into
+// the published GeoLite2-City layout file (a failed conversion fails Publish before
+// anything is uploaded), uploads that file to R2 under <YYYY-MM-DD>/,
 // replaces it on the rolling GitHub release (leaving the release text, which
 // build-asn-data writes), each only when the file there is not already
 // byte-identical (the identical file is the published file), marks ev's row in public.geo_eval as published, and
@@ -1114,24 +1126,7 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath string, ev 
 	} else if err := p.CheckGate(ctx, ev); err != nil {
 		return out, err
 	}
-	var r2Status publish.PutStatus
-	if out.R2, r2Status, err = r2.Put(ctx, date.Format(dateFolderShape)+"/"+filepath.Base(mmdbPath), mmdbPath, publish.PutOptions{}); err != nil {
-		return out, err
-	}
-	out.R2Unchanged = r2Status == publish.PutUnchanged
-	p.log("publish: %s (%s)", out.R2, r2Status)
-	out.Bytes = outputs.FileSize(mmdbPath)
-	var replaced bool
-	if out.ReleaseURL, replaced, err = release.Replace(ctx, mmdbPath, releaseAsset, ""); err != nil {
-		return out, err
-	}
-	out.ReleaseUnchanged = !replaced
-	releaseStatus := "uploaded"
-	if !replaced {
-		releaseStatus = "unchanged"
-	}
-	p.log("publish: %s (%s)", out.ReleaseURL, releaseStatus)
-	if err := p.publishCompat(ctx, r2, release, date, mmdbPath, &out); err != nil {
+	if err := p.publishFiles(ctx, r2, release, date, mmdbPath, &out); err != nil {
 		return out, err
 	}
 	if ev.ID == 0 {
