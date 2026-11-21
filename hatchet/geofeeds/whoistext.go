@@ -169,8 +169,9 @@ func latin1(s string) string {
 
 // textPlace is a GeoNames place that a text can name.
 type textPlace struct {
-	name string // the main name: the city written to the layer
-	pop  int
+	name   string // the main name: the city written to the layer
+	pop    int
+	inCity bool // a big city lies within districtKm (see whoisdistricts.go); set once by markCities
 }
 
 // nameIndex finds the place a word group names: the key is the country, "|" and
@@ -200,7 +201,7 @@ func (x *nameIndex) bigger(a, b int32) bool {
 // A name counts when it is made of Latin letters and has at most maxTextWords words.
 func (x *nameIndex) add(country, name, ascii, alternates string, pop int) {
 	id := int32(len(x.places))
-	x.places = append(x.places, textPlace{name, pop})
+	x.places = append(x.places, textPlace{name: name, pop: pop})
 	one := func(n string) {
 		words, other, dropped := normText(n)
 		if other || dropped || len(words) == 0 || len(words) > maxTextWords {
@@ -252,9 +253,10 @@ func (x *nameIndex) fieldCity(country string, words []string) (int32, bool) {
 // object of the country name: of all word groups of 1 to 3 words within a line
 // that are the name of a place of the country, the longest wins, then the more
 // populous place, then the smaller name. Groups on the ignore list are not names.
-func (x *nameIndex) textCity(country string, lines [][]string) (best int32, ok bool) {
+// matched is the key of the winning group ("CC|words"), what isDistrictName needs.
+func (x *nameIndex) textCity(country string, lines [][]string) (best int32, matched string, ok bool) {
 	bestWords := 0
-	var key []byte
+	var key, bestKey []byte
 	for _, words := range lines {
 		for n := 1; n <= maxTextWords && n <= len(words); n++ {
 			for i := 0; i+n <= len(words); i++ {
@@ -275,11 +277,12 @@ func (x *nameIndex) textCity(country string, lines [][]string) (best int32, ok b
 				}
 				if n > bestWords || n == bestWords && x.bigger(id, best) {
 					best, bestWords, ok = id, n, true
+					bestKey = append(bestKey[:0], key...)
 				}
 			}
 		}
 	}
-	return best, ok
+	return best, string(bestKey), ok
 }
 
 // textBlock is an IPv4 inetnum whose text names a city. place is an index into
@@ -376,7 +379,14 @@ func (t *textReader) read(obj []attr, x *nameIndex, registry uint8) {
 		lines = append(lines, words)
 	}
 	if !found {
-		id, found = x.textCity(country, lines)
+		var matched string
+		id, matched, found = x.textCity(country, lines)
+		// Only a match of the text rules (not the LACNIC city: field, which was not
+		// measured): see whoisdistricts.go.
+		if found && x.isDistrictName(id, matched) {
+			t.drop(dropDistrict)
+			return
+		}
 	}
 	if !found {
 		return

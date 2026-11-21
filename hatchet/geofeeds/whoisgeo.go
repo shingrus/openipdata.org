@@ -229,6 +229,8 @@ func readPlaces(path string) (placeIndex, *nameIndex, error) {
 	}
 	defer text.Close()
 	index, names, n := placeIndex{}, newNameIndex(), 0
+	var coords [][2]float64 // the point and country of each place of names, for markCities
+	var ccs []string
 	sc := bufio.NewScanner(text)
 	sc.Buffer(make([]byte, 64*1024), maxLine)
 	for sc.Scan() {
@@ -244,6 +246,7 @@ func readPlaces(path string) (placeIndex, *nameIndex, error) {
 		}
 		index.add(f[8], place{name: f[1], lat: lat, lon: lon, pop: pop})
 		names.add(f[8], f[1], f[2], f[3], pop)
+		coords, ccs = append(coords, [2]float64{lat, lon}), append(ccs, f[8])
 		n++
 	}
 	if err := sc.Err(); err != nil {
@@ -252,6 +255,7 @@ func readPlaces(path string) (placeIndex, *nameIndex, error) {
 	if n == 0 {
 		return nil, nil, fmt.Errorf("no places in %s", geonamesText)
 	}
+	names.markCities(index, coords, ccs)
 	return index, names, nil
 }
 

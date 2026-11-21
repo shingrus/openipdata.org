@@ -1,0 +1,4947 @@
+# City district names that clash with the name of a small place of the same country.
+# Used by the whois text layer (hatchet/geofeeds/whoistext.go): a text match on a place
+# of fewer than 15,000 people outside any big city is dropped when its name is on this
+# list, because the text most likely means the district ("DALSTON" is Dalston in
+# London, not the village in Cumbria).
+# A line is: country code, a tab, a GeoNames name or asciiname of a district.
+# Districts: GeoNames feature code PPLX within 30 km of a place of 100000 or more people
+# of the same country; clash: a place of fewer than 15000 people in cities1000 has the same
+# name or asciiname (letters only, accents folded).
+# Source: GeoNames allCountries and cities1000, downloaded 2026-11-21, CC BY 4.0
+# (https://www.geonames.org/). Made by tools/whoisdistricts:
+#   go run . -all allCountries.zip -cities cities1000.zip -out ../../hatchet/geofeeds/whois-districts.txt
+AE	Al Hamriyah
+AE	Al Ḩamrīyah
+AF	Chahar Qal'ah
+AF	Chahār Qal‘ah
+AF	Qal'ah-ye Kuhnah
+AF	Qal‘ah-ye Kuhnah
+AL	Pojan
+AM	Dzoragyugh
+AM	Haghtanak
+AM	Jrashen
+AM	Lukashin
+AM	Norashen
+AM	Shahumyan
+AO	Chicala
+AR	Bella Vista
+AR	Marcos Paz
+AR	Rivadavia
+AR	San Cristobal
+AR	San Cristóbal
+AR	San Jose
+AR	San José
+AR	Santa Maria
+AR	Santa María
+AR	Union
+AR	Unión
+AR	Villa General Mitre
+AR	Villa Urquiza
+AT	Aich
+AT	Brunn am Gebirge
+AT	Gries
+AT	Haid
+AT	Hausleiten
+AT	Hetzendorf
+AT	Krottendorf
+AT	Lehen
+AT	Lend
+AT	Mauer
+AT	Neue Heimat
+AT	Rudersdorf
+AT	Sankt Leonhard
+AT	Ufer
+AU	Ascot
+AU	Bannockburn
+AU	Beaconsfield
+AU	Belmont
+AU	Bridgewater
+AU	Brighton
+AU	Camperdown
+AU	Charlton
+AU	Chisholm
+AU	Claremont
+AU	Clifton
+AU	Clifton Beach
+AU	Coomera
+AU	Crows Nest
+AU	Currumbin
+AU	Evandale
+AU	Figtree
+AU	Franklin
+AU	Garden Island
+AU	Georgetown
+AU	Gordon
+AU	Grange
+AU	Hamilton
+AU	Happy Valley
+AU	Heathcote
+AU	Hyde Park
+AU	Jolimont
+AU	Kelso
+AU	Kew
+AU	Kingston
+AU	Lawson
+AU	Mansfield
+AU	Margate
+AU	Maylands
+AU	Milton
+AU	Mitcham
+AU	Mitchell
+AU	Monash
+AU	Mortlake
+AU	New Port
+AU	Newport
+AU	North Haven
+AU	Parkes
+AU	Pearce
+AU	Phillip
+AU	Prospect
+AU	Queenscliff
+AU	Queenstown
+AU	Red Hill
+AU	Richmond
+AU	Robertson
+AU	Saint Helena
+AU	Salisbury
+AU	San Remo
+AU	Singleton
+AU	St Leonards
+AU	Stirling
+AU	Stratford
+AU	Wallaroo
+AU	Westcourt
+AU	Wickham
+AU	Williamstown
+AU	Yarrawonga
+AZ	Mincivan
+BD	Kalyanpur
+BD	Narayanpur
+BD	Narayānpur
+BE	Beaumont
+BE	Neuville
+BG	Belitsa
+BO	Independencia
+BO	Villa Charcas
+BR	Agua Boa
+BR	Agua Branca
+BR	Agua Fria
+BR	Agua-branca
+BR	Alecrim
+BR	Alto Paraiso
+BR	Alto Paraíso
+BR	Alvarenga
+BR	Alvorada
+BR	Amaralina
+BR	Amparo
+BR	Anchieta
+BR	Aparecida
+BR	Arapei
+BR	Areado
+BR	Areal
+BR	Areias
+BR	Aricanduva
+BR	Atalaia
+BR	Bananal
+BR	Bandeirante
+BR	Bandeirantes
+BR	Barao
+BR	Barra Funda
+BR	Barro
+BR	Barro Duro
+BR	Barro Preto
+BR	Barão
+BR	Beira Rio
+BR	Belem
+BR	Biquinhas
+BR	Boa Esperanca
+BR	Boa Esperança
+BR	Boa Hora
+BR	Boa Vista
+BR	Bom Jardim
+BR	Bom Jesus
+BR	Bom Retiro
+BR	Bom Sucesso
+BR	Bonfim
+BR	Boqueirao
+BR	Boqueirão
+BR	Borborema
+BR	Brasilandia
+BR	Cachoeirinha
+BR	Caicara
+BR	Caiçara
+BR	Cajueiro
+BR	California
+BR	Califórnia
+BR	Camalau
+BR	Camalaú
+BR	Cambuquira
+BR	Campanario
+BR	Campanário
+BR	Campo Alegre
+BR	Campo Grande
+BR	Campo Novo
+BR	Canaa
+BR	Canaã
+BR	Candeal
+BR	Cantagalo
+BR	Castanheira
+BR	Castanheiras
+BR	Catingueira
+BR	Cedro
+BR	Centenario
+BR	Centenário
+BR	Ceu Azul
+BR	Charrua
+BR	Cidade Nova
+BR	Colorado
+BR	Consolacao
+BR	Consolação
+BR	Coqueiral
+BR	Corumbiara
+BR	Cristal
+BR	Cruzeiro do Sul
+BR	Céu Azul
+BR	Delta
+BR	Diamante
+BR	Dom Aquino
+BR	Dom Bosco
+BR	El Dorado
+BR	Eldorado
+BR	Engenho Velho
+BR	Entre-Rios
+BR	Esmeralda
+BR	Espirito Santo
+BR	Espírito Santo
+BR	Farol
+BR	Fatima
+BR	Figueira
+BR	Floresta
+BR	Formigueiro
+BR	Fátima
+BR	Gamboa
+BR	Glorinha
+BR	Goiabeira
+BR	Graca
+BR	Graça
+BR	Guadalupe
+BR	Guarani
+BR	Guimaraes
+BR	Guimarães
+BR	Heliopolis
+BR	Humaita
+BR	Humaitá
+BR	Iguatemi
+BR	Ilha das Flores
+BR	Imarui
+BR	Independencia
+BR	Independência
+BR	Indianopolis
+BR	Indianópolis
+BR	Inhauma
+BR	Inhaúma
+BR	Ipe
+BR	Ipiranga
+BR	Ipê
+BR	Itacorubi
+BR	Itaguacu
+BR	Itaguaçu
+BR	Itapoa
+BR	Itapoã
+BR	Itapuca
+BR	Itau
+BR	Itaú
+BR	Itinga
+BR	Jacana
+BR	Jambeiro
+BR	Jaqueira
+BR	Jaçanã
+BR	Jesuitas
+BR	Jesuítas
+BR	Jordao
+BR	Jordão
+BR	Jutai
+BR	Jutaí
+BR	Lagamar
+BR	Lagoa
+BR	Lagoa dos Patos
+BR	Lagoinha
+BR	Lajeado
+BR	Laranjal
+BR	Liberdade
+BR	Lobato
+BR	Lourdes
+BR	Maribondo
+BR	Massaranduba
+BR	Mato Grosso
+BR	Milagres
+BR	Mirante
+BR	Moema
+BR	Monte Alegre
+BR	Monte Belo
+BR	Monte Horebe
+BR	Morro Grande
+BR	Morro da Cruz
+BR	Mundo Novo
+BR	Narandiba
+BR	Nazare
+BR	Nazaré
+BR	Nonoai
+BR	Nossa Senhora Aparecida
+BR	Nossa Senhora das Gracas
+BR	Nossa Senhora das Graças
+BR	Nossa Senhora de Nazare
+BR	Nossa Senhora de Nazaré
+BR	Nova Alianca
+BR	Nova Aliança
+BR	Nova America
+BR	Nova América
+BR	Nova Canaa
+BR	Nova Canaã
+BR	Nova Floresta
+BR	Nova Independencia
+BR	Nova Independência
+BR	Nova Uniao
+BR	Nova União
+BR	Nova Veneza
+BR	Novo Brasil
+BR	Novo Horizonte
+BR	Novo Jardim
+BR	Olaria
+BR	Olho d'Agua
+BR	Olho d’Água
+BR	Ouro Verde
+BR	Palestina
+BR	Palmeiras
+BR	Panorama
+BR	Pantanal
+BR	Paqueta
+BR	Paquetá
+BR	Paraiso
+BR	Paraíso
+BR	Pauliceia
+BR	Paulicéia
+BR	Pavao
+BR	Pavão
+BR	Pedra Preta
+BR	Pimenteiras
+BR	Pinheiros
+BR	Pirambu
+BR	Pirambú
+BR	Planalto
+BR	Platina
+BR	Pocao
+BR	Ponte Alta
+BR	Porto
+BR	Potengi
+BR	Poção
+BR	Praia Grande
+BR	Pratinha
+BR	Presidente Juscelino
+BR	Presidente Kennedy
+BR	Presidente Lucena
+BR	Primeiro de Maio
+BR	Progresso
+BR	Quadra 14
+BR	Quilombo
+BR	Rancho Alegre
+BR	Recreio
+BR	Renascenca
+BR	Renascença
+BR	Restinga
+BR	Riachuelo
+BR	Ribeira
+BR	Rincao
+BR	Rincão
+BR	Rio Branco
+BR	Rio Vermelho
+BR	Roseira
+BR	Saboeiro
+BR	Sagrada Familia
+BR	Salgadinho
+BR	Salgado Filho
+BR	Santa Amelia
+BR	Santa Amélia
+BR	Santa Branca
+BR	Santa Cecilia
+BR	Santa Cecília
+BR	Santa Cruz
+BR	Santa Fe
+BR	Santa Fé
+BR	Santa Helena
+BR	Santa Ines
+BR	Santa Inês
+BR	Santa Isabel
+BR	Santa Leopoldina
+BR	Santa Lucia
+BR	Santa Luzia
+BR	Santa Lúcia
+BR	Santa Maria
+BR	Santa Monica
+BR	Santa Mônica
+BR	Santa Rita
+BR	Santa Teresinha
+BR	Santa Tereza
+BR	Santa Terezinha
+BR	Santana
+BR	Santo Afonso
+BR	Santo Andre
+BR	Santo André
+BR	Santo Inacio
+BR	Santo Inácio
+BR	Sao Bras
+BR	Sao Carlos
+BR	Sao Conrado
+BR	Sao Domingos
+BR	Sao Francisco
+BR	Sao Geraldo
+BR	Sao Joao
+BR	Sao Jorge
+BR	Sao Luiz
+BR	Sao Miguel
+BR	Sao Pedro
+BR	Sao Rafael
+BR	Sao Tome
+BR	Sao Vicente
+BR	Sapucaia
+BR	Saude
+BR	Saúde
+BR	Serraria
+BR	Serrinha
+BR	Sete de Setembro
+BR	Sitio Novo
+BR	Sucupira
+BR	São Brás
+BR	São Carlos
+BR	São Conrado
+BR	São Domingos
+BR	São Francisco
+BR	São Geraldo
+BR	São Jorge
+BR	São João
+BR	São Luiz
+BR	São Miguel
+BR	São Pedro
+BR	São Rafael
+BR	São Tomé
+BR	São Vicente
+BR	Sítio Novo
+BR	Taguatinga
+BR	Taipu
+BR	Tapera
+BR	Taruma
+BR	Tarumã
+BR	Teixeiras
+BR	Telha
+BR	Terra Nova
+BR	Tiradentes
+BR	Treze de Maio
+BR	Uirapuru
+BR	Vale Verde
+BR	Varzea
+BR	Vera Cruz
+BR	Vila Maria
+BR	Vila Santa Maria
+BR	Virginia
+BR	Virgínia
+BR	Vista Alegre
+BR	Várzea
+BR	Zumbi
+BR	Água Boa
+BR	Água Branca
+BR	Água Fria
+CA	Agassiz
+CA	Aldergrove
+CA	Bearspaw
+CA	Beaumont
+CA	Beaurivage
+CA	Belmont
+CA	Blairmore
+CA	Bridgeview
+CA	Brookside
+CA	Canora
+CA	Casselman
+CA	Cleveland
+CA	Cumberland
+CA	Dalhousie
+CA	Deep Cove
+CA	Douglas
+CA	Fairview
+CA	Forest Hills
+CA	Franklin
+CA	Greendale
+CA	Highlands
+CA	Holyrood
+CA	Hudson
+CA	Huntingdon
+CA	Kensington
+CA	Killarney
+CA	Lincoln
+CA	Oxford
+CA	Paisley
+CA	Parkhill
+CA	Prince Rupert
+CA	Queenswood Heights
+CA	Renfrew
+CA	Richmond
+CA	Roxboro
+CA	Saint-Antoine
+CA	Saint-Edouard
+CA	Saint-Henri
+CA	Saint-Jean-Baptiste
+CA	Saint-Leonard
+CA	Saint-Léonard
+CA	Saint-Sauveur
+CA	Saint-Édouard
+CA	Sainte Marie
+CA	St. Boniface
+CA	St. Norbert
+CA	Strathcona Park
+CA	Summerside
+CA	Sydenham
+CA	Thompson
+CA	West End
+CA	Westmount
+CA	Westridge
+CA	Williams Lake
+CH	Dorf
+CH	Oberdorf
+CH	Oberegg
+CH	Rueti
+CH	Rüti
+CH	Veltheim
+CL	Calle Larga
+CL	El Carmen
+CL	Fresia
+CL	Las Cabras
+CL	Lumaco
+CL	Peumo
+CL	Pirque
+CL	Porvenir
+CL	Romeral
+CL	San Nicolas
+CL	San Nicolás
+CL	San Pablo
+CL	San Rafael
+CL	Santa Maria
+CL	Santa María
+CL	Teno
+CL	Tucapel
+CL	Yungay
+CN	Baisha
+CN	Donghe
+CN	Fendou
+CN	Fubao
+CN	Guangming
+CN	Heba
+CN	Huangsha
+CN	Huaqiao
+CN	Jiefang
+CN	Jinqiao
+CN	Liutang
+CN	Ma'anshan
+CN	Mazhuang
+CN	Ma’anshan
+CN	Nanhai
+CN	Shijia
+CN	Shishan
+CN	Tangwei
+CN	Wuli
+CN	Xiayang
+CN	Xincheng
+CN	Xinzhou
+CN	Yanjia
+CN	Yankou
+CN	Youdian
+CN	Yushan
+CN	Zaoxia
+CO	Acevedo
+CO	Alcala
+CO	Alcalá
+CO	Alejandria
+CO	Armenia
+CO	Arroyohondo
+CO	Barrio San Luis
+CO	Belalcazar
+CO	Belalcázar
+CO	Belen
+CO	Bella Vista
+CO	Bellavista
+CO	Belén
+CO	Betania
+CO	Bolivar
+CO	Bolívar
+CO	Boyaca
+CO	Boyacá
+CO	Buenos Aires
+CO	Caldas
+CO	Campamento
+CO	Campo Alegre
+CO	Colombia
+CO	Colon
+CO	Colón
+CO	Cordoba
+CO	Córdoba
+CO	El Carmen
+CO	El Castillo
+CO	El Dorado
+CO	El Penon
+CO	El Peñón
+CO	El Rosal
+CO	El Rosario
+CO	Enciso
+CO	Florencia
+CO	Galan
+CO	Galán
+CO	Granada
+CO	Guadalupe
+CO	Guayabal
+CO	Jardin
+CO	Jardín
+CO	Jerusalen
+CO	Junin
+CO	Junín
+CO	La Cruz
+CO	La Esperanza
+CO	La Florida
+CO	La Gloria
+CO	La Macarena
+CO	La Merced
+CO	La Palma
+CO	La Paz
+CO	La Pena
+CO	La Peña
+CO	La Playa
+CO	La Primavera
+CO	La Sierra
+CO	La Union
+CO	La Unión
+CO	La Vega
+CO	La Victoria
+CO	Laureles
+CO	Miraflores
+CO	Monterrey
+CO	Olaya
+CO	Olaya Herrera
+CO	Palermo
+CO	Pamplonita
+CO	Paramo
+CO	Prado
+CO	Pueblo Nuevo
+CO	Páramo
+CO	Restrepo
+CO	Ricaurte
+CO	Risaralda
+CO	Salento
+CO	San Agustin
+CO	San Agustín
+CO	San Antonio
+CO	San Benito
+CO	San Bernardo
+CO	San Carlos
+CO	San Cristobal
+CO	San Cristóbal
+CO	San Eduardo
+CO	San Fernando
+CO	San Francisco
+CO	San Jeronimo
+CO	San Jerónimo
+CO	San Joaquin
+CO	San Joaquín
+CO	San Jose
+CO	San José
+CO	San Luis
+CO	San Mateo
+CO	San Miguel
+CO	San Pablo
+CO	San Pedro
+CO	San Rafael
+CO	Santa Ana
+CO	Santa Barbara
+CO	Santa Bárbara
+CO	Santa Cruz
+CO	Santa Isabel
+CO	Santa Maria
+CO	Santa María
+CO	Santa Rita
+CO	Santiago Perez
+CO	Santiago Pérez
+CO	Santo Domingo
+CO	Sotomayor
+CO	Suarez
+CO	Sucre
+CO	Suárez
+CO	Tarapaca
+CO	Tarapacá
+CO	Trinidad
+CO	Valencia
+CO	Valparaiso
+CO	Valparaíso
+CO	Venecia
+CO	Versalles
+CO	Villa Hermosa
+CO	Villa Nueva
+CO	Vista Hermosa
+CR	Angeles
+CR	Canoas
+CR	Cariari
+CR	Colon
+CR	Colón
+CR	Concepcion
+CR	Concepción
+CR	La Cruz
+CR	Mercedes
+CR	Monterrey
+CR	Sabanilla
+CR	San Antonio
+CR	San Josecito
+CR	San Rafael
+CR	Ángeles
+CU	Marti
+CU	Martí
+CZ	Dubi
+CZ	Dubí
+CZ	Dvorce
+CZ	Komarov
+CZ	Komárov
+CZ	Lesna
+CZ	Lesná
+CZ	Nova Ves
+CZ	Nová Ves
+CZ	Sazava
+CZ	Sedlec
+CZ	Sázava
+DE	Aldingen
+DE	Altendorf
+DE	Au
+DE	Auerbach
+DE	Babenhausen
+DE	Barnstorf
+DE	Beeck
+DE	Berg
+DE	Bergen
+DE	Bernsdorf
+DE	Bietigheim
+DE	Billigheim
+DE	Blankenfelde
+DE	Bockenheim
+DE	Bornheim
+DE	Borstel
+DE	Brand
+DE	Bretzenheim
+DE	Britz
+DE	Bruck
+DE	Bruhl
+DE	Brühl
+DE	Buch
+DE	Buchenbach
+DE	Buchenberg
+DE	Buchholz
+DE	Buckow
+DE	Buergel
+DE	Burgau
+DE	Büchenbach
+DE	Bürgel
+DE	Dahlem
+DE	Dobel
+DE	Döhren
+DE	Ebersdorf
+DE	Ellerbek
+DE	Eppendorf
+DE	Eppstein
+DE	Falkenberg
+DE	Falkenhain
+DE	Falkenstein
+DE	Forst
+DE	Freudenberg
+DE	Friedrichstadt
+DE	Furth
+DE	Gablenz
+DE	Garstedt
+DE	Gartenstadt
+DE	Geismar
+DE	Gersdorf
+DE	Glashuette
+DE	Glashutten
+DE	Glashütte
+DE	Glashütten
+DE	Goldberg
+DE	Graben
+DE	Grafenberg
+DE	Groitzsch
+DE	Gronau
+DE	Gräfrath
+DE	Göggingen
+DE	Harburg
+DE	Hardt
+DE	Haslach
+DE	Hassel
+DE	Hatzfeld
+DE	Hausen
+DE	Heidberg
+DE	Heimbach
+DE	Helmstadt
+DE	Hermsdorf
+DE	Heuchelheim
+DE	Hochberg
+DE	Hochdorf
+DE	Hochheim
+DE	Hoerden
+DE	Hohenfelde
+DE	Holm
+DE	Holthausen
+DE	Homberg
+DE	Horst
+DE	Hörden
+DE	Kaulsdorf
+DE	Kirchdorf
+DE	Kirchheim
+DE	Klausdorf
+DE	Krautheim
+DE	Laar
+DE	Laer
+DE	Langenberg
+DE	Langenhorn
+DE	Laubach
+DE	Lehe
+DE	Lich
+DE	Lichtenberg
+DE	Lindau
+DE	Linden
+DE	Lindenberg
+DE	Lindow
+DE	List
+DE	Malchow
+DE	Michelbach
+DE	Moeckern
+DE	Moosach
+DE	Möckern
+DE	Münster
+DE	Nette
+DE	Neuhausen
+DE	Neukirchen
+DE	Oberhausen
+DE	Oberkassel
+DE	Oestrich
+DE	Offenhausen
+DE	Oldendorf
+DE	Osdorf
+DE	Osterfeld
+DE	Ostheim
+DE	Ovelgönne
+DE	Pinnow
+DE	Rahm
+DE	Reiskirchen
+DE	Rheinau
+DE	Rodenkirchen
+DE	Rohrbach
+DE	Rosenberg
+DE	Rosenthal
+DE	Rot
+DE	Rothenbach
+DE	Rothenburg
+DE	Rott
+DE	Roxheim
+DE	Röthenbach
+DE	Sachsenhausen
+DE	Sand
+DE	Sandberg
+DE	Sande
+DE	Sandhausen
+DE	Schenefeld
+DE	Schlierbach
+DE	Schoenberg
+DE	Schoenefeld
+DE	Schoenhausen
+DE	Schulzendorf
+DE	Schönau
+DE	Schönberg
+DE	Schönefeld
+DE	Schönfeld
+DE	Schönhausen
+DE	Seebach
+DE	Seedorf
+DE	Seefeld
+DE	Seehof
+DE	Sottrum
+DE	Stein
+DE	Stelle
+DE	Stockum
+DE	Stolpe
+DE	Stöckheim
+DE	Suedstadt
+DE	Südstadt
+DE	Tiefenbach
+DE	Venusberg
+DE	Vorwerk
+DE	Wald
+DE	Waldheim
+DE	Walldorf
+DE	Wangen
+DE	Wartenberg
+DE	Weiler
+DE	Weissensee
+DE	Weißensee
+DE	Wiesenau
+DE	Winden
+DE	Wolfersdorf
+DE	Woltersdorf
+DE	Wuelfershausen
+DE	Wülfershausen
+DE	Zell
+DE	Zscherben
+DE	Österfeld
+DK	Sundby
+DO	Arroyo Salado
+EC	Atahualpa
+EC	Bella Vista
+EC	Bolivar
+EC	Bolívar
+EC	Comite del Pueblo
+EC	Comité del Pueblo
+EC	Concepcion
+EC	Concepción
+EC	Diez de Agosto
+EC	El Carmen
+EC	El Cisne
+EC	El Triunfo
+EC	Febres Cordero
+EC	Garcia Moreno
+EC	García Moreno
+EC	Jambeli
+EC	Jambelí
+EC	La Esperanza
+EC	La Libertad
+EC	La Paz
+EC	La Puntilla
+EC	Olmedo
+EC	Rocafuerte
+EC	Rumipamba
+EC	San Antonio
+EC	San Jose
+EC	San José
+EC	San Juan
+EC	San Vicente
+EC	Simon Bolivar
+EC	Simón Bolívar
+EC	Sucre
+EC	Urdaneta
+EC	Veintiocho de Mayo
+EE	Kose
+EE	Liiva
+ES	Almagro
+ES	Almenara
+ES	Arapiles
+ES	Arcos
+ES	Atalaya
+ES	Buena Vista
+ES	Buenavista
+ES	Cardenas
+ES	Carmenes
+ES	Chueca
+ES	Comillas
+ES	Corrales
+ES	Cárdenas
+ES	Cármenes
+ES	El Viso
+ES	Elizondo
+ES	Favara
+ES	Feria
+ES	Fuentelareina
+ES	Guadalupe
+ES	Herrera
+ES	Legazpi
+ES	Los Arcos
+ES	Manzanera
+ES	Miramar
+ES	Murgia
+ES	Navas
+ES	Olaberria
+ES	Palomas
+ES	San Isidro
+ES	San Jose
+ES	San José
+ES	San Pascual
+ES	San Pedro
+ES	Santa Ana
+ES	Santa Barbara
+ES	Santa Cruz
+ES	Santa Eugenia
+ES	Sarria
+ES	Sarrià
+ES	Simancas
+ES	Tormos
+ES	Valdefuentes
+ES	Valle Seco
+ES	Valverde
+ES	Villegas
+FI	Ilola
+FI	Jokela
+FI	Kaersaemaeki
+FI	Kangaslampi
+FI	Kivisto
+FI	Kivistö
+FI	Kärsämäki
+FI	Laajalahti
+FI	Lapinlahti
+FI	Lappi
+FI	Loppi
+FI	Marttila
+FI	Metsola
+FI	Petsamo
+FI	Rajakylae
+FI	Rajakylä
+FI	Rekola
+FI	Ristinummi
+FI	Rusko
+FI	Saarijarvi
+FI	Saarijärvi
+FI	Tammela
+FI	Tammisto
+FI	Vaala
+FI	Viiala
+FR	Belleville
+FR	Castellane
+FR	La Montagne
+FR	Lacouture
+FR	Luynes
+FR	Noailles
+FR	Pasteur
+FR	Razes
+FR	Saint-Barnabe
+FR	Saint-Barnabé
+FR	Saint-Clement
+FR	Saint-Clément
+FR	Saint-Germain-des-Pres
+FR	Saint-Germain-des-Prés
+FR	Saint-Jean
+FR	Saint-Joseph
+FR	Saint-Julien
+FR	Saint-Just
+FR	Saint-Marcel
+FR	Saint-Mathieu
+FR	Saint-Maurice
+FR	Saint-Paul
+FR	Saint-Sernin
+FR	Saint-Sever
+FR	Saint-Vincent de Paul
+FR	Sainte-Marguerite
+FR	Sorges
+FR	Thiers
+FR	Ville Neuve
+GB	Anstey
+GB	Appleton
+GB	Ashburton
+GB	Ashurst
+GB	Aston
+GB	Astwood
+GB	Balloch
+GB	Bankfoot
+GB	Barmston
+GB	Barnsbury
+GB	Beeston
+GB	Belgrave
+GB	Bellingham
+GB	Belmont
+GB	Berkeley
+GB	Bishopton
+GB	Blackwell
+GB	Bow
+GB	Bowes
+GB	Box
+GB	Bradley
+GB	Bramford
+GB	Bramley
+GB	Brampton
+GB	Brentford
+GB	Bridge
+GB	Brinklow
+GB	Brixton
+GB	Broadfield
+GB	Broadway
+GB	Brockhampton
+GB	Bromley
+GB	Brompton
+GB	Broughton
+GB	Bryn
+GB	Calder Bank
+GB	Capel
+GB	Chalford
+GB	Charlton
+GB	Charminster
+GB	Churchill
+GB	Clapham
+GB	Clarkston
+GB	Cliffe
+GB	Clifton
+GB	Clive
+GB	Coates
+GB	Coddington
+GB	Comberton
+GB	Compton
+GB	Copthorne
+GB	Cowie
+GB	Cranbrook
+GB	Creswell
+GB	Croft
+GB	Crosshouse
+GB	Cwm
+GB	Dalry
+GB	Dalston
+GB	Denton
+GB	Donnington
+GB	Downside
+GB	Draycott
+GB	Dreghorn
+GB	Dundonald
+GB	Easton
+GB	Eaton
+GB	Edgware
+GB	Elswick
+GB	Elton
+GB	Eversley
+GB	Fair Oak
+GB	Ferndale
+GB	Ferryhill
+GB	Ford
+GB	Glenmavis
+GB	Greatness
+GB	Green Hill
+GB	Greenfield
+GB	Greenhead
+GB	Greenhill
+GB	Grove
+GB	Hadley
+GB	Hale
+GB	Halton
+GB	Hammersmith
+GB	Harefield
+GB	Hart Hill
+GB	Hart's Hill
+GB	Hawthorn
+GB	Hayton
+GB	Healey
+GB	Heathfield
+GB	Hemsworth
+GB	Hendon
+GB	High Town
+GB	Highgate
+GB	Hightown
+GB	Hill
+GB	Hillsborough
+GB	Hillside
+GB	Hilton
+GB	Holbrook
+GB	Holt
+GB	Holywell
+GB	Horncastle
+GB	Horton
+GB	Howden
+GB	Kensington
+GB	Kenton
+GB	Kilburn
+GB	King's Cross
+GB	King's Hill
+GB	Kings Hill
+GB	Kingshill
+GB	Kingsland
+GB	Kingswood
+GB	Knighton
+GB	Knowle
+GB	Ladywell
+GB	Langley Green
+GB	Lark Hill
+GB	Lea
+GB	Lees
+GB	Leigh
+GB	Leyton
+GB	Loanhead
+GB	Lyndhurst
+GB	Mainstone
+GB	Marden
+GB	Marlborough
+GB	Mayfield
+GB	Mill End
+GB	Millbrook
+GB	Millend
+GB	Milnthorpe
+GB	Milverton
+GB	Moor Park
+GB	Moorpark
+GB	Mossley
+GB	Netherton
+GB	New Mill
+GB	New Town
+GB	Newbridge
+GB	Newcastle
+GB	Newchurch
+GB	Newington
+GB	Newmains
+GB	Newport
+GB	Newtown
+GB	Norbury
+GB	Northam
+GB	Northorpe
+GB	Northwood
+GB	Norton
+GB	Oakham
+GB	Oakwood
+GB	Over Town
+GB	Overton
+GB	Overtown
+GB	Pen-y-Bont
+GB	Pen-y-bont
+GB	Pengam
+GB	Pentre
+GB	Petersfield
+GB	Preston
+GB	Princetown
+GB	Queensbury
+GB	Richmond
+GB	Royston
+GB	Saint Leonards
+GB	Sandford
+GB	Sandy
+GB	Sea View
+GB	Seafield
+GB	Seaton
+GB	Seven Sisters
+GB	Shaftesbury
+GB	Shaw
+GB	Shirley
+GB	Silverton
+GB	South Bank
+GB	Southgate
+GB	Southwick
+GB	Spittal
+GB	Spring Side
+GB	St George's
+GB	St Georges
+GB	St Helen's
+GB	St Leonard's
+GB	St Mary's
+GB	St. George's
+GB	St. Helen's
+GB	St. Leonard's
+GB	St. Leonards
+GB	St. Mary's
+GB	Stanley
+GB	Stanmore
+GB	Stoke
+GB	Stonehouse
+GB	Sundridge
+GB	Sutton
+GB	Swanmore
+GB	Thorn Hill
+GB	Thornbury
+GB	Thornhill
+GB	Thornton
+GB	Thorpe
+GB	Three Crosses
+GB	Townhill
+GB	Tytherington
+GB	Upper Langwith
+GB	Upton
+GB	Valley
+GB	Walton
+GB	Walworth
+GB	Wanborough
+GB	Wanstead
+GB	Wargrave
+GB	Waterfoot
+GB	Wellow
+GB	Welton
+GB	West Drayton
+GB	West End
+GB	West Hill
+GB	Westend
+GB	Weston
+GB	Westwood
+GB	Wheatley
+GB	Whitby
+GB	White Hills
+GB	Whitehills
+GB	Whitley
+GB	Whitton
+GB	Wick
+GB	Willington
+GB	Wingfield
+GB	Withington
+GB	Woodborough
+GB	Woodcote
+GB	Woodford
+GB	Woodley
+GB	Woodside
+GB	Woodstock
+GB	Woolley
+GR	Agia
+GR	Agios Georgios
+GR	Agios Nikolaos
+GR	Agios Nikólaos
+GR	Agios Vasileios
+GR	Agios Vasíleios
+GR	Agía
+GR	Ampelokipoi
+GR	Ampelókipoi
+GR	Ayios Nikolaos
+GR	Faros
+GR	Fáros
+GR	Kallithea
+GR	Kallithéa
+GR	Kastella
+GR	Kastri
+GR	Kastélla
+GR	Monastiraki
+GR	Monastiráki
+GR	Nea Fokaia
+GR	Neapoli
+GR	Neo Souli
+GR	Neápoli
+GR	Néa Fókaia
+GR	Néo Soúli
+GR	Proastio
+GR	Profitis Ilias
+GR	Profítis Ilías
+GR	Proástio
+GR	Souda
+GR	Soúda
+GR	Stavros
+GR	Stavrós
+GR	Terpsithea
+GR	Terpsithéa
+GR	Thermi
+GR	Thérmi
+GR	Vathi
+GR	Váthi
+GR	Ágios Geórgios
+GR	Áyios Nikólaos
+GT	El Rodeo
+GT	La Democracia
+GT	La Libertad
+GT	San Andres
+GT	San Andrés
+GT	San Francisco
+GT	San Jose
+GT	San José
+GT	San Pablo
+GT	Santa Ana
+HN	San Francisco
+HN	Villanueva
+HR	Dubrava
+HR	Orehovica
+HU	Felsoszentivan
+HU	Felsőszentiván
+HU	Janoshaza
+HU	Jánosháza
+HU	Kenderes
+HU	Kistelek
+HU	Tarjan
+HU	Tarján
+ID	Banjar Anyar
+ID	Banjar Negara
+ID	Banjar Sari
+ID	Batu Ampar
+ID	Jetis
+ID	Karanganyar
+ID	Kebonsari
+ID	Kedondong
+ID	Kemang
+ID	Ketapang
+ID	Pakuwon
+ID	Panjang
+ID	Pasanggrahan
+ID	Pasar Baru
+ID	Senayan
+ID	Simpang
+ID	Tanjung
+IE	Crumlin
+IE	Drumcondra
+IL	Jatt
+IL	Kfar Shmaryahu
+IL	Moledet
+IN	Ahmadpur
+IN	Amanpur
+IN	Bahadurpur
+IN	Bahādurpur
+IN	Basantpur
+IN	Begampur
+IN	Begampūr
+IN	Bāhadurpur
+IN	Chandpur
+IN	Chikhli
+IN	Chāndpur
+IN	Dandi
+IN	Daulatpur
+IN	Dāndi
+IN	Fatehpur
+IN	Gandhi Nagar
+IN	Gandhinagar
+IN	Garhi
+IN	Ghazipur
+IN	Ghāzipur
+IN	Ghāzīpur
+IN	Gobindpur
+IN	Govindgarh
+IN	Gāndhinagar
+IN	Gāndhī Nagar
+IN	Gāndhīnagar
+IN	Haripur
+IN	Hasanpur
+IN	Isapur
+IN	Isāpur
+IN	Jawaharnagar
+IN	Jawāharnagar
+IN	Jawāharnāgar
+IN	Kamalapur
+IN	Kamalpur
+IN	Kamalāpur
+IN	Karanpur
+IN	Karari
+IN	Katra
+IN	Kota
+IN	Kottapeta
+IN	Kottaram
+IN	Kottāram
+IN	Mahal
+IN	Maharajganj
+IN	Mahuli
+IN	Mahārājganj
+IN	Malakpur
+IN	Mirpur
+IN	Mustafabad
+IN	Mustafābād
+IN	Mīrpur
+IN	Naubasta
+IN	Paharpur
+IN	Pahārpur
+IN	Pali
+IN	Partabpur
+IN	Partābpur
+IN	Prasadampadu
+IN	Prasādampādu
+IN	Pudur
+IN	Pudūr
+IN	Puliyur
+IN	Pāli
+IN	Raghunathpur
+IN	Raghunāthpur
+IN	Rajapur
+IN	Rajgarh
+IN	Rajnagar
+IN	Ramnagar
+IN	Rampur
+IN	Ranipur
+IN	Rājnagar
+IN	Rājāpur
+IN	Rāmnagar
+IN	Rāmpur
+IN	Rānīpur
+IN	Sangam
+IN	Shahdara
+IN	Shahpur
+IN	Shaktinagar
+IN	Sherpur
+IN	Shivaji Nagar
+IN	Shivajinagar
+IN	Shivājīnagar
+IN	Shāhdara
+IN	Shāhpur
+IN	Sikandarpur
+IN	Sultanpur
+IN	Sultānpur
+IN	Takli
+IN	Tākli
+IN	Āmanpur
+IQ	Al Hashimiyah
+IQ	Al Hāshimīyah
+IQ	Ar Rifa'i
+IQ	Ar Rifā‘ī
+IR	Ahmadabad
+IR	Akbarabad
+IR	Akbarābād
+IR	Aminabad
+IR	Amirabad
+IR	Amiriyeh
+IR	Amīnābād
+IR	Amīrābād
+IR	Amīrīyeh
+IR	Asgharabad
+IR	Azadi
+IR	Aşgharābād
+IR	Aḩmadābād
+IR	Bahar
+IR	Baharestan
+IR	Bahār
+IR	Bahārestān
+IR	Darband
+IR	Deh Now
+IR	Deylaman
+IR	Deylamān
+IR	Dizaj
+IR	Dowlatabad
+IR	Dowlatābād
+IR	Dulab
+IR	Dīzaj
+IR	Dūlāb
+IR	Ebrahimabad
+IR	Ebrāhīmābād
+IR	Emam Shahr
+IR	Emām Shahr
+IR	Eslamabad
+IR	Eslāmābād
+IR	Fakhrabad
+IR	Fakhrābād
+IR	Farahabad
+IR	Faraḩābād
+IR	Farrokhabad
+IR	Fathabad
+IR	Fatḩābād
+IR	Firuzabad
+IR	Firuzan
+IR	Fīrūzābād
+IR	Fīrūzān
+IR	Gavmishabad
+IR	Golshahr
+IR	Golzar
+IR	Golzār
+IR	Gāvmīshābād
+IR	Hajjiabad
+IR	Hashemabad
+IR	Hemmatabad
+IR	Hemmatābād
+IR	Hoseynabad
+IR	Hāshemābād
+IR	Ja`farabad
+IR	Jalalabad
+IR	Jalālābād
+IR	Javadiyeh
+IR	Javādīyeh
+IR	Ja‘farābād
+IR	Kahriz
+IR	Kahrīz
+IR	Kaj
+IR	Kamangar Kola
+IR	Kamāngar Kolā
+IR	Karimabad
+IR	Karīmābād
+IR	Kazemabad
+IR	Khalilabad
+IR	Khalīlābād
+IR	Khaneqah
+IR	Khorramabad
+IR	Khorramābād
+IR	Khosrowabad
+IR	Khosrowābād
+IR	Khāneqāh
+IR	Kushk
+IR	Kāj
+IR	Kāzemābād
+IR	Kūshk
+IR	Mahmudabad
+IR	Malekabad
+IR	Malekābād
+IR	Maḩmūdābād
+IR	Mehdiabad
+IR	Mehdīābād
+IR	Mehrabad
+IR	Mehran
+IR	Mehrābād
+IR	Mehrān
+IR	Mohammadabad
+IR	Mohammadiyeh
+IR	Moḩammadābād
+IR	Moḩammadīyeh
+IR	Nasrabad
+IR	Naşrābād
+IR	Ne`matabad
+IR	Nezamabad
+IR	Nez̧āmābād
+IR	Ne‘matābād
+IR	Now Bahar
+IR	Now Bahār
+IR	Nurabad
+IR	Nushabad
+IR	Nūrābād
+IR	Nūshābād
+IR	Owghan
+IR	Owghān
+IR	Payam
+IR	Payām
+IR	Poshteh
+IR	Qaderabad
+IR	Qāderābād
+IR	Rahimabad
+IR	Rahmatabad
+IR	Raḩmatābād
+IR	Raḩīmābād
+IR	Reyhanabad
+IR	Reyḩānābād
+IR	Rezvan Shahr
+IR	Reẕvān Shahr
+IR	Rostamabad
+IR	Rostamābād
+IR	Ruhabad
+IR	Rūḩābād
+IR	Sa`idabad
+IR	Sadrabad
+IR	Salehabad
+IR	Sa‘īdābād
+IR	Sefid Dasht
+IR	Sefīd Dasht
+IR	Seyyedan
+IR	Seyyedān
+IR	Shahrabad
+IR	Shahrak-e Beheshti
+IR	Shahrak-e Beheshtī
+IR	Shahrak-e Emam
+IR	Shahrak-e Emām
+IR	Shahrak-e Madani
+IR	Shahrak-e Madanī
+IR	Shahrak-e Mohajerin
+IR	Shahrak-e Mohājerīn
+IR	Shahrak-e Towhid
+IR	Shahrak-e Towḩīd
+IR	Shahrābād
+IR	Shamsabad
+IR	Shamsābād
+IR	Sharifabad
+IR	Sharīfābād
+IR	Shiraz
+IR	Shīrāz
+IR	Talebabad
+IR	Talesh Mahalleh
+IR	Tazehabad
+IR	Tāzehābād
+IR	Vali`asr
+IR	Valiabad
+IR	Valīābād
+IR	Valī‘aşr
+IR	Vanak
+IR	Yusefabad
+IR	Yūsefābād
+IR	Zarkesh
+IR	Zarrinabad
+IR	Zarrīnābād
+IR	Zaviyeh
+IR	Ziba Shahr
+IR	Zibashahr
+IR	Zurabad
+IR	Zāvīyeh
+IR	Zībā Shahr
+IR	Zībāshahr
+IR	Zūrābād
+IR	`Abbasabad
+IR	`Abdolabad
+IR	`Abdollahabad
+IR	`Aliabad
+IR	Āzādī
+IR	Şadrābād
+IR	Şāleḩābād
+IR	Ţālebābād
+IR	Ţālesh Maḩalleh
+IR	Ḩoseynābād
+IR	Ḩājjīābād
+IR	‘Abbasābād
+IR	‘Abbāsābād
+IR	‘Abdollāhābād
+IR	‘Abdolābād
+IR	‘Alīābād
+IT	Belvedere
+IT	Borgo
+IT	Borgo Nuovo
+IT	Borgonuovo
+IT	Cantalupo
+IT	Carignano
+IT	Castelletto
+IT	Castello
+IT	Centrale
+IT	Certosa
+IT	Chiaravalle
+IT	Citta Giardino
+IT	Città Giardino
+IT	Colonna
+IT	Doria
+IT	Duomo
+IT	Farini
+IT	Filadelfia
+IT	Giudecca
+IT	Gualdo
+IT	Guastalla
+IT	Isola
+IT	Loreto
+IT	Mercato
+IT	Mirabello
+IT	Moncucco
+IT	Montebello
+IT	Monti
+IT	Monticelli
+IT	Novoli
+IT	Panni
+IT	Parella
+IT	Pigna
+IT	Pignone
+IT	Pitigliano
+IT	Ponte
+IT	Ponte Lambro
+IT	Prati
+IT	Prato
+IT	Rialto
+IT	Sacco
+IT	San Basilio
+IT	San Carlo
+IT	San Cristoforo
+IT	San Donato
+IT	San Donnino
+IT	San Ferdinando
+IT	San Giacomo
+IT	San Giuseppe
+IT	San Lorenzo
+IT	San Marcellino
+IT	San Marco
+IT	San Martino
+IT	San Massimo
+IT	San Maurizio
+IT	San Mauro
+IT	San Nicolo
+IT	San Nicolò
+IT	San Paolo
+IT	San Quirico
+IT	San Siro
+IT	San Teodoro
+IT	San Vito
+IT	San Vittore
+IT	San Zeno
+IT	Sant'Angelo
+IT	Santa Croce
+IT	Santa Lucia
+IT	Sesto
+IT	Stella
+IT	Terravecchia
+IT	Trappeto
+IT	Tre Ponti
+IT	Treponti
+IT	Trevi
+IT	Villa San Giovanni
+IT	Zona Industriale
+JM	Barbican
+JM	Tower Hill
+JO	Al Khalidiyah
+JO	Al Khālidīyah
+JP	Aoki
+JP	Asahi
+JP	Asahimachi
+JP	Asakawa
+JP	Baraki
+JP	Fujimi
+JP	Fujisaki
+JP	Fukushima
+JP	Funabashi
+JP	Hakusan
+JP	Hara
+JP	Haramachida
+JP	Hatchobori
+JP	Hatchomuta
+JP	Hibarigaoka
+JP	Higashinaka
+JP	Hirao
+JP	Hoji
+JP	Honcho
+JP	Honchō
+JP	Hongo
+JP	Hongō
+JP	Honmachi
+JP	Horikoshi
+JP	Ikeda
+JP	Imai
+JP	Kamatsuka
+JP	Kami
+JP	Kashiwabara
+JP	Kawaguchi
+JP	Kawahara
+JP	Kawai
+JP	Kawanishi
+JP	Kawasaki
+JP	Kita
+JP	Kitakata
+JP	Komaba
+JP	Komatsu
+JP	Konan
+JP	Kosaka
+JP	Kotohira
+JP	Koya
+JP	Kozawa
+JP	Kozu
+JP	Kuzumaki
+JP	Kōnan
+JP	Maeda
+JP	Matsubara
+JP	Matsuzaki
+JP	Minato
+JP	Miyahara
+JP	Miyajima
+JP	Miyake
+JP	Miyanoura
+JP	Miyashita
+JP	Miyoshi
+JP	Mizusawa
+JP	Motomachi
+JP	Motoyama
+JP	Mure
+JP	Nagano
+JP	Nagasaki
+JP	Nagata
+JP	Nakagawa
+JP	Nakajima
+JP	Nakayama
+JP	Nakazato
+JP	Noda
+JP	Obata
+JP	Ochi
+JP	Oda
+JP	Odai
+JP	Ogawa
+JP	Oka
+JP	Oma
+JP	Omachi
+JP	Omiya
+JP	Onishi
+JP	Osaki
+JP	Oshima
+JP	Ota
+JP	Otaki
+JP	Otobe
+JP	Saka
+JP	Sakae
+JP	Sakai
+JP	Sakamoto
+JP	Sato
+JP	Seki
+JP	Shiba
+JP	Shibayama
+JP	Shimizu
+JP	Shimogamo
+JP	Shimojo
+JP	Shinmachi
+JP	Shirasawa
+JP	Shukugo
+JP	Sumiyoshi
+JP	Taga
+JP	Taira
+JP	Taishi
+JP	Takahama
+JP	Takasu
+JP	Tano
+JP	Tashiro
+JP	Tateishi
+JP	Toda
+JP	Tomari
+JP	Tomioka
+JP	Toyoda
+JP	Toyosato
+JP	Tsuruta
+JP	Umeda
+JP	Usui
+JP	Wada
+JP	Yamabuki
+JP	Yamada
+JP	Yanase
+JP	Yasuda
+JP	Yokohama
+JP	Yokose
+JP	Yoshino
+JP	Ōda
+JP	Ōmachi
+JP	Ōmiya
+JP	Ōsaki
+JP	Ōtaki
+KE	Bahati
+KE	Kaloleni
+KR	Gyodong
+KR	Sindong
+KR	Yongsan
+KR	Yongsandong
+KZ	Aktau
+KZ	Auezov
+KZ	Druzhba
+KZ	Karasu
+KZ	Prigorodnoye
+KZ	Äūezov
+LV	Balozi
+LV	Baloži
+MA	Tassila
+MD	Riscani
+MD	Rîşcani
+MG	Antanimena
+MK	Водно
+MK	Горно Лисиче
+MK	Жданец
+MK	Инџиково
+MK	Маџари
+MK	Момин Поток
+MM	Pauktaw
+MX	Abelardo L. Rodriguez
+MX	Abelardo L. Rodríguez
+MX	Actipan
+MX	Acuitlapilco
+MX	Adolfo Lopez Mateos
+MX	Adolfo López Mateos
+MX	Adolfo Ruiz Cortines
+MX	Adolfo Ruíz Cortines
+MX	Agua Azul
+MX	Agua Caliente
+MX	Agua Escondida
+MX	Agua Fria
+MX	Agua Fría
+MX	Agua Nueva
+MX	Agua Zarca
+MX	Aguablanca
+MX	Agualeguas
+MX	Aguascalientes
+MX	Aguilera
+MX	Ahuacatitlan
+MX	Ahuatepec
+MX	Ahuehuetitla
+MX	Alamos
+MX	Alberto Carrera Torres
+MX	Alborada
+MX	Aldama
+MX	Alfredo V Bonfil
+MX	Alfredo V. Bonfil
+MX	Allende
+MX	Almolonga
+MX	Altamira
+MX	Altamirano
+MX	Altar
+MX	Alvaro Obregon
+MX	Alvaro Obregón
+MX	Amado Nervo
+MX	Amatitlan
+MX	Amatitlán
+MX	America Libre
+MX	América Libre
+MX	Anahuac
+MX	Andres Quintana Roo
+MX	Andrés Quintana Roo
+MX	Angostura
+MX	Antonio J. Bermudez
+MX	Antonio J. Bermúdez
+MX	Antonio Rosales
+MX	Anáhuac
+MX	Aquiles Serdan
+MX	Aquiles Serdán
+MX	Arboledas
+MX	Arcila
+MX	Arenal
+MX	Arroyo Seco
+MX	Atengo
+MX	Azteca
+MX	Aztlan
+MX	Aztlán
+MX	Baca
+MX	Bachoco
+MX	Barrancas
+MX	Barrio Nuevo
+MX	Barrio de Espana
+MX	Barrio de España
+MX	Barrio de Guadalupe
+MX	Barrio de San Juan
+MX	Barrio de San Miguel
+MX	Barrio la Joya
+MX	Basaseachi
+MX	Belem
+MX	Belen
+MX	Belisario Dominguez
+MX	Belisario Domínguez
+MX	Bella Vista
+MX	Bellavista
+MX	Belén
+MX	Benemerito de las Americas
+MX	Benemérito de las Américas
+MX	Benito Juarez
+MX	Benito Juárez
+MX	Bernal
+MX	Betania
+MX	Boca del Rio
+MX	Boca del Río
+MX	Bondojito
+MX	Bordo Blanco
+MX	Bosques de San Pedro
+MX	Buena Vista
+MX	Buenavista
+MX	Buenos Aires
+MX	Bustamante
+MX	Caja de Agua
+MX	California
+MX	Camembaro
+MX	Campanario
+MX	Campo Chico
+MX	Campo Real
+MX	Canada
+MX	Candelaria
+MX	Capula
+MX	Carmen Serdan
+MX	Carmen Serdán
+MX	Carpinteros
+MX	Carrizal
+MX	Casa Blanca
+MX	Casas Grandes
+MX	Cañada
+MX	Cedros
+MX	Cerocahui
+MX	Cerritos
+MX	Cerro Colorado
+MX	Cerro Grande
+MX	Cerro de La Cruz
+MX	Cerro de la Cruz
+MX	Chapultepec
+MX	Charcas
+MX	Chihuahua
+MX	Chinameca
+MX	Chula Vista
+MX	Chulavista
+MX	Cinco de Febrero
+MX	Cinco de Mayo
+MX	Cipreses
+MX	Ciudad Cuauhtemoc
+MX	Ciudad Cuauhtémoc
+MX	Ciudad Satelite
+MX	Ciudad Satélite
+MX	Coecillo
+MX	Colinas del Sol
+MX	Colon
+MX	Colonia Aeropuerto
+MX	Colonia Independencia
+MX	Colonia Juarez
+MX	Colonia Juárez
+MX	Colonia Lazaro Cardenas
+MX	Colonia Libertad
+MX	Colonia Lázaro Cárdenas
+MX	Colonia Obrera
+MX	Colonia Progreso
+MX	Colonia Renacimiento
+MX	Colonia San Isidro
+MX	Colonia Sesenta y Dos
+MX	Colonia Veinte de Noviembre
+MX	Colonia Venustiano Carranza
+MX	Colonia de Guadalupe
+MX	Colonia las Arboledas
+MX	Colonia las Flores
+MX	Colorines
+MX	Colón
+MX	Compuertas
+MX	Concepcion
+MX	Concepción
+MX	Concordia
+MX	Constancia
+MX	Constitucion
+MX	Constitución
+MX	Costa Azul
+MX	Cristo Rey
+MX	Cristobal Colon
+MX	Cristóbal Colón
+MX	Cruces
+MX	Cruz Blanca
+MX	Cruz Grande
+MX	Cruz Verde
+MX	Cruzverde
+MX	Cuatro Caminos
+MX	Cuauhtemoc
+MX	Cuauhtémoc
+MX	Cuitlahuac
+MX	Cuitláhuac
+MX	Damian Carmona
+MX	Damián Carmona
+MX	Dieciocho de Marzo
+MX	Dieciseis de Septiembre
+MX	Dieciséis de Septiembre
+MX	Division del Norte
+MX	División del Norte
+MX	Dos de Abril
+MX	Ejidal
+MX	Ejido Zaragoza
+MX	Ejido la Joya
+MX	El Aguacatal
+MX	El Aguila
+MX	El Arenal
+MX	El Bajio
+MX	El Bajío
+MX	El Bosque
+MX	El Calvario
+MX	El Capulin
+MX	El Capulín
+MX	El Caracol
+MX	El Carmen
+MX	El Carrizal
+MX	El Castillo
+MX	El Cedro
+MX	El Centenario
+MX	El Cerrito
+MX	El Cid
+MX	El Conejo
+MX	El Consuelo
+MX	El Cortijo
+MX	El Dorado
+MX	El Durazno
+MX	El Eden
+MX	El Edén
+MX	El Embarcadero
+MX	El Encanto
+MX	El Escondido
+MX	El Espinal
+MX	El Fortin
+MX	El Fortín
+MX	El Fresno
+MX	El Jaguey
+MX	El Jagüey
+MX	El Jaral
+MX	El Jazmin
+MX	El Jazmín
+MX	El Laurel
+MX	El Limon
+MX	El Limón
+MX	El Llanito
+MX	El Llano
+MX	El Lobo
+MX	El Lucero
+MX	El Maguey
+MX	El Mango
+MX	El Meson
+MX	El Mesón
+MX	El Milagro
+MX	El Mirador
+MX	El Molino
+MX	El Moral
+MX	El Naranjito
+MX	El Naranjo
+MX	El Ocotal
+MX	El Palmar
+MX	El Paraiso
+MX	El Paraíso
+MX	El Pedregal
+MX	El Penasco
+MX	El Peñasco
+MX	El Pilar
+MX	El Pino
+MX	El Plan
+MX	El Pochotal
+MX	El Polvorin
+MX	El Polvorín
+MX	El Portal
+MX	El Porvenir
+MX	El Potrero
+MX	El Pozo
+MX	El Progreso
+MX	El Pueblito
+MX	El Puerto
+MX	El Quelite
+MX	El Ranchito
+MX	El Realito
+MX	El Recodo
+MX	El Refugio
+MX	El Retiro
+MX	El Rincon
+MX	El Rincón
+MX	El Roble
+MX	El Rodeo
+MX	El Rosal
+MX	El Rosario
+MX	El Sabino
+MX	El Salado
+MX	El Salero
+MX	El Salitrillo
+MX	El Salvador
+MX	El Sauz
+MX	El Silencio
+MX	El Tecolote
+MX	El Tejar
+MX	El Tejocote
+MX	El Tepeyac
+MX	El Terrero
+MX	El Trapiche
+MX	El Triunfo
+MX	El Tumbo
+MX	El Vergel
+MX	El Zapote
+MX	El Águila
+MX	Emiliano Zapata
+MX	Emilio Carranza
+MX	Emilio Portes Gil
+MX	Epigmenio Gonzalez
+MX	Epigmenio González
+MX	Escalerillas
+MX	Escobedo
+MX	Escuadron Doscientos Uno
+MX	Escuadrón Doscientos Uno
+MX	Esmeralda
+MX	Espanita
+MX	Españita
+MX	Esperanza
+MX	Estrada
+MX	Ex-Hacienda de Guadalupe
+MX	Faja de Oro
+MX	Felipe Angeles
+MX	Felipe Carrillo Puerto
+MX	Felipe Ángeles
+MX	Florencia
+MX	Fraccionamiento del Valle
+MX	Francisco I Madero
+MX	Francisco I. Madero
+MX	Francisco Ignacio Madero
+MX	Francisco Javier Mina
+MX	Francisco Sarabia
+MX	Francisco Villa
+MX	Francisco Zarco
+MX	Fredepo
+MX	Galeana
+MX	Galindo
+MX	Gasca
+MX	Genaro Estrada
+MX	General Miguel Aleman
+MX	General Miguel Alemán
+MX	General Pedro Maria Anaya
+MX	General Pedro María Anaya
+MX	Gobernadores
+MX	Gonzalez
+MX	Gonzalez Ortega
+MX	González
+MX	González Ortega
+MX	Graciano Sanchez
+MX	Graciano Sánchez
+MX	Grajales
+MX	Granada
+MX	Granados
+MX	Guadalupe
+MX	Guadalupe Victoria
+MX	Guadalupé Victoria
+MX	Guerrero
+MX	Guillermo Prieto
+MX	Gustavo Diaz Ordaz
+MX	Gustavo Díaz Ordaz
+MX	Hacienda San Pedro
+MX	Hercules
+MX	Hermenegildo Galeana
+MX	Hermenegildo J. Aldana
+MX	Hernandez
+MX	Hernández
+MX	Heroes de Chapultepec
+MX	Hidalgo
+MX	Higuerillas
+MX	Higueron
+MX	Higuerón
+MX	Huexo Titla
+MX	Huichapan
+MX	Huizachal
+MX	Hércules
+MX	Héroes de Chapultepec
+MX	Ignacio Allende
+MX	Ignacio Lopez Rayon
+MX	Ignacio López Rayón
+MX	Ignacio Manuel Altamirano
+MX	Ignacio Perez
+MX	Ignacio Pérez
+MX	Ignacio Ramirez
+MX	Ignacio Ramírez
+MX	Ignacio Zaragoza
+MX	Ignacio de la Llave
+MX	Inde
+MX	Independencia
+MX	Indé
+MX	Iturbide
+MX	Ixcatepec
+MX	Ixtapa
+MX	Ixtepec
+MX	Ixtlahuacan
+MX	Ixtlahuacán
+MX	Jacarandas
+MX	Jalapa
+MX	Jalisco
+MX	Jalpa
+MX	Jamaica
+MX	Janitzio
+MX	Jauja
+MX	Jerusalen
+MX	Jerusalén
+MX	Jesus Carranza
+MX	Jesus Gomez Portugal
+MX	Jesus Maria
+MX	Jesús Carranza
+MX	Jesús Gómez Portugal
+MX	Jesús María
+MX	Jiquilpan
+MX	Jorge Jimenez Cantu
+MX	Jorge Jiménez Cantú
+MX	Jose Colomo
+MX	Jose F. Gutierrez
+MX	Jose Guadalupe Rodriguez
+MX	Jose Maria Morelos
+MX	Jose Maria Morelos y Pavon
+MX	Jose Maria Pino Suarez
+MX	Jose María Morelos y Pavón
+MX	José Colomo
+MX	José F. Gutiérrez
+MX	José Guadalupe Rodríguez
+MX	José María Morelos
+MX	José María Morelos y Pavón
+MX	José María Pino Suárez
+MX	Juan Sarabia
+MX	Juarez
+MX	Justo Sierra
+MX	Juárez
+MX	La Alameda
+MX	La Aldea
+MX	La Amistad
+MX	La Angostura
+MX	La Aurora
+MX	La Blanca
+MX	La Calera
+MX	La Canada
+MX	La Candelaria
+MX	La Cantera
+MX	La Capilla
+MX	La Carbonera
+MX	La Cañada
+MX	La Ceiba
+MX	La Central
+MX	La Cienega
+MX	La Cieneguita
+MX	La Ciénega
+MX	La Colonia
+MX	La Concepcion
+MX	La Concepción
+MX	La Concha
+MX	La Concordia
+MX	La Corregidora
+MX	La Cruz
+MX	La Cuesta
+MX	La Cueva
+MX	La Cuevita
+MX	La Curva
+MX	La Encarnacion
+MX	La Encarnación
+MX	La Escalera
+MX	La Escondida
+MX	La Esmeralda
+MX	La Esperanza
+MX	La Estacion
+MX	La Estación
+MX	La Estancia
+MX	La Estanzuela
+MX	La Estrella
+MX	La Fe
+MX	La Finca
+MX	La Floresta
+MX	La Florida
+MX	La Fortuna
+MX	La Fuente
+MX	La Garita
+MX	La Gavia
+MX	La Gloria
+MX	La Glorieta
+MX	La Guadalupana
+MX	La Guadalupe
+MX	La Guasima
+MX	La Guásima
+MX	La Herradura
+MX	La Higuera
+MX	La Huerta
+MX	La Isla
+MX	La Joya
+MX	La Junta
+MX	La Labor
+MX	La Laguna
+MX	La Lagunilla
+MX	La Laja
+MX	La Libertad
+MX	La Lima
+MX	La Lobera
+MX	La Loma
+MX	La Luz
+MX	La Madrid
+MX	La Magdalena
+MX	La Mesa
+MX	La Mezquitera
+MX	La Mina
+MX	La Mision
+MX	La Misión
+MX	La Mohonera
+MX	La Mojonera
+MX	La Noria
+MX	La Pahua
+MX	La Palma
+MX	La Palmilla
+MX	La Paz
+MX	La Pedrera
+MX	La Perla
+MX	La Piedad
+MX	La Pila
+MX	La Playa
+MX	La Pradera
+MX	La Presa
+MX	La Presita
+MX	La Primavera
+MX	La Providencia
+MX	La Purisima
+MX	La Purísima
+MX	La Quemada
+MX	La Reforma
+MX	La Ribera
+MX	La Rinconada
+MX	La Roca
+MX	La Rosa
+MX	La Rumorosa
+MX	La Sauceda
+MX	La Sidra
+MX	La Soledad
+MX	La Toma
+MX	La Trinidad
+MX	La Union
+MX	La Unión
+MX	La Vega
+MX	La Venta
+MX	La Ventana
+MX	La Victoria
+MX	La fe
+MX	Lagunilla
+MX	Landin
+MX	Landín
+MX	Las Animas
+MX	Las Armas
+MX	Las Brisas
+MX	Las Canadas
+MX	Las Canas
+MX	Las Catarinas
+MX	Las Cañadas
+MX	Las Cañas
+MX	Las Coloradas
+MX	Las Cruces
+MX	Las Delicias
+MX	Las Esperanzas
+MX	Las Higueras
+MX	Las Huertas
+MX	Las Huertas Tercera Seccion
+MX	Las Huertas Tercera Sección
+MX	Las Juntas
+MX	Las Lajas
+MX	Las Lajitas
+MX	Las Liebres
+MX	Las Lomas
+MX	Las Maravillas
+MX	Las Margaritas
+MX	Las Minas
+MX	Las Moras
+MX	Las Nieves
+MX	Las Palmas
+MX	Las Penas
+MX	Las Peñas
+MX	Las Pilas
+MX	Las Rosas
+MX	Las Sabinas
+MX	Las Torres
+MX	Las Trancas
+MX	Las Vigas
+MX	Las Ánimas
+MX	Lazaro Cardenas
+MX	Leona Vicario
+MX	Libertad
+MX	Limones
+MX	Linda Vista
+MX	Lindavista
+MX	Llano Grande
+MX	Loma Alta
+MX	Loma Blanca
+MX	Loma Bonita
+MX	Loma De Juarez
+MX	Loma Larga
+MX	Loma Linda
+MX	Lomalinda
+MX	Lomas Verdes
+MX	Lomas de Altavista
+MX	Lomas de Chapultepec
+MX	Lomas de San Agustin
+MX	Lomas de San Agustín
+MX	Lomas de San Juan
+MX	Lomas de San Martin
+MX	Lomas de San Martín
+MX	Lomas de San Pablo
+MX	Lomas de Santa Anita
+MX	Lomas de Santa Cruz
+MX	Lomas del Real
+MX	Lomitas
+MX	Loreto
+MX	Los Aguajes
+MX	Los Alamos
+MX	Los Almendros
+MX	Los Altos
+MX	Los Angeles
+MX	Los Arcos
+MX	Los Arquitos
+MX	Los Cafetales
+MX	Los Cavazos
+MX	Los Cedros
+MX	Los Cerritos
+MX	Los Encinos
+MX	Los Idolos
+MX	Los Laureles
+MX	Los Limones
+MX	Los Lirios
+MX	Los Mangos
+MX	Los Molinos
+MX	Los Naranjos
+MX	Los Nogales
+MX	Los Ocotes
+MX	Los Olivos
+MX	Los Otates
+MX	Los Parques
+MX	Los Pilares
+MX	Los Pinos
+MX	Los Pocitos
+MX	Los Ramones
+MX	Los Remedios
+MX	Los Reyes
+MX	Los Robles
+MX	Los Rodriguez
+MX	Los Rodríguez
+MX	Los Ruisenores
+MX	Los Ruiseñores
+MX	Los Sabinos
+MX	Los Sauces
+MX	Los Saucitos
+MX	Los Saucos
+MX	Los Saúcos
+MX	Los Tepetates
+MX	Los Valles
+MX	Los Álamos
+MX	Los Ángeles
+MX	Los Ídolos
+MX	Lourdes
+MX	Lázaro Cardenas
+MX	Lázaro Cárdenas
+MX	Maclovio Herrera
+MX	Madrid
+MX	Manantiales
+MX	Manlio Fabio Altamirano
+MX	Manuel Avila Camacho
+MX	Manuel Villalongin
+MX	Manuel Ávila Camacho
+MX	Maravillas
+MX	Margaritas
+MX	Mariano Escobedo
+MX	Mariano Matamoros
+MX	Marin
+MX	Marte R. Gomez
+MX	Marte R. Gómez
+MX	Martinez
+MX	Martinez Dominguez
+MX	Martínez
+MX	Martínez Domínguez
+MX	Marín
+MX	Matamoros
+MX	Mayapan
+MX	Mayapán
+MX	Mayran
+MX	Mayrán
+MX	Melchor Ocampo
+MX	Mezquital del Oro
+MX	Miguel Hidalgo
+MX	Miguel Negrete
+MX	Milpillas
+MX	Mina
+MX	Miraflores
+MX	Miravalle
+MX	Miravalles
+MX	Moctezuma
+MX	Monte Calvario
+MX	Monte Kristal
+MX	Monte Verde
+MX	Montenegro
+MX	Monterrey
+MX	Moralillo
+MX	Morelos
+MX	Narciso Mendoza
+MX	Nativitas
+MX	Netzahualcoyotl
+MX	Netzahualcóyotl
+MX	Nezahualcoyotl
+MX	Nezahualcóyotl
+MX	Nicolas Bravo
+MX	Nicolás Bravo
+MX	Ninos Heroes
+MX	Niños Heroes
+MX	Niños Héroes
+MX	Nogales
+MX	Nombre de Dios
+MX	Nueva Esperanza
+MX	Nueva Independencia
+MX	Nueva Libertad
+MX	Nueva Palestina
+MX	Nueva Primavera
+MX	Nuevo Amatenango
+MX	Nuevo Ideal
+MX	Nuevo Leon
+MX	Nuevo León
+MX	Nuevo Mexico
+MX	Nuevo México
+MX	Nuevo Progreso
+MX	Nuevo San Miguel
+MX	Oasis
+MX	Ocho de Enero
+MX	Ocotepec
+MX	Ojo de Agua
+MX	Ojocaliente
+MX	Olinala
+MX	Opichen
+MX	Opichén
+MX	Oriental
+MX	Orizaba
+MX	Ortiz
+MX	PEMEX
+MX	Palma Sola
+MX	Palmar Chico
+MX	Palmillas
+MX	Palmira
+MX	Palo Alto
+MX	Palo Blanco
+MX	Palomas
+MX	Pantitlan
+MX	Pantitlán
+MX	Pardo
+MX	Paseo del Prado
+MX	Paseos del Pedregal
+MX	Paso Blanco
+MX	Patria Nueva
+MX	Pemex
+MX	Pena Blanca
+MX	Penjamo
+MX	Pesqueira
+MX	Peña Blanca
+MX	Pichucalco
+MX	Piedra Blanca
+MX	Piedras Negras
+MX	Pino Suarez
+MX	Pino Suárez
+MX	Plan de Ayala
+MX	Plan de Iguala
+MX	Plateros
+MX	Pocitos
+MX	Ponciano Arriaga
+MX	Porfirio Diaz
+MX	Porfirio Díaz
+MX	Portezuelo
+MX	Potrerillo
+MX	Potrero del Llano
+MX	Prados del Rosario
+MX	Praxedis Guerrero
+MX	Presidente Juarez
+MX	Presidente Juárez
+MX	Primero de Mayo
+MX	Primo Tapia
+MX	Progreso
+MX	Providencia
+MX	Práxedis Guerrero
+MX	Puebla
+MX	Pueblo Nuevo
+MX	Pueblo Viejo
+MX	Puente de Piedra
+MX	Purisima
+MX	Purísima
+MX	Queretaro
+MX	Querétaro
+MX	Quinceo
+MX	Quintana Roo
+MX	Quintero
+MX	Rafael Ramirez
+MX	Rafael Ramírez
+MX	Rancho Alegre
+MX	Rancho Grande
+MX	Rancho Nuevo
+MX	Rancho Viejo
+MX	Rancho de Guadalupe
+MX	Real del Sol
+MX	Reforma
+MX	Residencial Arboledas
+MX	Revolucion Mexicana
+MX	Revolución Mexicana
+MX	Ricardo Flores Magon
+MX	Ricardo Flores Magón
+MX	Rincon de Guadalupe
+MX	Rincon de Los Reyes
+MX	Rincón de Guadalupe
+MX	Rincón de Los Reyes
+MX	Rio Blanco
+MX	Rio Bravo
+MX	Rio Grande
+MX	Rio Jordan
+MX	Rio Verde
+MX	Rodeo
+MX	Rosales
+MX	Rosario
+MX	Río Blanco
+MX	Río Bravo
+MX	Río Grande
+MX	Río Jordán
+MX	Río Verde
+MX	Sacramento
+MX	Sahuaral
+MX	Saltillo
+MX	Salvador Diaz Miron
+MX	Salvador Díaz Mirón
+MX	San Agustin
+MX	San Agustin de las Flores
+MX	San Agustin del Palmar
+MX	San Agustín
+MX	San Agustín de las Flores
+MX	San Agustín del Palmar
+MX	San Andres
+MX	San Andrés
+MX	San Angel
+MX	San Antonio
+MX	San Antonio de las Huertas
+MX	San Bartolo
+MX	San Bartolome
+MX	San Benito
+MX	San Bernardo
+MX	San Blas
+MX	San Buena Ventura
+MX	San Buenaventura
+MX	San Caralampio
+MX	San Carlos
+MX	San Cayetano
+MX	San Clemente
+MX	San Cristobal
+MX	San Cristóbal
+MX	San Diego
+MX	San Elias
+MX	San Elías
+MX	San Esteban
+MX	San Felipe
+MX	San Felipe de Jesus
+MX	San Felipe de Jesús
+MX	San Fernando
+MX	San Francisco
+MX	San Francisco Ocotlan
+MX	San Francisco de Asis
+MX	San Francisco de Asís
+MX	San Gabriel
+MX	San Gregorio
+MX	San Ignacio
+MX	San Ildefonso
+MX	San Isidro
+MX	San Jacinto
+MX	San Javier
+MX	San Jeronimo
+MX	San Jerónimo
+MX	San Joaquin
+MX	San Joaquín
+MX	San Jose
+MX	San Jose Buenavista
+MX	San Jose El Alto
+MX	San Jose Vista Hermosa
+MX	San Jose del Puente
+MX	San José
+MX	San José Buenavista
+MX	San José El Alto
+MX	San Juan
+MX	San Juan Bautista
+MX	San Juan Grande
+MX	San Juan de Guadalupe
+MX	San Juan del Rio
+MX	San Juan del Río
+MX	San Juanito
+MX	San Lorenzo
+MX	San Lucas
+MX	San Luis
+MX	San Manuel
+MX	San Marcos
+MX	San Martin
+MX	San Martín
+MX	San Mateo
+MX	San Mateo Ixtacalco
+MX	San Miguel
+MX	San Miguelito
+MX	San Nicolas
+MX	San Nicolas Tolentino
+MX	San Nicolás
+MX	San Nicolás Tolentino
+MX	San Pablo
+MX	San Patricio
+MX	San Pedro
+MX	San Pedro Apostol
+MX	San Pedro Apóstol
+MX	San Pedro Martir
+MX	San Pedro Xalpa
+MX	San Rafael
+MX	San Salvador
+MX	San Sebastian
+MX	San Sebastián
+MX	San Simon
+MX	San Simón
+MX	San Vicente
+MX	San Ángel
+MX	Santa Ana
+MX	Santa Anita
+MX	Santa Apolonia
+MX	Santa Barbara
+MX	Santa Bárbara
+MX	Santa Catalina
+MX	Santa Catarina
+MX	Santa Clara
+MX	Santa Cruz
+MX	Santa Cruz del Monte
+MX	Santa Cruz del Valle
+MX	Santa Elena
+MX	Santa Eulalia
+MX	Santa Fe
+MX	Santa Fé
+MX	Santa Gertrudis
+MX	Santa Isabel
+MX	Santa Lucia
+MX	Santa Lucía
+MX	Santa Maria
+MX	Santa Maria Magdalena
+MX	Santa Maria Nativitas
+MX	Santa Maria de Guadalupe
+MX	Santa Maria del Monte
+MX	Santa Martha
+MX	Santa María
+MX	Santa María Magdalena
+MX	Santa María Nativitas
+MX	Santa María de Guadalupe
+MX	Santa María del Monte
+MX	Santa Monica
+MX	Santa Mónica
+MX	Santa Rita
+MX	Santa Rosa
+MX	Santa Rosa de Lima
+MX	Santa Rosalia
+MX	Santa Rosalía
+MX	Santa Teresa
+MX	Santa Ursula
+MX	Santa Úrsula
+MX	Santiago
+MX	Santiago Centro
+MX	Santiaguito
+MX	Santo Domingo
+MX	Santo Tomas
+MX	Santo Tomás
+MX	Sarabia
+MX	Seis de Enero
+MX	Seis de Octubre
+MX	Sinaloa
+MX	Sonora
+MX	Tacubaya
+MX	Tamaulipas
+MX	Tampiquito
+MX	Tecolotes
+MX	Tecolutla
+MX	Tecuexcomac
+MX	Tejalpa
+MX	Tenantitla
+MX	Teneria
+MX	Tenería
+MX	Tenochtitlan
+MX	Tenochtitlán
+MX	Tepalcingo
+MX	Tepango
+MX	Tepec
+MX	Tepetates
+MX	Tepetongo
+MX	Tepetzintla
+MX	Tepeyahualco
+MX	Tequexquinahuac
+MX	Tequexquináhuac
+MX	Tequisquiapan
+MX	Tetillas
+MX	Texcaltepec
+MX	Tezontepec
+MX	Tierra Blanca
+MX	Tierra Colorada
+MX	Tierra Nueva
+MX	Tierra Y Libertad
+MX	Tierra y Libertad
+MX	Tila
+MX	Tlacoapa
+MX	Tlacomulco
+MX	Tlacuitlapa
+MX	Tlaltenango
+MX	Tlapala
+MX	Tlatempa
+MX	Tres Estrellas
+MX	Tres Marias
+MX	Tres Marías
+MX	Tres Picos
+MX	Tula
+MX	Tulipanes
+MX	Tuxpan
+MX	Unidos Avanzamos
+MX	Union y Progreso
+MX	Unión y Progreso
+MX	Ursulo Galvan
+MX	Valentin Gomez Farias
+MX	Valentín Gómez Farías
+MX	Valladolid
+MX	Valle Verde
+MX	Valle de Zaragoza
+MX	Valle del Rio
+MX	Valle del Rosario
+MX	Valle del Río
+MX	Vamos Tamaulipas
+MX	Vaquerias
+MX	Vaquerías
+MX	Veinte de Noviembre
+MX	Venustiano Carranza
+MX	Veracruz
+MX	Vicente Guerrero
+MX	Vicente Herrera
+MX	Victoria
+MX	Villa Alta
+MX	Villa Hermosa
+MX	Villa Juarez
+MX	Villa Juárez
+MX	Villa Madero
+MX	Villa Magna
+MX	Villa de Guadalupe
+MX	Villa de Las Flores
+MX	Villa de Reyes
+MX	Villa de las Flores
+MX	Villa del Campo
+MX	Villahermosa
+MX	Villas de Alcala
+MX	Villas de Alcalá
+MX	Villas de la Laguna
+MX	Villas de la Loma
+MX	Vista Hermosa
+MX	Xaltepec
+MX	Xaltocan
+MX	Xochimilco
+MX	Xocotla
+MX	Yanga
+MX	Zacatal
+MX	Zacatepec
+MX	Zamora
+MX	Zapotlan
+MX	Zapotlán
+MX	Zaragoza
+MX	Zoquiapan
+MX	Álamos
+MX	Álvaro Obregón
+MX	Úrsulo Galván
+NG	Egbeda
+NI	Santa Teresa
+NI	Santo Domingo
+NL	't Zand
+NL	Aalst
+NL	Alteveer
+NL	Bloemendaal
+NL	Den Ham
+NL	Etten
+NL	Gracht
+NL	Hasselt
+NL	Heide
+NL	Nieuwland
+NL	Noordeinde
+NL	Noordhoek
+NL	Oerle
+NL	Oosteinde
+NL	Strijen
+NL	Strijp
+NL	Veldhoven
+NL	Veldhuizen
+NL	’t Zand
+NO	As
+NO	Evje
+NO	Fiska
+NO	Fiskå
+NO	Frogner
+NO	Roa
+NO	Røa
+NO	Valle
+NO	Ås
+NZ	Belmont
+NZ	Fairfield
+NZ	Heretaunga
+NZ	Lincoln
+NZ	Mornington
+NZ	Normanby
+NZ	Waikowhai
+NZ	Wairau Valley
+PA	Agua Buena
+PA	Buena Vista
+PA	Buenos Aires
+PA	Cabuya
+PA	Chumical
+PA	Corozal
+PA	Dos Rios
+PA	Dos Ríos
+PA	El Porvenir
+PA	El Progreso
+PA	El Roble
+PA	Guarumal
+PA	La Colorada
+PA	La Esmeralda
+PA	La Esperanza
+PA	Las Huacas
+PA	Las Lajas
+PA	Las Palmitas
+PA	Las Trancas
+PA	Los Angeles
+PA	Los Olivos
+PA	Los Ángeles
+PA	Nuevo Chagres
+PA	Paraiso
+PA	Paraíso
+PA	Progreso
+PA	Pueblo Nuevo
+PA	San Antonio
+PA	San Isidro
+PA	San Jose
+PA	San José
+PA	San Juan de Dios
+PA	San Lorenzo
+PA	Santa Clara
+PA	Santa Maria
+PA	Santa Marta
+PA	Santa María
+PA	Santa Rita
+PA	Vista Hermosa
+PE	Andamarca
+PE	Belen
+PE	Bellavista
+PE	Belén
+PE	Buenos Aires
+PE	Carmen Alto
+PE	Chucuito
+PE	Conchopata
+PE	El Carmen
+PE	El Ingenio
+PE	Independencia
+PE	La Florida
+PE	La Grama
+PE	La Libertad
+PE	La Merced
+PE	La Pampa
+PE	La Union
+PE	La Unión
+PE	Magdalena
+PE	Miraflores
+PE	Mollepampa
+PE	Naranjos
+PE	Pueblo Libre
+PE	Pueblo Nuevo
+PE	Ramon Castilla
+PE	Ramón Castilla
+PE	Salaverry
+PE	San Bartolo
+PE	San Carlos
+PE	San Felipe
+PE	San Francisco
+PE	San Jose
+PE	San José
+PE	San Juan
+PE	San Lorenzo
+PE	San Luis
+PE	San Martin
+PE	San Martín
+PE	San Miguel
+PE	San Pedro
+PE	San Sebastian
+PE	San Sebastián
+PE	Santa Cruz
+PE	Santa Elena
+PE	Santa Maria
+PE	Santa María
+PE	Santa Rosa
+PE	Tupac Amaru
+PE	Vista Alegre
+PH	Babag
+PH	Bacong
+PH	Bakung
+PH	Bamban
+PH	Basak
+PH	Bato
+PH	Bayanan
+PH	Bayog
+PH	Buenavista
+PH	Buhangin
+PH	Cabadiangan
+PH	Cabanbanan
+PH	Calumpang
+PH	Catarman
+PH	Catmon
+PH	Dolores
+PH	Ermita
+PH	Kanluran
+PH	La Paz
+PH	Libacao
+PH	Libjo
+PH	Libungan
+PH	Libuñgan
+PH	Looc
+PH	Maligaya
+PH	Malinta
+PH	Maravilla
+PH	Pasil
+PH	Prinza
+PH	Sabang
+PH	Sampaloc
+PH	San Antonio
+PH	San Isidro
+PH	San Jose
+PH	San Juan
+PH	San Julian
+PH	San Miguel
+PH	San Nicolas
+PH	San Rafael
+PH	San Roque
+PH	San Vicente
+PH	Santa Clara
+PH	Santa Cruz
+PH	Santa Lucia
+PH	Santa Rosa
+PH	Santiago
+PH	Santo Tomas
+PH	Taft
+PH	Talaga
+PH	Talisay
+PH	Tipaz
+PH	Tolosa
+PH	Tranca
+PH	Trinidad
+PH	Tuburan
+PH	Tulay
+PH	Tuy
+PH	Villanueva
+PK	Ali Abad
+PK	Aliabad
+PK	Amirabad
+PK	Mughalabad
+PK	Muhammadpur
+PL	Aleksandrow
+PL	Aleksandrów
+PL	Augustowka
+PL	Augustówka
+PL	Bielany
+PL	Bobrowniki
+PL	Branice
+PL	Brzeziny
+PL	Chrzanow
+PL	Chrzanów
+PL	Chwalowice
+PL	Chwałowice
+PL	Ciezkowice
+PL	Ciężkowice
+PL	Dabie
+PL	Dabrowka
+PL	Dąbie
+PL	Dąbrówka
+PL	Grabow
+PL	Grabów
+PL	Grodziec
+PL	Henrykow
+PL	Henryków
+PL	Jasienica
+PL	Kamienica
+PL	Ksawerow
+PL	Ksawerów
+PL	Kuznica
+PL	Kuźnica
+PL	Lipnik
+PL	Malta
+PL	Miedzylesie
+PL	Mirow
+PL	Mirów
+PL	Międzylesie
+PL	Nowa Wies
+PL	Nowa Wieś
+PL	Nowe Miasto
+PL	Olszanica
+PL	Pawlow
+PL	Pawłów
+PL	Piaski
+PL	Piecki
+PL	Poswietne
+PL	Poświętne
+PL	Rakow
+PL	Raków
+PL	Rudniki
+PL	Sidzina
+PL	Stara Dabrowa
+PL	Stara Dąbrowa
+PL	Stare Miasto
+PL	Szamocin
+PL	Wesola
+PL	Wesoła
+PL	Widawa
+PL	Wierzbno
+PL	Zagorze
+PL	Zagórze
+PL	Zakrzow
+PL	Zakrzów
+PL	Zarzecze
+PL	Zebrzydowice
+PL	Zlotniki
+PL	Złotniki
+PY	Bella Vista
+PY	Buena Vista
+PY	Caraguatay
+PY	Carlos Antonio Lopez
+PY	Carlos Antonio López
+PY	Cerrito
+PY	General Jose Eduvigis Diaz
+PY	General José Eduvigis Díaz
+PY	Mbocayaty
+PY	Nueva Esperanza
+PY	San Miguel
+PY	Santa Maria
+PY	Santa María
+PY	Santa Rita
+PY	Santa Rosa
+QA	Al Wukayr
+QA	AlWukayr
+RO	Baciu
+RO	Badesti
+RO	Balta
+RO	Balta Alba
+RO	Balta Albă
+RO	Baneasa
+RO	Barzesti
+RO	Berceni
+RO	Blandesti
+RO	Blândești
+RO	Bogda
+RO	Branesti
+RO	Brates
+RO	Brateş
+RO	Brăneşti
+RO	Bucium
+RO	Budesti
+RO	Budeşti
+RO	Bârzeşti
+RO	Bădeşti
+RO	Băneasa
+RO	Capatanesti
+RO	Catanele
+RO	Cetate
+RO	Ciocarlia
+RO	Ciocârlia
+RO	Ciolpani
+RO	Corbeni
+RO	Corbu
+RO	Cornesti
+RO	Corneşti
+RO	Cozmesti
+RO	Cozmeşti
+RO	Craciunesti
+RO	Crangu
+RO	Croitori
+RO	Crângu
+RO	Crăciuneşti
+RO	Cumpana
+RO	Cumpăna
+RO	Căpăţâneşti
+RO	Cătanele
+RO	Darmanesti
+RO	Dascalesti
+RO	Dorobanti
+RO	Dorobanți
+RO	Draganesti
+RO	Drăgăneşti
+RO	Dudesti
+RO	Dudeşti
+RO	Dumbrava
+RO	Dumitresti
+RO	Dumitreşti
+RO	Dărmăneşti
+RO	Dăscăleşti
+RO	Floresti
+RO	Floreşti
+RO	Florica
+RO	Frecatei
+RO	Frecăţei
+RO	Garcina
+RO	Giulesti
+RO	Giuleşti
+RO	Greblesti
+RO	Grebleşti
+RO	Grivita
+RO	Griviţa
+RO	Gropeni
+RO	Gruia
+RO	Gura Vaii
+RO	Gura Văii
+RO	Gărcina
+RO	Hartiesti
+RO	Hârtieşti
+RO	I.C. Bratianu
+RO	I.C. Brătianu
+RO	Iapa
+RO	Jieni
+RO	Joseni
+RO	Leordeni
+RO	Lilieci
+RO	Livezile
+RO	Lunca
+RO	Magura
+RO	Magurele
+RO	Manesti
+RO	Marginea
+RO	Mihail Kogalniceanu
+RO	Mihail Kogălniceanu
+RO	Moraresti
+RO	Morăreşti
+RO	Mosneni
+RO	Mosteni
+RO	Moşneni
+RO	Moşteni
+RO	Măgura
+RO	Măgurele
+RO	Măneşti
+RO	Negresti
+RO	Negreşti
+RO	Ologeni
+RO	Osebiti
+RO	Osebiţi
+RO	Peretu
+RO	Piscu
+RO	Poiana Marului
+RO	Poiana Mărului
+RO	Poieni
+RO	Poienile
+RO	Popesti
+RO	Popeşti
+RO	Prundeni
+RO	Prundu
+RO	Radeni
+RO	Remeti
+RO	Remeţi
+RO	Romanesti
+RO	Româneşti
+RO	Runcu
+RO	Ruseni
+RO	Rădeni
+RO	Satu Nou
+RO	Satu-Lung
+RO	Seaca
+RO	Secu
+RO	Seleus
+RO	Seleuş
+RO	Serbanesti
+RO	Silistea
+RO	Siliştea
+RO	Slobozia
+RO	Stanilesti
+RO	Stefanesti
+RO	Stroesti
+RO	Stroeşti
+RO	Stănileşti
+RO	Subcetate
+RO	Suditi
+RO	Sudiţi
+RO	Surdesti
+RO	Surdeşti
+RO	Susani
+RO	Suseni
+RO	Traian
+RO	Tufeni
+RO	Tufesti
+RO	Tufeşti
+RO	Ulmi
+RO	Ungureni
+RO	Valea Mare
+RO	Valea Seaca
+RO	Valea Seacă
+RO	Valeni
+RO	Vanatori
+RO	Viisoara
+RO	Viişoara
+RO	Vânători
+RO	Văleni
+RO	Zavoaia
+RO	Zorile
+RO	Zăvoaia
+RO	Şerbăneşti
+RO	Ştefăneşti
+RS	Novo Selo
+RU	Abram-Mys
+RU	Afonino
+RU	Aleksandrovka
+RU	Aleksandrovskaya
+RU	Aleksandrovskoye
+RU	Alekseyevka
+RU	Annino
+RU	Antipovka
+RU	Arshan
+RU	Babushkin
+RU	Belaya Gora
+RU	Beregovoy
+RU	Berezovka
+RU	Berezovo
+RU	Berëzovka
+RU	Berëzovo
+RU	Berēzovka
+RU	Bogorodskoye
+RU	Cheremushki
+RU	Cherkassy
+RU	Cherkizovo
+RU	Cherëmushki
+RU	Chkalovsk
+RU	Dachnoye
+RU	Dolinsk
+RU	Druzhba
+RU	Dubenki
+RU	Dubki
+RU	Dubënki
+RU	Energetik
+RU	Gornyy
+RU	Gorodishche
+RU	Grazhdanka
+RU	Il'ich
+RU	Imeni Sverdlova
+RU	Ivanovskoye
+RU	Izmaylovo
+RU	Izvestkovyy
+RU	Kamenka
+RU	Kirovskiy
+RU	Kommunar
+RU	Komsomol'skiy
+RU	Komsomol'skoye
+RU	Komsomol’skiy
+RU	Komsomol’skoye
+RU	Kosino
+RU	Kostino
+RU	Kozlovka
+RU	Krasnaya Gorka
+RU	Krasnoarmeyskiy
+RU	Krasnogvardeyskiy
+RU	Krasnoye
+RU	Krasnyy Bor
+RU	Krasnyy Oktyabr'
+RU	Krasnyy Oktyabr’
+RU	Kremenki
+RU	Kresty
+RU	Kurkino
+RU	Kuznechikha
+RU	Lenina
+RU	Leninskiy
+RU	Lermontovo
+RU	Lesnoy
+RU	Lesnoye
+RU	Levashi
+RU	Lobanovo
+RU	Lokomotivnyy
+RU	Lopatino
+RU	Lukino
+RU	Magnitka
+RU	Malino
+RU	Malinovka
+RU	Mayskiy
+RU	Mel'nikovo
+RU	Mel’nikovo
+RU	Mendeleyevo
+RU	Mikhaylovka
+RU	Mikhaylovskoye
+RU	Mirnyy
+RU	Molodezhnyy
+RU	Molodëzhnyy
+RU	Moskovskiy
+RU	Moskovskoye
+RU	Myskhako
+RU	Nagornyy
+RU	Nazar'yevo
+RU	Nekrasovka
+RU	Nekrasovskiy
+RU	Nikol'skoye
+RU	Nikolayevka
+RU	Nikol’skoye
+RU	Novonikol'skoye
+RU	Novonikol’skoye
+RU	Novyy
+RU	Obukhovo
+RU	Oktyabr'skiy
+RU	Oktyabr'skoye
+RU	Oktyabr’skiy
+RU	Oktyabr’skoye
+RU	Ol'gino
+RU	Ol’gino
+RU	Ordzhonikidze
+RU	Orlovka
+RU	Orlovo
+RU	Otrada
+RU	Ozernyy
+RU	Ozërnyy
+RU	Panino
+RU	Parkovyy
+RU	Perevoz
+RU	Pervomayskiy
+RU	Peski
+RU	Pesochnyy
+RU	Petrovskiy
+RU	Pioner
+RU	Pionerskiy
+RU	Pochinok
+RU	Podgornyy
+RU	Pokrovka
+RU	Polyany
+RU	Popova
+RU	Pribrezhnyy
+RU	Prigorodnyy
+RU	Privolzhskiy
+RU	Promyshlennyy
+RU	Pushkino
+RU	Pyshma
+RU	Raduzhnyy
+RU	Romodanovo
+RU	Rozhdestveno
+RU	Sadovyy
+RU	Safonovo
+RU	Selishche
+RU	Semkhoz
+RU	Severnyy
+RU	Shirokovskiy
+RU	Sibirskiy
+RU	Silikatnyy
+RU	Smolenskoye
+RU	Smolino
+RU	Sokol
+RU	Sokol'skoye
+RU	Sokol’skoye
+RU	Solnechnyy
+RU	Solntsevo
+RU	Sosnovka
+RU	Sosnovo
+RU	Sovetskiy
+RU	Sovkhoznyy
+RU	Staryye Atagi
+RU	Svetlyy
+RU	Svobodnyy
+RU	Ternovka
+RU	Torfyanoy
+RU	Troitskoye
+RU	Tsementnyy
+RU	Tsentral'nyy
+RU	Tsentral’nyy
+RU	Udel'naya
+RU	Udel’naya
+RU	Visim
+RU	Vitim
+RU	Vladimirovka
+RU	Vodnyy
+RU	Volkovo
+RU	Volzhskiy
+RU	Voskresenskoye
+RU	Vostochnyy
+RU	Yakovlevskoye
+RU	Yaroslavskiy
+RU	Yekaterinovka
+RU	Yel'shanka
+RU	Yelshanka
+RU	Yel’shanka
+RU	Yubileynyy
+RU	Yuzhnyy
+RU	Zarech'ye
+RU	Zarechnyy
+RU	Zarech’ye
+RU	Zarya
+RU	Zaton
+RU	Zavodskoy
+RU	Zheleznodorozhnyy
+RU	Zmiyevka
+RU	Zmiyëvka
+RU	Znamenka
+RU	Zonal'noye
+RU	Zonal’noye
+RU	Zvezdnyy
+RU	Zvëzdnyy
+SA	Al Hada
+SA	Al Hadā
+SE	Aby
+SE	Alafors
+SE	Backa
+SE	Eriksberg
+SE	Farjestaden
+SE	Färjestaden
+SE	Lindholmen
+SE	Marieberg
+SE	Ryd
+SE	Valla
+SE	Åby
+SN	Fas
+SN	Ngaparou
+SY	Al Hamidiyah
+SY	Al Jala'
+SY	Al Jalā’
+SY	Al Karamah
+SY	Al Karāmah
+SY	Al Mazra`ah
+SY	Al Mazra‘ah
+SY	Al Ya`rubiyah
+SY	Al Ya‘rubīyah
+SY	Al Ḩamīdīyah
+SY	An Nasirah
+SY	An Nāşirah
+SY	Ar Rawdah
+SY	Ar Rawḑah
+TJ	Buston
+TN	Erriadh
+TR	Adatepe
+TR	Akcay
+TR	Akdere
+TR	Akinci
+TR	Akincilar
+TR	Akkent
+TR	Akpinar
+TR	Akpınar
+TR	Aksu
+TR	Aktepe
+TR	Akçay
+TR	Akıncı
+TR	Akıncılar
+TR	Alparslan
+TR	Altinkum
+TR	Altinordu
+TR	Altinova
+TR	Altintas
+TR	Altınkum
+TR	Altınordu
+TR	Altınova
+TR	Altıntaş
+TR	Atakent
+TR	Atakoy
+TR	Atatuerk
+TR	Atatürk
+TR	Aydinlar
+TR	Aydintepe
+TR	Aydınlar
+TR	Aydıntepe
+TR	Bagbasi
+TR	Baglar
+TR	Bahce
+TR	Bahcecik
+TR	Bahçe
+TR	Bahçecik
+TR	Balat
+TR	Basaran
+TR	Baspinar
+TR	Battalgazi
+TR	Bağbaşı
+TR	Bağlar
+TR	Başaran
+TR	Başpınar
+TR	Bereketli
+TR	Bogazici
+TR	Bostanci
+TR	Bostancı
+TR	Bozkurt
+TR	Boztepe
+TR	Boğaziçi
+TR	Caglayan
+TR	Cakmak
+TR	Caldiran
+TR	Camlibel
+TR	Camlica
+TR	Camlik
+TR	Caybasi
+TR	Cağlayan
+TR	Celebi
+TR	Cicekli
+TR	Cinarli
+TR	Cukurca
+TR	Cumhuriyet
+TR	Demirci
+TR	Demirkent
+TR	Demirkoeprue
+TR	Demirköprü
+TR	Demirtas
+TR	Demirtaş
+TR	Derbent
+TR	Dikmen
+TR	Doganbey
+TR	Dogantepe
+TR	Doğanbey
+TR	Doğantepe
+TR	Duezici
+TR	Dumlupinar
+TR	Dumlupınar
+TR	Düziçi
+TR	Elmali
+TR	Elmalı
+TR	Erikli
+TR	Ertugrul
+TR	Ertuğrul
+TR	Esentepe
+TR	Eymir
+TR	Fevzi Pasa
+TR	Fevzi Paşa
+TR	Fevzipasa
+TR	Fevzipaşa
+TR	Findikli
+TR	Fındıklı
+TR	Gazi
+TR	Gaziler
+TR	Goekpinar
+TR	Goeksu
+TR	Goelluece
+TR	Guelluek
+TR	Guelpinar
+TR	Gueltepe
+TR	Guelveren
+TR	Guemuescay
+TR	Guemuessu
+TR	Guendogdu
+TR	Guenesli
+TR	Gueney
+TR	Guerpinar
+TR	Guezelbag
+TR	Guezeloluk
+TR	Guezelyali
+TR	Guezelyurt
+TR	Gulluk
+TR	Gunesli
+TR	Guzelyurt
+TR	Gökpınar
+TR	Göksu
+TR	Göllüce
+TR	Güllük
+TR	Gülpınar
+TR	Gültepe
+TR	Gülveren
+TR	Gümüşsu
+TR	Gümüşçay
+TR	Gündoğdu
+TR	Güney
+TR	Güneşli
+TR	Gürpınar
+TR	Güzelbağ
+TR	Güzeloluk
+TR	Güzelyalı
+TR	Güzelyurt
+TR	Hacilar
+TR	Hacılar
+TR	Halkapinar
+TR	Halkapınar
+TR	Hamidiye
+TR	Hamzabey
+TR	Harbiye
+TR	Haskoey
+TR	Hasköy
+TR	Hilal
+TR	Hisar
+TR	Ihsaniye
+TR	Ilica
+TR	Ilıca
+TR	Incesu
+TR	Inoenue
+TR	Inonu
+TR	Kabatas
+TR	Kabataş
+TR	Kale
+TR	Kandilli
+TR	Karaagac
+TR	Karaağaç
+TR	Karacali
+TR	Karahasanli
+TR	Karahasanlı
+TR	Karaisali
+TR	Karaisalı
+TR	Karakecili
+TR	Karakeçili
+TR	Karakoey
+TR	Karaköy
+TR	Karaoglan
+TR	Karaoğlan
+TR	Karatas
+TR	Karataş
+TR	Karaçalı
+TR	Karsiyaka
+TR	Karşıyaka
+TR	Kavaklidere
+TR	Kavaklıdere
+TR	Kayadibi
+TR	Kayakoey
+TR	Kayaköy
+TR	Kayaoenue
+TR	Kayaönü
+TR	Kazim Karabekir
+TR	Kazım Karabekir
+TR	Kemalpasa
+TR	Kemalpaşa
+TR	Kizilirmak
+TR	Kocasinan
+TR	Kocatepe
+TR	Koesk
+TR	Kokez
+TR	Koprulu
+TR	Kozluca
+TR	Kuecueksu
+TR	Kumluca
+TR	Kurtulus
+TR	Kurtuluş
+TR	Kâzım Karabekir
+TR	Kökez
+TR	Köşk
+TR	Küçüksu
+TR	Kızılırmak
+TR	Levent
+TR	Macka
+TR	Mahmudiye
+TR	Maçka
+TR	Mecidiye
+TR	Meric
+TR	Meriç
+TR	Merkez
+TR	Meydan
+TR	Meydancik
+TR	Meydancık
+TR	Muradiye
+TR	Murat
+TR	Narli
+TR	Narlı
+TR	Oguzlar
+TR	On Dokuz Mayis
+TR	On Dokuz Mayıs
+TR	Ondokuz Mayis
+TR	Ondokuz Mayıs
+TR	Orhanli
+TR	Orhanlı
+TR	Orta
+TR	Ortakoey
+TR	Ortaköy
+TR	Osmangazi
+TR	Ovacik
+TR	Oğuzlar
+TR	Pazaryeri
+TR	Pinarbasi
+TR	Pınarbaşı
+TR	Reis
+TR	Resadiye
+TR	Reşadiye
+TR	Sahin
+TR	Sahinbey
+TR	Sancak
+TR	Saray
+TR	Saraycik
+TR	Saraycık
+TR	Savcili
+TR	Savcılı
+TR	Selcuklu
+TR	Selimiye
+TR	Selçuklu
+TR	Senyurt
+TR	Seyhan
+TR	Seyitgazi
+TR	Suetcueler
+TR	Suetluece
+TR	Sütlüce
+TR	Sütçüler
+TR	Tekke
+TR	Tepebasi
+TR	Tepebaşı
+TR	Tepecik
+TR	Tepeuestue
+TR	Tepeüstü
+TR	Turgut
+TR	Tuzcular
+TR	Ulas
+TR	Ulaş
+TR	Ulubey
+TR	Ulus
+TR	Umurbey
+TR	Uzundere
+TR	Yaka
+TR	Yakacik
+TR	Yakacık
+TR	Yakakent
+TR	Yayla
+TR	Yeditepe
+TR	Yenidogan
+TR	Yenidoğan
+TR	Yenikoey
+TR	Yenikoy
+TR	Yeniköy
+TR	Yenisehir
+TR	Yenişehir
+TR	Yesildere
+TR	Yesilkoey
+TR	Yesiloez
+TR	Yesilova
+TR	Yesiltepe
+TR	Yesilyayla
+TR	Yesilyurt
+TR	Yeşildere
+TR	Yeşilköy
+TR	Yeşilova
+TR	Yeşiltepe
+TR	Yeşilyayla
+TR	Yeşilyurt
+TR	Yeşilöz
+TR	Yigitler
+TR	Yildirim
+TR	Yiğitler
+TR	Yıldırım
+TR	Zeytinli
+TR	Zeytinlik
+TR	Çakmak
+TR	Çaldıran
+TR	Çamlıbel
+TR	Çamlıca
+TR	Çamlık
+TR	Çaybaşı
+TR	Çağlayan
+TR	Çelebi
+TR	Çiçekli
+TR	Çukurca
+TR	Çınarlı
+TR	İhsaniye
+TR	İncesu
+TR	İnönü
+TR	Şahin
+TR	Şahinbey
+TR	Şenyurt
+TW	Dongshi
+TW	Xindian
+TZ	Magomeni
+UA	Artemivka
+UA	Bile
+UA	Chornomorka
+UA	Desna
+UA	Druzhba
+UA	Hladkivka
+UA	Ivanivka
+UA	Kalinino
+UA	Kalynove
+UA	Kamyanka
+UA	Kholodna Balka
+UA	Kirove
+UA	Komarivka
+UA	Lisky
+UA	Liubymivka
+UA	Lozivskyi
+UA	Lysa Hora
+UA	Maiak
+UA	Molodizhne
+UA	Myrnyi
+UA	Nove Misto
+UA	Novofedorovka
+UA	Novofëdorovka
+UA	Novopavlivka
+UA	Novoselivka
+UA	Nyzy
+UA	Obolon
+UA	Oleksiivka
+UA	Pasichna
+UA	Petrivka
+UA	Pisky
+UA	Pokrovske
+UA	Prymorskyi
+UA	Rybne
+UA	Sadky
+UA	Serhiivka
+UA	Shevchenko
+UA	Shyrokyi
+UA	Slobidka
+UA	Sosnivka
+UA	Terny
+UA	Ukrainka
+UA	Uspenivka
+UA	Verhulivka
+UA	Voskresenka
+UA	Voykovo
+UA	Vynohradar
+UA	Vyshneve
+UA	Yurivka
+UA	Zaliznychne
+UA	Zarichchia
+UA	Zavodske
+UA	Zelene
+UA	Zhuravlivka
+US	Adams
+US	Agua Fria
+US	Allendale
+US	Allentown
+US	Alta Vista
+US	Altamont
+US	Amherst
+US	Ancient Oaks
+US	Apple Creek
+US	Apple Valley
+US	Arcadia
+US	Arlington
+US	Arlington Heights
+US	Asbury
+US	Ashburn
+US	Ashland
+US	Ashley
+US	Astoria
+US	Atlantic
+US	Auburndale
+US	Aurora
+US	Austin
+US	Avalon
+US	Avondale
+US	Bailey
+US	Bainbridge
+US	Baker
+US	Baldwin
+US	Ballard
+US	Baltimore Highlands
+US	Barrington Hills
+US	Battleground
+US	Bay Park
+US	Bayshore
+US	Bayside
+US	Bayview
+US	Beacon Hill
+US	Beaver Creek
+US	Bel Air
+US	Belair
+US	Belfair
+US	Bella Vista
+US	Bellaire
+US	Belle Haven
+US	Bellemeade
+US	Belleview
+US	Bellwood
+US	Belmont
+US	Belridge
+US	Belton
+US	Belvedere
+US	Belvidere
+US	Benwood
+US	Berea
+US	Bergen
+US	Beverly
+US	Beverly Hills
+US	Birchwood
+US	Biscayne Park
+US	Blackhawk
+US	Blaine
+US	Bloomfield
+US	Blue Grass
+US	Blue Ridge
+US	Blueridge
+US	Blythewood
+US	Boston Heights
+US	Boulder Creek
+US	Boulevard Gardens
+US	Bradford
+US	Brainerd
+US	Brandermill
+US	Brandon
+US	Brandywine
+US	Breckenridge
+US	Breezy Point
+US	Brentwood
+US	Brentwood Village
+US	Briarcliff
+US	Briarcliff Manor
+US	Bridgeport
+US	Bridgeton
+US	Brighton
+US	Bristol
+US	Broadlands
+US	Broadmoor
+US	Broadview
+US	Broadway
+US	Brook Lawn
+US	Brookdale
+US	Brookfield
+US	Brookhaven
+US	Brookline
+US	Brooklyn
+US	Brooklyn Heights
+US	Brookmont
+US	Brookridge
+US	Brookside
+US	Brookwood
+US	Brownsville
+US	Brownville
+US	Bryant
+US	Buckingham
+US	Buena Vista
+US	Bunker Hill
+US	Burbank
+US	Butte
+US	Cactus
+US	Calumet
+US	Cambridge
+US	Camden
+US	Cameron Park
+US	Campbell
+US	Canterbury
+US	Canyon Rim
+US	Capitol Heights
+US	Carmel
+US	Carville
+US	Casa Blanca
+US	Cascade
+US	Castlewood
+US	Cedar Grove
+US	Cedar Hill
+US	Cedar Hills
+US	Cedar Point
+US	Center City
+US	Central
+US	Central City
+US	Central Park
+US	Chandler
+US	Chapel Hill
+US	Chapman
+US	Charleston
+US	Chatham
+US	Chatsworth
+US	Chelsea
+US	Cheltenham
+US	Cherry Creek
+US	Chester
+US	Chesterfield
+US	Chinatown
+US	Cimarron
+US	Citrus Hills
+US	City View
+US	Claremont
+US	Clarkdale
+US	Clarksville
+US	Claymont
+US	Clayton
+US	Clear Lake
+US	Clearview
+US	Clifton
+US	Clifton Forge
+US	Cloverdale
+US	Clyde
+US	Cold Spring
+US	College Park
+US	Collins
+US	Colonial Heights
+US	Colonial Park
+US	Colony Park
+US	Columbia City
+US	Como
+US	Concord
+US	Concordia
+US	Cordova
+US	Cornell
+US	Country Club Estates
+US	Country Club Hills
+US	Countryside
+US	Crescent
+US	Crestwood
+US	Crosby
+US	Crown Heights
+US	Cumberland
+US	Currituck
+US	Dalton
+US	Davis
+US	Dawson
+US	Dayton
+US	Deerfield
+US	Del Mar
+US	Del Rey
+US	Demarest
+US	Denver City
+US	Dewitt
+US	Diamond Head
+US	Dilworth
+US	Dixon
+US	Douglas
+US	Druid Hills
+US	Dunlap
+US	Dupont
+US	Earle
+US	East End
+US	East Hills
+US	Eastgate
+US	Eastland
+US	Eastover
+US	Eastwood
+US	Edenroc
+US	Edgefield
+US	Edgemere
+US	Edgewater
+US	Edgewood
+US	Edwards
+US	El Dorado
+US	El Rancho
+US	Elizabeth
+US	Elkins
+US	Ellsworth
+US	Elm Wood
+US	Elmendorf
+US	Elmwood
+US	Elsmere
+US	Englewood
+US	Essex
+US	Essex Village
+US	Eureka
+US	Eureka Springs
+US	Eutaw
+US	Evanston
+US	Evergreen
+US	Excelsior
+US	Fair Oaks
+US	Fairfax
+US	Fairfield
+US	Fairlawn
+US	Fairmont
+US	Fairmount
+US	Fairview
+US	Fairview Park
+US	Falls Church
+US	Farley
+US	Farmington
+US	Federal-Heights
+US	Ferndale
+US	Firestone
+US	Five Points
+US	Florence
+US	Flushing
+US	Forest Acres
+US	Forest Brook
+US	Forest Glen
+US	Forest Heights
+US	Forest Hill
+US	Forest Hills
+US	Forest Lake
+US	Forest Oaks
+US	Forest Park
+US	Forestdale
+US	Forestville
+US	Four Corners
+US	Four Seasons
+US	Fowler
+US	Fox Chapel
+US	Fox Chase
+US	Fox Run
+US	Foxborough
+US	Foxchase
+US	Francisville
+US	Franklin
+US	Franklin Park
+US	Franklinville
+US	Freeport
+US	Fremont
+US	Friendship
+US	Friendship Village
+US	Fruitdale
+US	Fruitvale
+US	Garden Acres
+US	Garden City Park
+US	Gardendale
+US	Garfield
+US	Gateway
+US	Genesee
+US	Genoa
+US	George
+US	Georgetown
+US	Germantown
+US	Giddings
+US	Gifford
+US	Gilbert
+US	Gill
+US	Gladstone
+US	Glendale
+US	Glenmore
+US	Glenridge
+US	Glenwood
+US	Graham
+US	Grand View
+US	Grandview
+US	Grandview Heights
+US	Granite
+US	Graniteville
+US	Grant
+US	Grant City
+US	Grant Park
+US	Grantville
+US	Grapeland
+US	Green Acres
+US	Green Hills
+US	Green Lake
+US	Green Meadows
+US	Green Springs
+US	Green Tree
+US	Green Valley
+US	Greenacres
+US	Greenbriar
+US	Greenbrier
+US	Greendale
+US	Greene
+US	Greenfield
+US	Greenhill
+US	Greentree
+US	Greenville
+US	Greenwood
+US	Grove Hill
+US	Gulfport
+US	Hammond
+US	Hancock
+US	Hansen
+US	Hanson
+US	Harlem
+US	Harrisburg
+US	Hartford
+US	Harwich
+US	Hawthorne
+US	Hazard
+US	Hazelwood
+US	Heath
+US	Heathrow
+US	Henderson
+US	Hennessey
+US	Heritage Hills
+US	Hermitage
+US	Hewitt
+US	Hickory Creek
+US	Hickory Hills
+US	Hidden Hills
+US	Hidden Meadows
+US	Hidden Valley
+US	High Bridge
+US	High Point
+US	Highland
+US	Highland Acres
+US	Highland Heights
+US	Highland Park
+US	Highlands
+US	Highpoint
+US	Hillandale
+US	Hillcrest
+US	Hillsborough
+US	Hillsdale
+US	Hillside
+US	Hillview
+US	Hinton
+US	Holbrook
+US	Holiday Shores
+US	Holland
+US	Hollis
+US	Holly
+US	Holly Hill
+US	Holly Springs
+US	Hollywood
+US	Homestead
+US	Hopedale
+US	Hot Springs
+US	Howard Park
+US	Humboldt
+US	Hunters Creek
+US	Hunting Ridge
+US	Huntington
+US	Huntington Woods
+US	Hyde Park
+US	Idlewood
+US	Indian Hills
+US	Indian Springs
+US	Indian Wells
+US	Ingleside
+US	Inverness
+US	Inwood
+US	Irondale
+US	Irvington
+US	Jamaica
+US	Jefferson
+US	Johnson
+US	Johnstown
+US	Jones
+US	Jonestown
+US	Kellogg
+US	Kenilworth
+US	Kensington
+US	Kenton
+US	Kentwood
+US	Kenwood
+US	Ketchum
+US	Keystone
+US	King William
+US	Kingsbury
+US	Kingsford
+US	Kingston
+US	Kingwood
+US	Knollwood
+US	La Grange Park
+US	La Paloma
+US	Lagrange
+US	Laguna
+US	Laguna Heights
+US	Lake Arbor
+US	Lake Carmel
+US	Lake City
+US	Lake Forest Park
+US	Lake Park
+US	Lake Shore
+US	Lake View
+US	Lake Village
+US	Lake Wood
+US	Lakemont
+US	Lakeshore
+US	Lakeside
+US	Lakeside Park
+US	Lakeview
+US	Lakeview Estates
+US	Lakewood
+US	Lansdowne
+US	Larchmont
+US	Las Flores
+US	Laurel
+US	Laurel Hill
+US	Laurel Park
+US	Laurel Springs
+US	Lawton
+US	Lee Acres
+US	Leesburg
+US	Leisure Village
+US	Leon
+US	Lexington Park
+US	Liberty
+US	Lincoln City
+US	Lincoln Heights
+US	Lincoln Park
+US	Lincoln Village
+US	Linden
+US	Linwood
+US	Lockwood
+US	Locust Grove
+US	Logan
+US	Longview
+US	Longwood
+US	Lookout Mountain
+US	Los Olivos
+US	Loudon
+US	Lowell
+US	Ludlow
+US	Madison Park
+US	Magnolia
+US	Manchester
+US	Manito
+US	Manor
+US	Mantua
+US	Maple Glen
+US	Mapleton
+US	Maplewood
+US	Marion
+US	Marlboro
+US	Marlborough
+US	Marlow
+US	Mathews
+US	Mayfield
+US	McPherson
+US	Meadow Lake
+US	Meadow Oaks
+US	Meadowbrook
+US	Meadowlake
+US	Meadowood
+US	Mechanicsville
+US	Medfield
+US	Medford
+US	Mellwood
+US	Melrose
+US	Melrose Park
+US	Mendota
+US	Meridian
+US	Mexico
+US	Middletown
+US	Midtown
+US	Millbrook
+US	Millwood
+US	Milton
+US	Minor
+US	Mission Hills
+US	Molino
+US	Monroe
+US	Monte Vista
+US	Montebello
+US	Monterey
+US	Monterey Park
+US	Monticello
+US	Montrose
+US	Moreland
+US	Morningside
+US	Morrell Park
+US	Morrow
+US	Morton
+US	Moscow
+US	Mount Airy
+US	Mount Holly
+US	Mount Hope
+US	Mount Olive
+US	Mount Pleasant
+US	Mount Vernon
+US	Mount Washington
+US	Mountain Aire
+US	Mountain Park
+US	Mountain View
+US	Mountainside
+US	Nantucket
+US	Naples
+US	Navajo
+US	Nelson
+US	Nevada
+US	New Brighton
+US	New Castle
+US	New London
+US	New Town
+US	Newport
+US	Newton
+US	Newtown
+US	Nitro
+US	Normandy
+US	Normandy Park
+US	North Beach
+US	North Fork
+US	North Hills
+US	North Oaks
+US	North Ridge
+US	North River Shores
+US	North Shore
+US	North Valley
+US	Northborough
+US	Northbridge
+US	Northbrook
+US	Northcrest
+US	Northeast
+US	Northfield
+US	Northgate
+US	Northridge
+US	Northshore
+US	Northstar
+US	Northwood
+US	Northwoods
+US	Norwood
+US	Nottingham
+US	Oak Grove
+US	Oak Harbor
+US	Oak Hill
+US	Oak Hills
+US	Oak Leaf
+US	Oak Park
+US	Oak Ridge
+US	Oak Ridge North
+US	Oak Valley
+US	Oakdale
+US	Oakhurst
+US	Oakland
+US	Oakley
+US	Oakmont
+US	Oakview
+US	Oakwood
+US	Ocean View
+US	Oceana
+US	Oceanview
+US	Olcott
+US	Old Town
+US	Old-Town
+US	Oliver
+US	Olney
+US	Omega
+US	Ontario
+US	Orangetree
+US	Orchard Hills
+US	Orchard Park
+US	Otterbein
+US	Overbrook
+US	Overlea
+US	Pacific Palisades
+US	Palmer Heights
+US	Panhandle
+US	Paradise Hills
+US	Paradise Valley
+US	Park Hill
+US	Park Hills
+US	Park View
+US	Parkridge
+US	Parkside
+US	Parkview
+US	Parkville
+US	Parkway
+US	Parkwood
+US	Patton
+US	Paul
+US	Pea Ridge
+US	Peaceful Valley
+US	Pearson
+US	Pebble Creek
+US	Pecan Acres
+US	Perkins
+US	Perry
+US	Phillips
+US	Phoenix
+US	Piedmont
+US	Pierce 100
+US	Pine Crest
+US	Pine Grove
+US	Pine Hill
+US	Pine Hills
+US	Pine Island
+US	Pine Manor
+US	Pine Ridge
+US	Pine Valley
+US	Pinecrest
+US	Pinedale
+US	Pinehurst
+US	Pleasant Grove
+US	Pleasant Hill
+US	Pleasant Hills
+US	Pleasant Ridge
+US	Pleasant Valley
+US	Pleasant View
+US	Pleasantview
+US	Point Pleasant
+US	Ponderosa Park
+US	Pontiac
+US	Portola
+US	Prairie Creek
+US	Preston
+US	Progress
+US	Prospect
+US	Prospect Park
+US	Providence
+US	Quail Creek
+US	Quail Ridge
+US	Queen Anne
+US	Ramblewood
+US	Rancho Santa Fe
+US	Ravenna
+US	Ravenswood
+US	Rawlins
+US	Red Hill
+US	Red Hook
+US	Redland
+US	Remington
+US	Richland
+US	Richmond
+US	Richmond Hill
+US	Ridgecrest
+US	Ridgefield
+US	Ridgefield Park
+US	Ridgeland
+US	Ridgewood Heights
+US	Rio Hondo
+US	River Forest
+US	River Grove
+US	River Hills
+US	River Oaks
+US	River Ridge
+US	Riverbend
+US	Riverdale
+US	Riveroaks
+US	Riverside
+US	Riverview
+US	Robertsville
+US	Robinwood
+US	Rochester
+US	Rock Creek
+US	Rock Springs
+US	Rockaway Beach
+US	Rockwood
+US	Rolla
+US	Rolling Hills
+US	Rolling Hills Estates
+US	Rollingwood
+US	Roosevelt
+US	Rose Hill
+US	Rosedale
+US	Rosehill
+US	Roseland
+US	Roselawn
+US	Rosemont
+US	Roseville
+US	Rosslyn
+US	Rossville
+US	Roxbury
+US	Royal Pines
+US	Russellville
+US	Saddlebrook
+US	Saint Albans
+US	Saint Charles
+US	Saint Francis
+US	Saint George
+US	Saint Helena
+US	Saint James
+US	Saint Johns
+US	Saint Martins
+US	Saint Paul
+US	Salem
+US	San Ysidro
+US	Sand Point
+US	Santa Fe
+US	Saratoga
+US	Sardis
+US	Schuylerville
+US	Scotland
+US	Scottdale
+US	Sea Gate
+US	Seacliff
+US	Seagate
+US	Seaside
+US	Selma
+US	Seven Hills
+US	Shadyside
+US	Shandon
+US	Shannon Hills
+US	Sheldon
+US	Shenandoah
+US	Sheridan
+US	Sherwood
+US	Sherwood Manor
+US	Shiloh
+US	Shirley
+US	Shore Acres
+US	Shorewood
+US	Short Hills
+US	Sibley
+US	Silver Creek
+US	Silver Lake
+US	Silver Ridge
+US	Silverton
+US	Sleepy Hollow
+US	Smith
+US	Smithfield
+US	Smoke Rise
+US	Society Hill
+US	Somerville
+US	South Bay
+US	South Beach
+US	South Boston
+US	South Chicago Heights
+US	South Gate
+US	South Park
+US	South Shore
+US	Southampton
+US	Southern View
+US	Southgate
+US	Southmont
+US	Southpark
+US	Southside
+US	Spring Creek
+US	Spring Dale
+US	Spring Hill
+US	Spring Lake
+US	Spring Park
+US	Spring Valley
+US	Springdale
+US	Springfield
+US	Springhill
+US	Springville
+US	St. John
+US	St. Johns
+US	Stanley
+US	Stanton
+US	Stapleton
+US	Stewart Manor
+US	Stockton
+US	Stone Ridge
+US	Stonegate
+US	Stoneridge
+US	Sugar Creek
+US	Summerdale
+US	Summerfield
+US	Sun Valley
+US	Sundown
+US	Sunny Side
+US	Sunny Slope
+US	Sunnyside
+US	Sunnyslope
+US	Sunnyvale
+US	Sunset Beach
+US	Sunset Hills
+US	Superior
+US	Surfside
+US	Telford
+US	Terrace Heights
+US	The Meadows
+US	The Village
+US	Thomas
+US	Thomasboro
+US	Thornwood
+US	Three Oaks
+US	Three Points
+US	Timberlake
+US	Timberlane
+US	Tioga
+US	Tompkinsville
+US	Tremont
+US	Tuckahoe
+US	Turtle Creek
+US	Turtle Lake
+US	Tusculum
+US	Twin Lakes
+US	Union
+US	Union Park
+US	University Gardens
+US	University Heights
+US	University Park
+US	Upland
+US	Upton
+US	Valencia
+US	Valley Center
+US	Valley Park
+US	Valley View
+US	Van Meter
+US	Van Ness
+US	Vega
+US	Venice
+US	Victoria
+US	Village Green
+US	Vineyard
+US	Virginia
+US	Wahoo
+US	Wakefield
+US	Walden
+US	Walnut Cove
+US	Walnut Grove
+US	Walnut Hill
+US	Walnut Hills
+US	Walnut Ridge
+US	Warm Springs
+US	Warner
+US	Washington Heights
+US	Washington Park
+US	Watkins Glen
+US	Watson
+US	Waverly
+US	Wayne
+US	Wedgewood
+US	Wellington
+US	West End
+US	West Haven
+US	West Hills
+US	West Lake
+US	West Lawn
+US	West Salem
+US	Westbranch
+US	Westfield
+US	Westgate
+US	Westhampton
+US	Westhaven
+US	Westlake
+US	Westlake Hills
+US	Westlake Village
+US	Westminster
+US	Westmoreland
+US	Weston
+US	Westover
+US	Westpark
+US	Westview
+US	Westwood
+US	Wharton
+US	Whispering Pines
+US	Whitaker
+US	White Oak
+US	White Plains
+US	White Sands
+US	Whitehall
+US	Whitman
+US	Wiggins
+US	Wilburton
+US	Wildwood
+US	Williams
+US	Williamsburg
+US	Williamsport
+US	Willow Brook
+US	Willow Creek
+US	Willow Park
+US	Willowbrook
+US	Willowick
+US	Wilmington
+US	Wilmore
+US	Wilson
+US	Winchester
+US	Windcrest
+US	Windermere
+US	Windgap
+US	Winfield
+US	Wingate
+US	Winnetka
+US	Wister
+US	Wood Creek
+US	Wood Haven
+US	Wood Ridge
+US	Wood Village
+US	Woodbine
+US	Woodbourne
+US	Woodbridge
+US	Woodbury
+US	Woodcrest
+US	Wooddale
+US	Woodfield
+US	Woodhaven
+US	Woodlake
+US	Woodland
+US	Woodland Heights
+US	Woodland Hills
+US	Woodland Park
+US	Woodlawn
+US	Woodley Park
+US	Woodmere
+US	Woodmont
+US	Woodmoor
+US	Woodridge
+US	Woods Creek
+US	Woodside
+US	Woodstock
+US	Woodward
+US	Worthington Hills
+US	Wright
+US	Wynnewood
+US	Wyoming
+US	Yardley
+US	Yorkshire
+US	Yorktown
+US	Yorkville
+US	Youngstown
+UY	Santa Catalina
+UZ	Vodil
+VE	Altamira
+VE	Bachaquero
+VE	Carache
+VE	El Corozo
+VE	El Palmar
+VE	La Luz
+VE	La Plata
+VE	Las Mercedes
+VE	Libertad
+VE	Onoto
+VE	Pedregal
+VE	Sabana Grande
+VE	San Antonio
+VE	San Luis
+VE	Santa Ana
+VE	Santa Barbara
+VE	Santa Bárbara
+VE	Santa Cruz
+VE	Santa Ines
+VE	Santa Inés
+VE	Santa Lucia
+VE	Santa Lucía
+VE	Santa Rosa
+YE	Al Husayn
+YE	Al Mansurah
+YE	Al Manşūrah
+YE	Al `Aqabah
+YE	Al `Ashshah
+YE	Al Ḩusayn
+YE	Al ‘Aqabah
+YE	Al ‘Ashshah
+YE	An Nadirah
+YE	An Najd
+YE	An Nādirah
+YE	Ar Rawdah
+YE	Ar Rawḑah
+YE	As Suq al Jadid
+YE	As Sūq al Jadīd
+YE	At Tawilah
+YE	At Turbah
+YE	Aţ Ţawīlah
+YE	Burum
+YE	Burūm
+YE	Suq ar Rubu`
+YE	Sūq ar Rubū‘
+ZA	Brandwag
+ZA	Chatsworth
+ZA	Claremont
+ZA	Humulani
+ZA	Inanda
+ZA	Newlands
+ZA	Oakglen
+ZA	Springs
+ZA	Thulani
+ZA	Woodlands

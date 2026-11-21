@@ -169,7 +169,7 @@ func TestTextCity(t *testing.T) {
 		{"numbers separate", "NL", []string{"AMSTERDAM2-NET"}, "Amsterdam"},
 	}
 	for _, tt := range tests {
-		id, ok := x.textCity(tt.country, linesOf(tt.texts...))
+		id, _, ok := x.textCity(tt.country, linesOf(tt.texts...))
 		got := ""
 		if ok {
 			got = x.places[id].name
@@ -181,7 +181,7 @@ func TestTextCity(t *testing.T) {
 	// The ignore list compares the normalised group: "United Kingdom" is two words.
 	y := newNameIndex()
 	y.add("GB", "United Kingdom", "United Kingdom", "", 1000)
-	if _, ok := y.textCity("GB", linesOf("United Kingdom")); ok {
+	if _, _, ok := y.textCity("GB", linesOf("United Kingdom")); ok {
 		t.Error("a country name was a city")
 	}
 }
@@ -200,10 +200,10 @@ func TestNameIndexFromGeoNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := x.textCity("NL", linesOf("Zaandam Noord")); !ok {
+	if _, _, ok := x.textCity("NL", linesOf("Zaandam Noord")); !ok {
 		t.Error("Zaandam not found")
 	}
-	if id, _ := x.textCity("NL", linesOf("Zaandam Noord")); x.places[id].name != "Zaandam" {
+	if id, _, _ := x.textCity("NL", linesOf("Zaandam Noord")); x.places[id].name != "Zaandam" {
 		t.Errorf("a district named the city: %q", x.places[id].name)
 	}
 	if _, ok := x.ids["NL|zaandam noord"]; ok {
@@ -214,13 +214,13 @@ func TestNameIndexFromGeoNames(t *testing.T) {
 	z := newNameIndex()
 	z.add("MT", "Imdina", "Imdina", "Mdina,Melita", altNameMinPop-1)
 	z.add("MT", "Valletta", "Valletta", "Il-Belt", altNameMinPop)
-	if _, ok := z.textCity("MT", linesOf("Melita cable customers")); ok {
+	if _, _, ok := z.textCity("MT", linesOf("Melita cable customers")); ok {
 		t.Error("an alternate name of a small place named a city")
 	}
-	if id, ok := z.textCity("MT", linesOf("office Imdina")); !ok || z.places[id].name != "Imdina" {
+	if id, _, ok := z.textCity("MT", linesOf("office Imdina")); !ok || z.places[id].name != "Imdina" {
 		t.Error("a small place is not found by its own name")
 	}
-	if id, ok := z.textCity("MT", linesOf("Il-Belt office")); !ok || z.places[id].name != "Valletta" {
+	if id, _, ok := z.textCity("MT", linesOf("Il-Belt office")); !ok || z.places[id].name != "Valletta" {
 		t.Error("an alternate name of a big place is not found")
 	}
 	// A name with a letter we cannot fold is not indexed under the words that are left.
@@ -590,5 +590,75 @@ func TestWhoisCountry(t *testing.T) {
 	}
 	if whoisCountry(nil) != "" {
 		t.Error("no object")
+	}
+}
+
+// The embedded district list parses: every line is "CC<TAB>name" with an upper-case
+// two-letter code and gives at least one key of the name index.
+func TestWhoisDistrictsList(t *testing.T) {
+	entries, ok := districtEntries(whoisDistrictsList)
+	if !ok || len(entries) == 0 {
+		t.Fatalf("whois-districts.txt has a malformed line (ok %v, %d entries)", ok, len(entries))
+	}
+	for _, e := range entries {
+		if len(e[0]) != 2 || e[0] != strings.ToUpper(e[0]) || e[1] == "" {
+			t.Fatalf("bad entry %q", e)
+		}
+	}
+	if len(districtSet) == 0 || !districtSet["GB|dalston"] || !districtSet["GB|bromley"] {
+		t.Errorf("%d keys, Dalston %v, Bromley %v", len(districtSet), districtSet["GB|dalston"], districtSet["GB|bromley"])
+	}
+	for _, bad := range []string{"GB\n", "gb\tDalston\n", "GB Dalston\n", "GBR\tDalston\n", "GB\t\n"} {
+		if _, ok := districtEntries(bad); ok {
+			t.Errorf("%q was accepted", bad)
+		}
+	}
+}
+
+// A text that names a small place whose name is a district of a big city is dropped,
+// unless the place is itself inside a big city, is not small, comes from a city: field
+// or does not clash.
+func TestTextReaderDistricts(t *testing.T) {
+	read := func(cities [][]string, o []attr) (blocks int, dropped map[string]int) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), geonamesFile)
+		os.WriteFile(path, citiesZip(t, cities), 0o640)
+		_, x, err := readPlaces(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r textReader
+		r.read(o, x, 0)
+		return len(r.blocks), r.dropped
+	}
+	london := []string{"London", "51.5", "-0.12", "GB", "8900000"}
+	dalstonVillage := []string{"Dalston", "54.85", "-2.99", "GB", "1285"}
+	bromleyVillage := []string{"Bromley", "51.4", "0.02", "GB", "5000"} // 18 km from London
+	ambleside := []string{"Ambleside", "54.43", "-2.96", "GB", "3000"}
+	text := func(s string) []attr { return obj("inetnum", "192.0.2.0 - 192.0.2.255", "descr", s, "country", "GB") }
+
+	if n, d := read([][]string{london, dalstonVillage}, text("DALSTON")); n != 0 || d[dropDistrict] != 1 {
+		t.Errorf("the Dalston case: %d blocks, dropped %v", n, d)
+	}
+	if n, d := read([][]string{london, bromleyVillage}, text("Bromley")); n != 1 || d != nil {
+		t.Errorf("a village inside a big city: %d blocks, dropped %v", n, d)
+	}
+	if n, d := read([][]string{london, {"Dalston", "54.85", "-2.99", "GB", "15000"}}, text("Dalston")); n != 1 || d != nil {
+		t.Errorf("a place of 15,000 people: %d blocks, dropped %v", n, d)
+	}
+	if n, d := read([][]string{london, dalstonVillage}, obj("inetnum", "192.0.2.0 - 192.0.2.255", "city", "Dalston", "country", "GB")); n != 1 || d != nil {
+		t.Errorf("a city: field: %d blocks, dropped %v", n, d)
+	}
+	if n, d := read([][]string{london, ambleside}, text("Ambleside")); n != 1 || d != nil {
+		t.Errorf("a small place that does not clash: %d blocks, dropped %v", n, d)
+	}
+	// A district name with no big city in the whole country: the place is not in a city, so it is dropped.
+	if n, d := read([][]string{dalstonVillage}, text("Dalston")); n != 0 || d[dropDistrict] != 1 {
+		t.Errorf("no big city in the country: %d blocks, dropped %v", n, d)
+	}
+	// No other candidate is tried: Dalston (1,285 people) wins over Keswick (500) and is dropped.
+	keswick := []string{"Keswick", "54.60", "-3.13", "GB", "500"}
+	if n, d := read([][]string{london, dalstonVillage, keswick}, text("Dalston Keswick")); n != 0 || d[dropDistrict] != 1 {
+		t.Errorf("the winner is dropped, no second try: %d blocks, dropped %v", n, d)
 	}
 }
