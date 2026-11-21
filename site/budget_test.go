@@ -42,6 +42,7 @@ var pageBudgets = []pageBudget{
 	{"/", 13000, 4700, 110000, 2000 * time.Microsecond},                                    // 11634, 4239, 75278, 27µs (home heading and Database panel, 2026-11-20; 10185, 3888, 59609, 25µs before)
 	{"/download", 21000, 6900, 40000, 2000 * time.Microsecond},                             // 18649, 6240, 25772, 3µs
 	{"/bulk-ip-lookup", 16200, 5500, 30000, 2000 * time.Microsecond},                       // 14711, 5004, 22714, 2µs
+	{"/geolite2-alternative", 19300, 6150, 40000, 2000 * time.Microsecond},                 // 17505, 5597, 27380, 3µs (new page, 2026-11-21)
 	{"/as64500", 16100, 5330, 130000, 2000 * time.Microsecond},                             // 14611, 4842, 104124, 77µs (name band and cells, no map, 2026-11-17; limits were 17900 raw, 6350 gz, 140000 alloc; before 16249, 5778, 124460)
 	{"/as64503", 79000, 12000, 1290000, 19000 * time.Microsecond},                          // 71991, 10877, 1028954, 1797µs (name band and cells, no map, 2026-11-17; gz limit was 13300, alloc 1490000; before 74125, 12086, 1060929)
 	{"/as64600", 32200, 6670, 490000, 7000 * time.Microsecond},                             // 29253, 6065, 389413, 712µs (name band and cells, no map, 2026-11-17; limits were 36600 raw, 8750 gz; before 33292, 7956, 434588)
@@ -56,7 +57,7 @@ var pageBudgets = []pageBudget{
 	{"/asn-huge-net/prefixes.txt", 100, 70, 60000, 2000 * time.Microsecond},                // 13, 34, 35956, 24µs
 	{"/sitemap.xml", 550, 250, 20000, 2000 * time.Microsecond},                             // 425, 191, 6695, 1µs
 	{"/sitemap-networks-1.xml", 38000, 2000, 80000, 2000 * time.Microsecond},               // 34295, 1812, 47277, 3µs
-	{"/llms.txt", 3400, 1310, 20000, 2000 * time.Microsecond},                              // 3078, 1190, 9392, 1µs; raised 2026-11-18 for the agent Quick start (owner)
+	{"/llms.txt", 3600, 1420, 20000, 2000 * time.Microsecond},                              // 3078, 1190, 9392, 1µs; raised 2026-11-18 for the agent Quick start (owner); 3483, 1359 with the GeoLite2 page line, 2026-11-21
 	{"/robots.txt", 200, 150, 10000, 2000 * time.Microsecond},                              // 124, 107, 6319, 1µs
 }
 

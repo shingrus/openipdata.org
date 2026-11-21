@@ -13,7 +13,7 @@
 <div class="head"><h2>{{.Title}}</h2></div>
 <div class="code"><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button><pre>{{.Text}}</pre></div>
 </section>
-{{end}}<p class="small">Fields: {{.GeoFields}} (ip2geo); {{.ASNFields}} (ip2asn). Rebuilt twice a day. <a href="/">Accuracy</a><br>
+{{end}}<p class="small">Fields: {{.GeoFields}} (ip2geo); {{.ASNFields}} (ip2asn). Rebuilt twice a day. <a href="/">Accuracy</a> · <a href="/geolite2-alternative">Compare with GeoLite2</a><br>
 Sources: {{.Sources}}. Place ids, time zones and coordinates: <a href="{{.GeoNames}}">GeoNames (CC BY 4.0)</a>.<br>
 <a href="{{.CC0}}">Licence: CC0 1.0</a></p>
 {{template "bottom" .}}

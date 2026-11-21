@@ -22,10 +22,15 @@ type scores struct {
 	Coverage float64 // metrics.city_pct
 	Probes   int64   // metrics.atlas_probes
 	Built    time.Time
+	MM, DB   vendor // the same three scores of GeoLite2 (maxmind_*) and DB-IP Lite (dbip_*), for the comparison page
 }
 
+// vendor is what the stamp holds about another database, NaN when missing.
+type vendor struct{ Coverage, Country, City float64 }
+
 func noScores() scores {
-	return scores{Country: math.NaN(), City: math.NaN(), Coverage: math.NaN(), Probes: -1}
+	nan := vendor{math.NaN(), math.NaN(), math.NaN()}
+	return scores{Country: math.NaN(), City: math.NaN(), Coverage: math.NaN(), Probes: -1, MM: nan, DB: nan}
 }
 
 // metaScores reads the scores from the metadata of an open MMDB.
@@ -54,6 +59,8 @@ func parseStamp(raw string, epoch time.Time) scores {
 			return math.NaN()
 		}
 		s.Country, s.City, s.Coverage = num("atlas_country_pct"), num("atlas_city_pct"), num("city_pct")
+		s.MM = vendor{num("maxmind_city_pct"), num("maxmind_atlas_country_pct"), num("maxmind_atlas_city_pct")}
+		s.DB = vendor{num("dbip_city_pct"), num("dbip_atlas_country_pct"), num("dbip_atlas_city_pct")}
 		if p := num("atlas_probes"); p >= 0 && p < 1e12 && p == math.Floor(p) {
 			s.Probes = int64(p)
 		}

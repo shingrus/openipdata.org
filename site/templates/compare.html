@@ -1,0 +1,36 @@
+{{template "top" .}}<div class="hero"><h1>Free GeoLite2 alternative</h1>
+<p>Same MMDB layout. Change the file path, keep your code.</p></div>
+<svg width="0" height="0" class="sy" aria-hidden="true"><symbol id="i-ok" viewBox="0 0 16 16"><circle cx="8" cy="8" r="8" fill="currentColor" fill-opacity=".16"/><path d="m4.6 8.3 2.2 2.2 4.6-4.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="i-cp" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5V3A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5"/></symbol><symbol id="i-ck" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8.5 3.2 3.2L13 4.8"/></symbol></svg>
+<section class="panel">
+<div class="head"><h2>Why switch</h2><a class="r" href="/download">Download &rarr;</a></div>
+<div class="why">
+{{range .Why}}{{$c := index .Cells 0}}<div><span>{{.Name}}</span><b>{{$c.Text}}{{if $c.Win}} <svg class="ok" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-ok"/></svg>{{end}}{{if $c.Note}} <small>{{$c.Note}}</small>{{end}}</b></div>
+{{end}}</div>
+</section>
+<section class="panel">
+<div class="head"><h2>Free databases</h2></div>
+<table class="cmp free">
+<thead><tr><th></th><th>Licence</th><th>Sign-up</th><th>Updates</th><th>City</th></tr></thead>
+<tbody>
+{{range .Free}}<tr{{if .Ours}} class="ours"{{end}}><th scope="row">{{.Name}}</th>{{range .Cells}}<td{{if not .Win}} class="m"{{end}}>{{.Text}}{{if .Win}} <svg class="ok" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-ok"/></svg>{{end}}</td>{{end}}</tr>
+{{end}}</tbody>
+</table>
+</section>
+<section class="panel">
+<div class="head"><h2>Accuracy</h2>{{if .Built}}<span class="r">build of {{.Built}}</span>{{end}}</div>
+<table class="cmp acc">
+<thead><tr><th></th><th>Have a city</th><th>Right country</th><th>Right city</th></tr></thead>
+<tbody>
+{{range .Acc}}<tr{{if .Ours}} class="ours"{{end}}><th scope="row">{{.Name}}</th>{{range .Cells}}<td class="n{{if not .Win}} m{{end}}">{{.Text}}{{if .Win}} <svg class="ok" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-ok"/></svg>{{end}}</td>{{end}}</tr>
+{{end}}</tbody>
+</table>
+<p class="note">Our share with a city includes guessed cities; their <code>city_source</code> starts with 8, so you can leave them out.</p>
+{{if .Probes}}<p class="note">Measured on <span class="mono">{{.Probes}}</span> RIPE Atlas devices with a known location.</p>
+{{end}}</section>
+<section class="panel">
+<div class="head"><h2>Switch from GeoLite2</h2></div>
+<div class="code"><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button><pre>{{.Code}}</pre></div>
+<p class="note">Get <a href="{{.Download}}">{{.File}}</a> and point the reader at it.</p>
+</section>
+<p class="small"><a href="{{.DBIP}}">IP Geolocation by DB-IP</a> · Includes GeoLite data created by <a href="{{.MM}}">MaxMind</a></p>
+{{template "bottom" .}}

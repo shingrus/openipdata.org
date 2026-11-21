@@ -119,6 +119,7 @@ The data is the SQLite file the worker builds (`asn-openipdata.sqlite3`: tables 
 | `/json`, `/json/<ip>` | JSON of one address (see "JSON API" below) |
 | `/json/<ip>,<ip>`, `POST /json` | JSON array, one entry per address in order (at most 100 in the URL, 1000 in the body) |
 | `/bulk-ip-lookup` | bulk lookup: a POST form for a pasted list (any text), results as a table with a TSV copy button or a CSV download; the GET page is indexable, the results are `no-store`, noindex |
+| `/geolite2-alternative` | why switch from GeoLite2, the free databases, accuracy against GeoLite2 and DB-IP Lite (from the stamp of the ip2geo MMDB), the one line that changes in a GeoLite2 program; indexable, `ETag`, rendered again only when the stamp changes; `/maxmind-alternative` redirects (301) to it |
 | `/robots.txt` | `Disallow: /api/`, `/resolver`, `/ip`, `/json` and the `Sitemap:` line (`SITE_ORIGIN`); `public, max-age=3600` |
 | `/sitemap.xml`, `/sitemap-pages.xml`, `/sitemap-networks-<k>.xml`, `/sitemap-organizations-<k>.xml` | sitemap index, home and rankings, and every network or organization page, 50,000 URLs per file; built from memory; 503 without ASN data, 404 for a bad `k`; `public, max-age=3600` |
 | `/api/as15169` | JSON: `{"asn":15169,"domain":"about.google","data":{...}}`, `data` is the `json` column as it is (all prefixes), `domain` is left out when unknown |

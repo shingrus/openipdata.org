@@ -214,7 +214,7 @@ func TestSitemaps(t *testing.T) {
 	}
 
 	_, pages := check("/sitemap-pages.xml")
-	if fmt.Sprint(pages.URLs) != fmt.Sprint([]string{"https://openipdata.org/", "https://openipdata.org/download", "https://openipdata.org/bulk-ip-lookup", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/top-asn-by-ipv6",
+	if fmt.Sprint(pages.URLs) != fmt.Sprint([]string{"https://openipdata.org/", "https://openipdata.org/download", "https://openipdata.org/bulk-ip-lookup", "https://openipdata.org/geolite2-alternative", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/top-asn-by-ipv6",
 		"https://openipdata.org/top-organizations-by-ip-address", "https://openipdata.org/list-of-countries-by-ipv4-allocation"}) {
 		t.Errorf("pages %v", pages.URLs)
 	}

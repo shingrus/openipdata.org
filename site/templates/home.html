@@ -17,7 +17,7 @@
 </div>
 </section>
 {{end}}<section class="panel">
-<div class="head"><h2>Accuracy</h2>{{if .Updated}} <span class="r">Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time></span>{{end}}</div>
+<div class="head"><h2>Accuracy</h2><span class="r">{{if .Updated}}Updated <time datetime="{{.UpdatedISO}}">{{.UpdatedText}}</time> · {{end}}<a href="/geolite2-alternative">Compare &rarr;</a></span></div>
 <div class="acc">
 {{range .Cards}}<div><span class="num">{{.Num}}{{if .Pct}}<i>%</i>{{end}}</span><span class="lab">{{.Label}}</span><span class="bar" style="--v:{{.Bar}}"></span></div>
 {{end}}</div>

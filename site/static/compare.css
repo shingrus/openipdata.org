@@ -1,0 +1,59 @@
+/* The GeoLite2 comparison page: with style.css it is the whole style of the page. */
+:root{--green:#3ccf95;--cell:transparent;--oursbg:color-mix(in srgb,var(--text) 6%,transparent)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--green:#1d9e75;--cell:color-mix(in srgb,var(--text) 6%,transparent);--oursbg:var(--panel)}}
+:root[data-theme="light"]{--green:#1d9e75;--cell:color-mix(in srgb,var(--text) 6%,transparent);--oursbg:var(--panel)}
+.hero{margin-top:28px;padding-inline:2px}
+.hero h1{font-size:28px;font-weight:600;line-height:1.15;letter-spacing:-.02em}
+.hero p{margin-top:8px;color:var(--muted)}
+.ok{width:16px;height:16px;color:var(--green);vertical-align:-3px;flex:none}
+.why{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1px;background:var(--line)}
+.why div{min-width:0;padding:14px 20px;background:var(--panel)}
+.why span{display:block;font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.why b{display:block;margin-top:5px;font:500 16px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.why small{font:400 12px Geist,system-ui,sans-serif;color:var(--muted);white-space:nowrap}
+.cmp{width:100%;table-layout:fixed;border-collapse:collapse}
+.cmp th,.cmp td{padding:9px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:baseline;overflow-wrap:anywhere}
+.cmp thead th{padding-block:10px}
+.cmp thead th{font-size:11px;font-weight:500;line-height:1.3;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.cmp th:first-child,.cmp td:first-child{padding-left:20px}
+.cmp th:last-child,.cmp td:last-child{padding-right:20px}
+.cmp tbody tr:last-child>*{border-bottom:0}
+.cmp tbody th{font-weight:500;color:var(--text)}
+.cmp th,.cmp td{background:var(--cell)}
+.cmp tr.ours>*{background:var(--oursbg)}
+.cmp tr.ours th{font-weight:600}
+.cmp td.m{color:var(--muted)}
+.cmp td.n{font-family:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+.free th:first-child{width:27.5%}
+.free th:nth-child(2){width:22.5%}
+.free th:nth-child(3){width:16%}
+.free th:nth-child(4){width:19.5%}
+.acc th:first-child{width:28%}
+.note code{font:13px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+.sy{position:absolute;width:0;height:0;overflow:hidden}
+.cp{display:inline-grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--raised);color:var(--muted);cursor:pointer}
+.cp[hidden]{display:none}
+.cp:hover{color:var(--text);border-color:var(--line-2)}
+.cp svg{width:13px;height:13px}
+.cp .u2{display:none}
+.cp.ok{color:var(--accent);border-color:var(--accent)}
+.cp.ok .u1{display:none}
+.cp.ok .u2{display:inline}
+.code{position:relative}
+.code pre{margin:0;padding:14px 56px 14px 20px;overflow-x:auto;font:400 13px/1.6 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.code .cp{position:absolute;top:10px;right:14px}
+.small{margin-top:16px;padding-inline:2px;font-size:13px;line-height:1.7;color:var(--muted)}
+@media (max-width:700px){
+  .why{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .why div{padding:13px 16px}
+  .why div:last-child:nth-child(odd){grid-column:1/-1}
+  .code pre{padding-inline:16px 52px}
+  .hero h1{font-size:24px}
+}
+@media (max-width:520px){
+  .cmp th,.cmp td{padding:9px 3px;font-size:11px}
+  .cmp thead th{font-size:10px;letter-spacing:.04em}
+  .cmp th:first-child,.cmp td:first-child{padding-left:10px}
+  .cmp th:last-child,.cmp td:last-child{padding-right:8px}
+  .ok{width:12px;height:12px;vertical-align:-2px}
+}
