@@ -273,3 +273,48 @@ func TestCLIIPHostSkipsReport(t *testing.T) {
 		t.Error("browser did not add other_ip")
 	}
 }
+
+func TestIPJSONNewFields(t *testing.T) {
+	nw := fixtureServer(t)
+	m := jsonBody(t, get(nw, "GET", "/json/203.0.113.9").Body.String())
+	if m["continent_code"] != "EU" || m["continent_name"] != "Europe" || m["in_eu"] != true || m["timezone"] != "Europe/Lisbon" {
+		t.Errorf("new layout: %v", m)
+	}
+	// A country only (Spain, no city): in_eu is there, no city fields.
+	m = jsonBody(t, get(nw, "GET", "/json/198.51.100.1").Body.String())
+	if m["in_eu"] != true || m["city_source"] != nil || m["city_guess"] != nil || m["timezone"] != nil {
+		t.Errorf("country only: %v", m)
+	}
+	// Nothing known: no in_eu.
+	if m := jsonBody(t, get(nw, "GET", "/json/192.0.2.1").Body.String()); m["in_eu"] != nil || m["continent_code"] != nil {
+		t.Errorf("unknown: %v", m)
+	}
+	// The old flat layout has no EU data: in_eu is left out, never false.
+	fl, err := newServer("testdata/lookup-geo-flat.mmdb", "testdata/lookup-asn-flat.mmdb", "X-Real-IP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl.public = nw.public
+	m = jsonBody(t, get(fl, "GET", "/json/203.0.113.9").Body.String())
+	if _, ok := m["in_eu"]; ok || m["city_name"] != "Lisbon" || m["continent_code"] != nil {
+		t.Errorf("flat: %v", m)
+	}
+	// city_guess, from the record's source.
+	for src, want := range map[string]bool{"70-geofeeds": false, "36-mlab": false, "80-asn-main": true, "89-asn-anywhere": true, "86-country-main": true} {
+		if guessSources[src] != want {
+			t.Errorf("%s: guess %v", src, guessSources[src])
+		}
+	}
+}
+
+func TestIPJSONCityGuessFromSource(t *testing.T) {
+	s := fixtureServer(t)
+	m := jsonBody(t, get(s, "GET", "/json/203.0.113.9").Body.String())
+	if src, ok := m["city_source"].(string); ok {
+		if g, ok := m["city_guess"].(bool); !ok || g != guessSources[src] {
+			t.Errorf("city_guess %v for %q", m["city_guess"], src)
+		}
+	} else if _, has := m["city_guess"]; has {
+		t.Errorf("city_guess without a source: %v", m)
+	}
+}

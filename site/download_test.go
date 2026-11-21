@@ -233,7 +233,7 @@ func TestLLMsTxt(t *testing.T) {
 		t.Fatalf("%d %v", w.Code, w.Header())
 	}
 	for _, want := range []string{
-		"# openipdata.org\n", "\n> ", "## Quick start (agents, LLMs)\n", "\ncurl -sL https://openipdata.org  ", "Fields: `ip`, `country_code`,", "A field is absent when unknown.", "gives `{\"ip\" or \"input\", \"error\"}` instead",
+		"# openipdata.org\n", "\n> ", "## Quick start (agents, LLMs)\n", "\ncurl -sL https://openipdata.org  ", "Fields: `ip`, `continent_code`,", "A field is absent when unknown.", "gives `{\"ip\" or \"input\", \"error\"}` instead",
 		releaseBase + "openipdata-org-ip2geo.mmdb", releaseBase + "openipdata-org-ip2asn.mmdb", releaseBase + "asn-openipdata.sqlite3",
 		geoFields, asnFields, "geoip2-golang does not open the files", "Any field can be absent (often the city and the coordinates).", "GeoNames (CC BY 4.0)", cc0URL,
 		"https://openipdata.org/download", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/list-of-countries-by-ipv4-allocation",
@@ -292,7 +292,7 @@ func TestGoExampleImports(t *testing.T) {
 }
 
 func TestIPJSONFieldsMatchStruct(t *testing.T) {
-	want := []string{"ip", "country_code", "country_name", "city_name", "latitude", "longitude", "asn", "as_name", "org", "prefix"}
+	want := []string{"ip", "continent_code", "continent_name", "country_code", "country_name", "in_eu", "city_name", "city_source", "city_guess", "latitude", "longitude", "timezone", "asn", "as_name", "org", "prefix"}
 	if strings.Join(ipJSONFields, ",") != strings.Join(want, ",") {
 		t.Errorf("fields %v", ipJSONFields)
 	}

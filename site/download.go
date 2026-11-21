@@ -242,7 +242,7 @@ func (s *server) llmsText() string {
 	b.WriteString("# openipdata.org\n\n")
 	b.WriteString("> Free IP geolocation and ASN database at city level. Public domain (CC0), no signup, no API key. Accuracy is measured and published on the home page.\n\n")
 	b.WriteString("## Quick start (agents, LLMs)\n\n")
-	b.WriteString("Every answer is JSON.\n\n```sh\n")
+	b.WriteString("```sh\n")
 	cmds := [][2]string{
 		{"curl -sL " + o, "# your own IP"},
 		{"curl -sL " + o + "/json/8.8.8.8", "# any IP"},
@@ -256,7 +256,7 @@ func (s *server) llmsText() string {
 	for _, c := range cmds {
 		b.WriteString(c[0] + strings.Repeat(" ", col+2-len(c[0])) + c[1] + "\n")
 	}
-	b.WriteString("```\n\nFields: `" + strings.Join(ipJSONFields, "`, `") + "`. A field is absent when unknown. An address that cannot be looked up gives `{\"ip\" or \"input\", \"error\"}` instead (a list keeps its place).\n\n")
+	b.WriteString("```\n\nFields: `" + strings.Join(ipJSONFields, "`, `") + "`. A field is absent when unknown. An address that cannot be looked up gives `{\"ip\" or \"input\", \"error\"}` instead.\n\n")
 	b.WriteString("## Download\n\n")
 	for _, f := range []struct{ name, what string }{
 		{geoFile, "IP to country, city and coordinates (MMDB)"},

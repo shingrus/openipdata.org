@@ -333,11 +333,21 @@ type geoRecord struct {
 	// has neither, so they are optional: (0, 0) is a real place, absent is not.
 	Latitude  *float64 `maxminddb:"latitude"`
 	Longitude *float64 `maxminddb:"longitude"`
+	// Same key in both layouts: where the city came from (a layer file or a guess).
+	CitySource string `maxminddb:"city_source"`
 
 	// The GeoLite2-City layout. The flat tags above are for the switch and go once
 	// the server reads only the new files.
+	Continent struct {
+		Code  string `maxminddb:"code"`
+		Names struct {
+			EN string `maxminddb:"en"`
+		} `maxminddb:"names"`
+	} `maxminddb:"continent"`
 	Country struct {
-		ISO   string `maxminddb:"iso_code"`
+		ISO string `maxminddb:"iso_code"`
+		// The builder writes this only as true (27 members), never false.
+		EU    bool `maxminddb:"is_in_european_union"`
 		Names struct {
 			EN string `maxminddb:"en"`
 		} `maxminddb:"names"`
@@ -350,11 +360,17 @@ type geoRecord struct {
 	Location struct {
 		Latitude  *float64 `maxminddb:"latitude"`
 		Longitude *float64 `maxminddb:"longitude"`
+		TimeZone  string   `maxminddb:"time_zone"`
 	} `maxminddb:"location"`
+
+	// Set by norm(): the record had country.iso_code, so it is in the new layout
+	// and a missing is_in_european_union means "not in the EU".
+	newLayout bool
 }
 
 // norm makes the flat fields hold the value of the new layout when it has one.
 func (g *geoRecord) norm() {
+	g.newLayout = g.Country.ISO != ""
 	if g.Country.ISO != "" {
 		g.CountryCode = g.Country.ISO
 	}

@@ -19,16 +19,22 @@ import (
 )
 
 type ipJSON struct {
-	IP          string   `json:"ip"`
-	CountryCode string   `json:"country_code,omitempty"`
-	CountryName string   `json:"country_name,omitempty"`
-	CityName    string   `json:"city_name,omitempty"`
-	Latitude    *float64 `json:"latitude,omitempty"` // only for a placed city
-	Longitude   *float64 `json:"longitude,omitempty"`
-	ASN         uint32   `json:"asn,omitempty"`
-	ASName      string   `json:"as_name,omitempty"`
-	Org         string   `json:"org,omitempty"`
-	Prefix      string   `json:"prefix,omitempty"`
+	IP            string   `json:"ip"`
+	ContinentCode string   `json:"continent_code,omitempty"`
+	ContinentName string   `json:"continent_name,omitempty"`
+	CountryCode   string   `json:"country_code,omitempty"`
+	CountryName   string   `json:"country_name,omitempty"`
+	InEU          *bool    `json:"in_eu,omitempty"` // only for a new-layout record with a country
+	CityName      string   `json:"city_name,omitempty"`
+	CitySource    string   `json:"city_source,omitempty"` // only with a city
+	CityGuess     *bool    `json:"city_guess,omitempty"`  // only with a city and a source
+	Latitude      *float64 `json:"latitude,omitempty"`    // only for a placed city
+	Longitude     *float64 `json:"longitude,omitempty"`
+	TimeZone      string   `json:"timezone,omitempty"`
+	ASN           uint32   `json:"asn,omitempty"`
+	ASName        string   `json:"as_name,omitempty"`
+	Org           string   `json:"org,omitempty"`
+	Prefix        string   `json:"prefix,omitempty"`
 }
 
 // ipJSONFields are the JSON field names of ipJSON in struct order (for llms.txt),
@@ -48,12 +54,31 @@ func jsonNames(v any) []string {
 // panel uses.
 func (s *server) ipJSONFor(a netip.Addr) ipJSON {
 	g, n, info := s.addrData(a)
-	out := ipJSON{IP: a.String(), CountryCode: g.CountryCode, CountryName: g.CountryName, CityName: g.CityName,
+	out := ipJSON{IP: a.String(), ContinentCode: g.Continent.Code, ContinentName: g.Continent.Names.EN, TimeZone: g.Location.TimeZone, CountryCode: g.CountryCode, CountryName: g.CountryName, CityName: g.CityName,
 		ASN: info.ASN, ASName: firstNonEmpty(info.Handle, strings.TrimSpace(n.Name)), Org: strings.TrimSpace(n.Org), Prefix: info.Prefix}
-	if lat, lon, ok := g.coords(); ok && g.CityName != "" {
-		out.Latitude, out.Longitude = &lat, &lon
+	if g.newLayout && g.CountryCode != "" {
+		eu := g.Country.EU
+		out.InEU = &eu
+	}
+	if g.CityName != "" {
+		if g.CitySource != "" {
+			out.CitySource = g.CitySource
+			guess := guessSources[g.CitySource]
+			out.CityGuess = &guess
+		}
+		if lat, lon, ok := g.coords(); ok {
+			out.Latitude, out.Longitude = &lat, &lon
+		}
 	}
 	return out
+}
+
+// guessSources are the city_sources of a guessed city. Copied from `guessSources`
+// in mmdbbuilder/asnmain.go (the site must not import it); TestGuessSourcesMatchBuilder
+// fails when the two lists differ.
+var guessSources = map[string]bool{
+	"80-asn-main": true, "82-asn-likely": true, "84-asn-near": true, "85-holder-city": true,
+	"86-country-main": true, "88-asn-far": true, "89-asn-anywhere": true,
 }
 
 // writeIPJSON writes one JSON object and a newline.

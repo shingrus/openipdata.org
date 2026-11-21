@@ -562,7 +562,7 @@ func drawCase(w *world, c struct {
 const (
 	mapMaxRaw, mapMaxGz         = 9 << 10, 4 << 10
 	typicalMapMax               = 5 << 10
-	pageMapMaxRaw, pageMapMaxGz = 43008, 14336 // the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42617 and 14111 now, CA, a zoomed-out map the coarse land does not change; it has every part, so the split of the style files saves nothing here; 41148 and 13745 with the one-line API hint before)
+	pageMapMaxRaw, pageMapMaxGz = 43264, 14336 // raised 2026-11-21 from 43008 (owner: all MMDB fields in /json; the API panel shows them; CA now 43177 raw, 14284 gz); the fullest visitor page with a map: all scripts, the DNS row, copy and Share buttons, the Browser row with the biggest icons (Firefox, Linux, both shrunk), a long Network panel, the API panel (42617 and 14111 now, CA, a zoomed-out map the coarse land does not change; it has every part, so the split of the style files saves nothing here; 41148 and 13745 with the one-line API hint before)
 	pageMaxRaw, pageMaxGz       = 12288, 4608  // 11494 and 4221 now: it gets only the styles of its parts (homeCSS); 15271 and 5154 before the split
 	// The visitor page (fill script, no beacon, no Redis) with a map (Lisbon) and without one.
 	visitorMapMaxRaw, visitorMapMaxGz = 22850, 7725 // home heading and Database panel, owner approved 2026-11-20: 22350 and 7567 now; 20932 and 7239 before
