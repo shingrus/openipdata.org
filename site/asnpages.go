@@ -29,9 +29,10 @@ const (
 
 // edgeCache is for a good answer (200, and its 304) of a page that holds no
 // visitor data and changes only when the data is rebuilt: a browser keeps it
-// 5 minutes, a shared cache (Cloudflare) 4 hours. Never for errors or
+// 5 minutes, a shared cache (Cloudflare) 12 hours, as long as
+// a data rebuild (twice a day), so a page is at most one build behind. Never for errors or
 // redirects, and never for an answer with part of its data missing (pageCache).
-const edgeCache = "public, max-age=300, s-maxage=14400"
+const edgeCache = "public, max-age=300, s-maxage=43200"
 
 // pageCache is the Cache-Control of a 200 answer: edgeCache when the page is
 // complete, else asnCache, so a shared cache never keeps an incomplete page.
