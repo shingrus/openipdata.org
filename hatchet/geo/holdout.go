@@ -319,6 +319,7 @@ func (p *Pipeline) prepareHoldout(ctx context.Context, dir string) (mmdbPath, tr
 	asnMainArgs, asnMain := p.asnMainArgs()
 	// The holder blocks file is passed as it is: it is not learned from the geofeed rows.
 	holderArgs, _ := p.holderArgs(asnMain == "on")
+	// No RTT country check: it needs -geonames, which this build does not pass.
 	// The fallback guesses are recomputed the same way (the country guess even without the
 	// ASN prefixes).
 	args, err := p.geoArgs(mmdbPath, replace, slices.Concat(asnMainArgs, holderArgs, []string{fallbackFlag})...)

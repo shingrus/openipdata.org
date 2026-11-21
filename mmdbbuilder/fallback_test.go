@@ -20,7 +20,7 @@ func guessBuild(t *testing.T, dir, layerRows string, asnRows *string, index geoN
 		asn = writeFile(t, filepath.Join(dir, "asn-prefixes.csv.gz"), "asn,prefix\n"+*asnRows)
 	}
 	out := filepath.Join(dir, "out.mmdb")
-	stats, err := buildGeoGuesses([]string{layer}, "", out, false, nil, nil, nil, index, asn, fallback, "")
+	stats, err := buildGeoGuesses([]string{layer}, "", out, false, nil, nil, nil, index, asn, fallback, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

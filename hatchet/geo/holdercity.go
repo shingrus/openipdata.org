@@ -72,16 +72,16 @@ func (p *Pipeline) holderArgs(asnMainOn bool) (args []string, status string) {
 	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
 		return nil, "skipped: no holder blocks"
 	}
-	if err := checkHolderCities(path); err != nil {
+	if err := checkGzipCSV(path, "prefix", "country", "city"); err != nil {
 		p.log("mmdb: WARNING %s is unreadable or empty; building without the %s guess", holderCitiesFile, HolderCitySource)
 		return nil, "skipped: holder blocks unreadable"
 	}
 	return []string{holdersFlag, path}, "on"
 }
 
-// checkHolderCities reads the whole file as the builder will: a gzipped CSV whose header has
-// prefix, country and city, with at least one data row.
-func checkHolderCities(path string) error {
+// checkGzipCSV reads the whole file as the builder will: a gzipped CSV whose header has the
+// columns, with at least one data row. The holder blocks file and the RTT file use it.
+func checkGzipCSV(path string, columns ...string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -101,7 +101,7 @@ func checkHolderCities(path string) error {
 	for i := range header {
 		header[i] = strings.TrimSpace(header[i]) // as the builder reads it
 	}
-	for _, col := range []string{"prefix", "country", "city"} {
+	for _, col := range columns {
 		if !slices.Contains(header, col) {
 			return errors.New("missing column")
 		}

@@ -22,7 +22,7 @@ func holderBuild(t *testing.T, dir, layerRows, asnRows string, holderRows *strin
 		holders = writeFile(t, filepath.Join(dir, "holders.csv.gz"), holderHeader+*holderRows)
 	}
 	out := filepath.Join(dir, "out.mmdb")
-	stats, err := buildGeoGuesses([]string{layer}, "", out, false, nil, nil, nil, nil, asn, fallback, holders)
+	stats, err := buildGeoGuesses([]string{layer}, "", out, false, nil, nil, nil, nil, asn, fallback, holders, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,12 +142,12 @@ func TestHolderFileErrors(t *testing.T) {
 	missing := filepath.Join(dir, "missing.csv.gz")
 	noHeader := writeFile(t, filepath.Join(dir, "bad.csv.gz"), "a,b\n1,2\n")
 	for _, path := range []string{missing, noHeader} {
-		_, err := buildGeoGuesses([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, nil, asn, false, path)
+		_, err := buildGeoGuesses([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, nil, asn, false, path, "")
 		if err == nil || !strings.Contains(err.Error(), path) {
 			t.Errorf("error for %s = %v", path, err)
 		}
 	}
-	if _, err := buildGeoGuesses([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, nil, "", false, noHeader); err == nil {
+	if _, err := buildGeoGuesses([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, nil, "", false, noHeader, ""); err == nil {
 		t.Error("holders without ASN prefixes must fail")
 	}
 }

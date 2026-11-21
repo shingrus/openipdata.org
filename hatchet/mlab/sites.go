@@ -4,7 +4,10 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"cmp"
+	"compress/gzip"
 	"context"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +46,13 @@ const (
 	// siteMaxRTT (ms): a client /24 gets the site's city when its lowest reply time is at most this.
 	// Measured on RIPE Atlas: above 5 ms an added answer is right only 27% to 40% of the time.
 	siteMaxRTT = 5.0
+
+	// rttMaxMs (ms): the rows up to this reply time also go to the RTT file (speedtest-rtt.csv.gz),
+	// for the speed-of-light country check of mmdbbuilder (-rtt-country). The export holds no more.
+	rttMaxMs = 30.0
+	// maxRTTRows caps the rows kept for the RTT file (12 bytes each; the export of 2026-11 had
+	// 3.05M). Past it the RTT file is not made ("too many rows"); the layer still is.
+	maxRTTRows = 40_000_000
 
 	minValidSiteRows = 100_000 // fewer valid rows: not the right file
 	minSiteLayerRows = 10_000  // fewer layer rows: fail, the old layer file stays
@@ -90,6 +100,10 @@ type SiteLayerOutput struct {
 	Unplaced        int     `json:"unplaced"`   // within the limit, but GeoNames has no such city in the country
 	Located         int     `json:"located"`    // rows of the layer
 	Cities          int     `json:"cities"`     // distinct cities in the layer
+	RTTRows         int     `json:"rtt_rows"`   // rows of the RTT file
+	RTTBytes        int64   `json:"rtt_bytes"`
+	RTTUpload       string  `json:"rtt_upload,omitempty"`  // uploaded, unchanged or skipped
+	RTTSkipped      string  `json:"rtt_skipped,omitempty"` // no rows, write failed
 	GeoNames        string  `json:"geonames,omitempty"`
 	LayerBytes      int64   `json:"layer_bytes"`
 	Upload          string  `json:"upload,omitempty"` // uploaded, unchanged (R2 has the same file; its date stays) or skipped
@@ -109,6 +123,16 @@ type siteCity struct{ country, city string }
 type siteBest struct {
 	rtt  float64
 	city uint32 // index into the interned cities
+}
+
+// rttRowLimit is maxRTTRows; tests lower it.
+var rttRowLimit = maxRTTRows
+
+// siteRTT is one valid row of the export within rttMaxMs: a client /24, a site city and the time.
+type siteRTT struct {
+	client uint32
+	city   uint16 // index into the interned cities (at most maxSiteCities)
+	rtt    float32
 }
 
 // SiteLayer is the site-layer task. name is a base name in the sites inbox (empty: the newest CSV
@@ -148,21 +172,30 @@ func (p *Pipeline) SiteLayer(ctx context.Context, name string, opts SiteLayerOpt
 		minRows = minSiteLayerRows
 	}
 
-	cities, best, err := readSites(ctx, f, &out, minValid)
+	cities, best, rtts, err := readSites(ctx, f, &out, minValid)
 	if err != nil {
 		return out, err
 	}
 	out.Clients = len(best)
 
-	// The cities of the clients within the limit are the ones that need a place.
+	// The cities of the layer's clients (best row within siteMaxRTT) and of the rows of the RTT
+	// file are the ones that need a place.
 	wanted := map[string]bool{}
 	keyOf := make([]string, len(cities))
+	want := func(city uint32) {
+		if keyOf[city] == "" {
+			c := cities[city]
+			keyOf[city] = placeKey(c.country, c.city)
+			wanted[keyOf[city]] = true
+		}
+	}
 	for _, b := range best {
 		if b.rtt <= siteMaxRTT {
-			c := cities[b.city]
-			keyOf[b.city] = placeKey(c.country, c.city)
-			wanted[keyOf[b.city]] = true
+			want(b.city)
 		}
+	}
+	for _, r := range rtts {
+		want(uint32(r.city))
 	}
 	if len(wanted) > 0 {
 		if out.GeoNames, err = p.fetchGeoNames(ctx); err != nil {
@@ -203,6 +236,24 @@ func (p *Pipeline) SiteLayer(ctx context.Context, name string, opts SiteLayerOpt
 	if out.LayerBytes, err = writeLayer(p.SiteLayerPath(), rows, siteLayerSource); err != nil {
 		return out, fmt.Errorf("write %s: %w", SiteLayerFile, err)
 	}
+	// The RTT file is made after the layer, and a problem with it never loses the layer.
+	rttRows := buildRTTRows(rtts, cities, keyOf, wanted)
+	out.RTTRows = len(rttRows)
+	rttWritten := false
+	if len(rttRows) == 0 {
+		if out.RTTSkipped == "" {
+			out.RTTSkipped = "no rows"
+		}
+		if err := os.Remove(p.SiteRTTPath()); err != nil && !os.IsNotExist(err) {
+			p.log("site-layer: WARNING cannot remove the old %s", SiteRTTFile)
+		}
+	} else if out.RTTBytes, err = writeRTT(p.SiteRTTPath(), rttRows, cities); err != nil {
+		p.log("site-layer: WARNING cannot write %s; the layer is kept", SiteRTTFile)
+		out.RTTRows, out.RTTBytes, out.RTTSkipped = 0, 0, "write failed"
+	} else {
+		rttWritten = true
+	}
+	out.RTTUpload = "skipped"
 	if opts.SkipUpload {
 		out.Upload = "skipped"
 	} else {
@@ -214,19 +265,28 @@ func (p *Pipeline) SiteLayer(ctx context.Context, name string, opts SiteLayerOpt
 			return out, err
 		}
 		out.Upload = string(status)
+		if rttWritten {
+			// The same call as the layer's: no refresh, so the date counts from the last new export.
+			status, err := p.put(ctx, SiteRTTKey, p.SiteRTTPath(), opts.ForceUpload, false)
+			if err != nil {
+				return out, err
+			}
+			out.RTTUpload = string(status)
+		}
 	}
 	out.Seconds = time.Since(started).Round(time.Second).Seconds()
-	p.log("site-layer: %d rows (%d bad, %d kept), %d client /24s, %d over the limit, %d unplaced, %d located in %d cities; %s is %d bytes; upload %s",
-		out.Rows, out.Bad(), out.Valid, out.Clients, out.OverLimit, out.Unplaced, out.Located, out.Cities, SiteLayerFile, out.LayerBytes, out.Upload)
+	p.log("site-layer: %d rows (%d bad, %d kept), %d client /24s, %d over the limit, %d unplaced, %d located in %d cities; %s is %d bytes; upload %s; %d rows in %s (%d bytes), upload %s",
+		out.Rows, out.Bad(), out.Valid, out.Clients, out.OverLimit, out.Unplaced, out.Located, out.Cities, SiteLayerFile, out.LayerBytes, out.Upload,
+		out.RTTRows, SiteRTTFile, out.RTTBytes, out.RTTUpload)
 	return out, nil
 }
 
 // readSites streams the CSV, counts into out and returns the interned cities and the best
 // candidate of each client /24. The header names the columns; the rows are untrusted.
-func readSites(ctx context.Context, src io.Reader, out *SiteLayerOutput, minValid int) ([]siteCity, map[uint32]siteBest, error) {
+func readSites(ctx context.Context, src io.Reader, out *SiteLayerOutput, minValid int) ([]siteCity, map[uint32]siteBest, []siteRTT, error) {
 	r, col, closeFn, err := openCSV(src)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer closeFn()
 	cClient, ok1 := col["client24"]
@@ -234,13 +294,14 @@ func readSites(ctx context.Context, src io.Reader, out *SiteLayerOutput, minVali
 	cCity, ok3 := col["site_city"]
 	cRTT, ok4 := col["min_rtt"]
 	if !ok1 || !ok2 || !ok3 || !ok4 {
-		return nil, nil, permanent("the header must have the columns client24, site_country, site_city and min_rtt")
+		return nil, nil, nil, permanent("the header must have the columns client24, site_country, site_city and min_rtt")
 	}
 	need := max(cClient, cCountry, cCity, cRTT) + 1
 
 	var cities []siteCity
 	ids := map[string]uint32{}
 	best := map[uint32]siteBest{}
+	var rtts []siteRTT
 	var fields [][]byte
 	var key []byte
 	lines := 0
@@ -252,16 +313,16 @@ func readSites(ctx context.Context, src io.Reader, out *SiteLayerOutput, minVali
 		// Every line counts for the two safety checks, empty ones too, so a file of empty lines
 		// cannot run without end or without a look at the context.
 		if lines++; lines > maxRows {
-			return nil, nil, permanent("more than %d lines", maxRows)
+			return nil, nil, nil, permanent("more than %d lines", maxRows)
 		}
 		if lines&0xFFFF == 0 {
 			if err := ctx.Err(); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		}
 		tooLong := errors.Is(err, errLineTooLong)
 		if err != nil && !tooLong {
-			return nil, nil, fmt.Errorf("read the input file: %w", err)
+			return nil, nil, nil, fmt.Errorf("read the input file: %w", err)
 		}
 		if !tooLong && len(line) == 0 {
 			continue
@@ -317,15 +378,22 @@ func readSites(ctx context.Context, src io.Reader, out *SiteLayerOutput, minVali
 			ids[string(key)] = id
 		}
 		out.Valid++
+		if rtt <= rttMaxMs && out.RTTSkipped == "" {
+			if len(rtts) >= rttRowLimit {
+				rtts, out.RTTSkipped = nil, "too many rows" // no RTT file this run; the layer goes on
+			} else {
+				rtts = append(rtts, siteRTT{client, uint16(id), float32(rtt)})
+			}
+		}
 		cand := siteBest{rtt, id}
 		if old, have := best[client]; !have || betterSite(cand, old, cities) {
 			best[client] = cand
 		}
 	}
 	if out.Valid < minValid {
-		return nil, nil, permanent("only %d valid rows of %d, fewer than %d: is this the right file?", out.Valid, out.Rows, minValid)
+		return nil, nil, nil, permanent("only %d valid rows of %d, fewer than %d: is this the right file?", out.Valid, out.Rows, minValid)
 	}
-	return cities, best, nil
+	return cities, best, rtts, nil
 }
 
 // betterSite says whether a beats b: the smaller time, then the smaller country, then the smaller
@@ -557,4 +625,69 @@ func scanPlaces(ctx context.Context, path string, wanted map[string]bool) (int, 
 		}
 	}
 	return places, sc.Err()
+}
+
+// buildRTTRows keeps the rows whose site city GeoNames places, sorted by client, country, city
+// and time, one per (client, city) with the lowest time. A (country, city) pair is one entry of
+// the table, so equal pairs are the same index.
+func buildRTTRows(rtts []siteRTT, cities []siteCity, keyOf []string, placed map[string]bool) []siteRTT {
+	rows := make([]siteRTT, 0, len(rtts))
+	for _, r := range rtts {
+		if placed[keyOf[r.city]] {
+			rows = append(rows, r)
+		}
+	}
+	slices.SortFunc(rows, func(a, b siteRTT) int {
+		if a.client != b.client {
+			return cmp.Compare(a.client, b.client)
+		}
+		if a.city != b.city {
+			ca, cb := cities[a.city], cities[b.city]
+			if c := strings.Compare(ca.country, cb.country); c != 0 {
+				return c
+			}
+			if c := strings.Compare(ca.city, cb.city); c != 0 {
+				return c
+			}
+		}
+		return cmp.Compare(a.rtt, b.rtt)
+	})
+	out := rows[:0]
+	for _, r := range rows {
+		if n := len(out); n > 0 && out[n-1].client == r.client && out[n-1].city == r.city {
+			continue // the same triple, a slower time
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// writeRTT writes the RTT file (gzipped CSV, header prefix,country,city,rtt_ms) through a
+// temporary file and a rename and returns its size.
+func writeRTT(path string, rows []siteRTT, cities []siteCity) (int64, error) {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(tmp)
+	gz := gzip.NewWriter(f)
+	w := csv.NewWriter(gz)
+	w.Write([]string{"prefix", "country", "city", "rtt_ms"})
+	var prefix []byte
+	for _, r := range rows {
+		prefix = appendClient(prefix[:0], r.client)
+		prefix = append(prefix, ".0/24"...)
+		c := cities[r.city]
+		w.Write([]string{string(prefix), c.country, c.city, strconv.FormatFloat(float64(r.rtt), 'f', -1, 32)})
+	}
+	w.Flush()
+	if err := errors.Join(w.Error(), gz.Close(), f.Close()); err != nil {
+		return 0, err
+	}
+	fi, err := os.Stat(tmp)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), os.Rename(tmp, path)
 }

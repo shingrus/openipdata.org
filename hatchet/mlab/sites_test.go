@@ -164,7 +164,8 @@ func TestSiteLayerBestCandidate(t *testing.T) {
 	if out.Upload != "uploaded" || out.GeoNames != "downloaded" || out.LayerBytes == 0 || out.File != "sites.csv" {
 		t.Errorf("%+v", out)
 	}
-	if len(e.uploads) != 1 || e.uploads[0].key != "internal/layers/35-speedtest-site.csv.gz" || e.uploads[0].path != e.p.SiteLayerPath() || e.uploads[0].opts.Refresh || e.uploads[0].opts.Force {
+	if len(e.uploads) != 2 || e.uploads[0].key != "internal/layers/35-speedtest-site.csv.gz" || e.uploads[0].path != e.p.SiteLayerPath() || e.uploads[0].opts.Refresh || e.uploads[0].opts.Force ||
+		e.uploads[1].key != SiteRTTKey || e.uploads[1].path != e.p.SiteRTTPath() || e.uploads[1].opts.Refresh || e.uploads[1].opts.Force {
 		t.Errorf("uploads = %+v", e.uploads)
 	}
 
@@ -393,7 +394,7 @@ func TestSiteLayerInputAndUpload(t *testing.T) {
 	if err != nil || out.Located != 1 || out.File != "in.csv.gz" {
 		t.Fatalf("%+v %v", out, err)
 	}
-	if len(e.uploads) != 1 || !e.uploads[0].opts.Force || e.uploads[0].opts.Refresh {
+	if len(e.uploads) != 2 || !e.uploads[0].opts.Force || e.uploads[0].opts.Refresh || !e.uploads[1].opts.Force {
 		t.Errorf("uploads = %+v", e.uploads)
 	}
 
@@ -492,5 +493,117 @@ func TestSplitQuoted(t *testing.T) {
 		if !slices.Equal(s, tc.want) {
 			t.Errorf("%q: %q, want %q", tc.in, s, tc.want)
 		}
+	}
+}
+
+func (e *siteEnv) rtt() string {
+	e.t.Helper()
+	f, err := os.Open(e.p.SiteRTTPath())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer f.Close()
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	b, _ := io.ReadAll(gr)
+	return string(b)
+}
+
+func TestSiteRTTFile(t *testing.T) {
+	rows := []string{
+		"20.1.2,a,FR,Paris,2,1,12.5,1,1",     // sorted after 20.1.1
+		"20.1.1,b,US,Chicago,2,1,9.0,1,1",    //
+		"20.1.1,c,US,Chicago,2,1,7.25,1,1",   // the same city (another site): the lowest time
+		"20.1.1,a,DE,Berlin,2,1,30.0,1,1",    // exactly the limit: in; DE sorts before US
+		"20.1.1,a,FR,Paris,2,1,30.5,1,1",     // above 30: out
+		"20.1.1,a,US,Nowhereville,2,1,4,1,1", // not placed: out
+		"20.1.4,a,US,Chicago,2,1,3,1,1",      // the one layer row
+		"20.1.3,a,US,Chicago,2,1,31,1,1",     // above 30: out, and the client has no row at all
+	}
+	want := "prefix,country,city,rtt_ms\n" +
+		"20.1.1.0/24,DE,Berlin,30\n" +
+		"20.1.1.0/24,US,Chicago,7.25\n" +
+		"20.1.2.0/24,FR,Paris,12.5\n" +
+		"20.1.4.0/24,US,Chicago,3\n"
+	e := newSiteEnv(t)
+	out, err := e.run(sitesHeader + strings.Join(rows, "\n") + "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.rtt(); got != want {
+		t.Errorf("rtt file:\n%s\nwant:\n%s", got, want)
+	}
+	if out.RTTRows != 4 || out.RTTBytes == 0 || out.RTTUpload != "uploaded" || out.RTTSkipped != "" {
+		t.Errorf("%+v", out)
+	}
+	// The same rows in the opposite order give the same file.
+	slices.Reverse(rows)
+	e2 := newSiteEnv(t)
+	if _, err := e2.run(sitesHeader + strings.Join(rows, "\n") + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e2.rtt(); got != want {
+		t.Errorf("reversed:\n%s", got)
+	}
+}
+
+// More rows than the cap: no RTT file, the layer is still made with every row.
+func TestSiteRTTTooManyRows(t *testing.T) {
+	old := rttRowLimit
+	rttRowLimit = 2
+	t.Cleanup(func() { rttRowLimit = old })
+	e := newSiteEnv(t)
+	out, err := e.run(sitesHeader + "20.1.1,a,US,Chicago,2,1,2\n20.1.2,a,US,Chicago,2,1,2\n20.1.3,a,FR,Paris,2,1,3\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Located != 3 || out.Upload != "uploaded" || out.RTTSkipped != "too many rows" || out.RTTRows != 0 || out.RTTUpload != "skipped" {
+		t.Errorf("%+v", out)
+	}
+	if _, err := os.Stat(e.p.SiteRTTPath()); !os.IsNotExist(err) {
+		t.Errorf("RTT file is there: %v", err)
+	}
+}
+
+// With the layer minimum there is always an RTT row (a layer row is within 5 ms and placed), so
+// "no rows" only guards the helper.
+func TestBuildRTTRowsEmpty(t *testing.T) {
+	if rows := buildRTTRows(nil, nil, nil, nil); len(rows) != 0 {
+		t.Errorf("rows = %v", rows)
+	}
+}
+
+func TestSiteRTTWriteFailureKeepsTheLayer(t *testing.T) {
+	e := newSiteEnv(t)
+	if err := os.MkdirAll(e.p.SiteRTTPath(), 0o750); err != nil { // a directory is in the way of the rename
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(e.p.SiteRTTPath(), "x"), []byte("x"), 0o640)
+	out, err := e.run(sitesHeader + "20.1.1,a,US,Chicago,2,1,2.0\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Located != 1 || out.Upload != "uploaded" || out.RTTSkipped != "write failed" || out.RTTUpload != "skipped" || out.RTTRows != 0 {
+		t.Errorf("%+v", out)
+	}
+	if len(e.uploads) != 1 || e.uploads[0].key != SiteLayerKey {
+		t.Errorf("uploads = %+v", e.uploads)
+	}
+}
+
+func TestSiteRTTUploadErrorFailsTheTask(t *testing.T) {
+	e := newSiteEnv(t)
+	calls := 0
+	e.p.upload = func(_ context.Context, key, _ string, _ publish.PutOptions) (string, publish.PutStatus, error) {
+		calls++
+		if key == SiteRTTKey {
+			return "", "", errors.New("boom")
+		}
+		return "r2://" + key, publish.PutUploaded, nil
+	}
+	if _, err := e.run(sitesHeader + "20.1.1,a,US,Chicago,2,1,2.0\n"); err == nil || errors.Is(err, ErrPermanent) || calls != 2 {
+		t.Errorf("err %v, calls %d", err, calls)
 	}
 }

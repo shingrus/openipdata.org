@@ -259,7 +259,8 @@ type Source struct {
 	// SkippedLayers are the optional layers (see optionalLayers) that are not
 	// in the build this run: they had no rows or no object, or skip_layers
 	// named them. The holder blocks file of the 85-holder-city guess (not a layer) is listed
-	// by that name when it is missing, old or could not be fetched.
+	// by that name when it is missing, old or could not be fetched; so is the RTT file of the
+	// country check (RTTCountrySource).
 	SkippedLayers []string `json:"skipped_layers,omitempty"`
 }
 
@@ -498,6 +499,11 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 
 	// 14b. The holder blocks of ARIN (the same workflow's second file), for the 85-holder-city guess.
 	if err := p.downloadHolderCities(ctx, r2.DownloadIfChanged, downloads, now, &src); err != nil {
+		return src, err
+	}
+
+	// 14c. The M-Lab reply times (import-mlab-sites' second file), for the RTT country check.
+	if err := p.downloadRTTCountry(ctx, r2.DownloadIfChanged, downloads, now, &src); err != nil {
 		return src, err
 	}
 
@@ -773,6 +779,11 @@ type BuildMMDBOutput struct {
 	// ASN main fill), or "skipped: no ASN prefixes" / "skipped: no holder blocks" /
 	// "skipped: holder blocks unreadable".
 	HolderCity string `json:"holder_city"`
+	// RTTCountry is "on" when the build ran the speed-of-light country check with the M-Lab reply
+	// times (-rtt-country; needs GeoNames), or "skipped: no GeoNames" / "skipped: no reply times" /
+	// "skipped: reply times unreadable". RTTCountryChanged counts the /24s whose country it changed.
+	RTTCountry        string `json:"rtt_country"`
+	RTTCountryChanged int    `json:"rtt_country_changed,omitempty"`
 	// Fallback is "on": the build passes -fallback, so the addresses still without a city
 	// get the guesses 82-asn-likely, 84-asn-near, 88-asn-far and 89-asn-anywhere (only with the ASN prefixes)
 	// and 86-country-main (always).
@@ -785,6 +796,9 @@ type BuildMMDBOutput struct {
 
 // coordinatesSummary matches mmdbbuilder's "coordinates: P records placed, U cities not placed".
 var coordinatesSummary = regexp.MustCompile(`(?m)^coordinates: (\d+) records placed, (\d+) cities not placed$`)
+
+// rttCountrySummary matches mmdbbuilder's "rtt-country: R rows, S skipped, N /24s, C /24s changed, P parts changed".
+var rttCountrySummary = regexp.MustCompile(`(?m)^rtt-country: \d+ rows, \d+ skipped, \d+ /24s, (\d+) /24s changed, \d+ parts changed$`)
 
 // geoNamesWait bounds the GeoNames download of the build: a stalled server
 // only costs the coordinates, never the build.
@@ -941,8 +955,11 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	}
 	coordinates := "skipped: " + strings.TrimPrefix(status, "skipped: ")
 	var extra []string
+	var rttArgs []string
+	rttStatus := "skipped: no GeoNames"
 	if geonames != "" {
 		extra = []string{"-geonames", geonames}
+		rttArgs, rttStatus = p.rttCountryArgs(true)
 		coordinates = "on"
 		if strings.HasPrefix(status, "stale: ") {
 			coordinates = "on (" + status + ")"
@@ -952,6 +969,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	holderArgs, holderCity := p.holderArgs(asnMain == "on")
 	guesses := slices.Concat(asnMainArgs, holderArgs, []string{fallbackFlag}) // the flags of the guesses; the retry without GeoNames passes the same ones
 	extra = append(extra, guesses...)
+	extra = append(extra, rttArgs...) // not in guesses: the retry without GeoNames must not pass it
 	args, err := p.geoArgs(final, nil, extra...)
 	if err != nil {
 		return BuildMMDBOutput{}, err
@@ -961,6 +979,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 		// The builder named the GeoNames file in its error: build again without it.
 		p.log("mmdb: geonames unusable, building without coordinates: %v", err)
 		coordinates = "skipped: the builder could not read the GeoNames file"
+		rttStatus = "skipped: no GeoNames"
 		if args, err = p.geoArgs(final, nil, guesses...); err == nil {
 			stdout, err = p.runBuilder(ctx, args)
 		}
@@ -971,10 +990,13 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
-	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, Fallback: "on"}
+	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, RTTCountry: rttStatus, Fallback: "on"}
 	if m := coordinatesSummary.FindStringSubmatch(stdout); m != nil {
 		out.CoordinatesPlaced, _ = strconv.Atoi(m[1])
 		out.CoordinatesUnplaced, _ = strconv.Atoi(m[2])
+	}
+	if m := rttCountrySummary.FindStringSubmatch(stdout); m != nil {
+		out.RTTCountryChanged, _ = strconv.Atoi(m[1])
 	}
 	for _, m := range layerSummary.FindAllStringSubmatch(stdout, -1) {
 		out.Prefixes[m[1]], _ = strconv.Atoi(m[2])

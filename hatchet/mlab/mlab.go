@@ -56,6 +56,12 @@ const (
 	SiteLayerFile = "35-speedtest-site.csv.gz"
 	SiteLayerKey  = "internal/layers/" + SiteLayerFile
 
+	// SiteRTTFile is the reply times of the same export (every row within 30 ms whose site city
+	// GeoNames places), written by the same task. It is not a layer: build-geo-data passes it to
+	// mmdbbuilder as -rtt-country (the speed-of-light country check). SiteRTTKey is its fixed key.
+	SiteRTTFile = "speedtest-rtt.csv.gz"
+	SiteRTTKey  = "internal/mlab/" + SiteRTTFile
+
 	pairsFile = "pairs.csv.gz"
 	inboxDir  = "inbox"
 
@@ -116,6 +122,7 @@ func (p *Pipeline) LayerPath() string { return filepath.Join(p.dir(), LayerFile)
 
 func (p *Pipeline) sitesInbox() string    { return filepath.Join(p.dir(), sitesInboxDir) }
 func (p *Pipeline) SiteLayerPath() string { return filepath.Join(p.dir(), SiteLayerFile) }
+func (p *Pipeline) SiteRTTPath() string   { return filepath.Join(p.dir(), SiteRTTFile) }
 
 func (p *Pipeline) log(format string, args ...any) {
 	if p.Progress != nil {

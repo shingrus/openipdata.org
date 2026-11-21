@@ -103,15 +103,20 @@ type place struct{ code, city, source string }
 // addresses that have a country and no city; see asnmain.go. It is a guess,
 // not a layer file, and it only fills.
 func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string) ([]geoLayerStats, error) {
-	return buildGeoGuesses(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, asnMain, false, "")
+	return buildGeoGuesses(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, asnMain, false, "", "")
 }
 
 // buildGeoGuesses is buildGeo with the fallback switch: with fallback, more guesses
 // follow the ASN main city fill (82-asn-likely, 84-asn-near, 86-country-main, 88-asn-far, 89-asn-anywhere; see
 // fallback.go), and with fallback and no asnMain only the country one runs. With holders
 // (the path of a holders file, "" for none; it needs asnMain) the holder city guess runs
-// as well (85-holder-city, holders.go). Without them the output is exactly buildGeo's.
-func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string, fallback bool, holders string) ([]geoLayerStats, error) {
+// as well (85-holder-city, holders.go). With rttCountry (the path of the RTT file, "" for none; it
+// needs the GeoNames index) the speed-of-light country check runs after all layers and before
+// the guesses (rttcountry.go). Without them the output is exactly buildGeo's.
+func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string, fallback bool, holders string, rttCountry string) ([]geoLayerStats, error) {
+	if rttCountry != "" && index == nil {
+		return nil, errors.New("-rtt-country needs -geonames")
+	}
 	names, err := loadNames(namesPath)
 	if err != nil {
 		return nil, err
@@ -249,6 +254,15 @@ func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool,
 			}
 		}
 		stats = append(stats, s)
+	}
+	if rttCountry != "" {
+		// After all layers, before the guesses, so that they fill cities in the corrected country.
+		// One line, never a "layer" line: it is not a layer and has no stats entry.
+		counts, err := applyRTTCountry(writer, rttCountry, index, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
+		if err != nil {
+			return stats, fmt.Errorf("%s: %w", filepath.Base(rttCountry), err)
+		}
+		fmt.Println(counts)
 	}
 	if asnMain != "" || fallback || holders != "" {
 		guesses, err := fillGuesses(writer, asnMain, fallback, index, holders, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
