@@ -336,14 +336,17 @@ const asnCompatType = "OpenIPData-ASN (compat=GeoLite2-ASN)"
 
 // flatASN is a record of the flat ip2asn file.
 type flatASN struct {
-	ASN  string `maxminddb:"asn"`
-	Name string `maxminddb:"name"`
-	Org  string `maxminddb:"org"`
+	ASN         string `maxminddb:"asn"`
+	Name        string `maxminddb:"name"`
+	Org         string `maxminddb:"org"`
+	CountryCode string `maxminddb:"country_code"`
 }
 
 // convertASN writes the GeoLite2-ASN layout: autonomous_system_number and
-// autonomous_system_organization (the flat org, else the flat name). A record with
-// no valid number is not written and counted in skipped.
+// autonomous_system_organization (the flat org, else the flat name), plus two
+// extra keys under their old flat names, each only when known: name (the
+// network's short handle, e.g. GOOGLE) and country_code (where the network is
+// registered). A record with no valid number is not written and counted in skipped.
 func convertASN(reader *maxminddb.Reader, out string) (convertStats, error) {
 	stats := convertStats{asn: true}
 	err := convertFile(reader, out, asnCompatType, func(res maxminddb.Result) (mmdbtype.Map, error) {
@@ -365,6 +368,8 @@ func convertASN(reader *maxminddb.Reader, out string) (convertStats, error) {
 			rec["autonomous_system_organization"] = mmdbtype.String(org)
 			stats.withOrg++
 		}
+		setString(rec, "name", r.Name)
+		setString(rec, "country_code", r.CountryCode)
 		stats.networks++
 		return rec, nil
 	})

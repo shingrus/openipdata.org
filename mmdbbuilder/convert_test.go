@@ -281,6 +281,14 @@ func TestConvertFailures(t *testing.T) {
 	}
 }
 
+// nilIfEmpty is how a decoded map holds a string key: absent (nil) when empty.
+func nilIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // geoliteASN has the shape of geoip2's ASN model.
 type geoliteASN struct {
 	Number uint   `maxminddb:"autonomous_system_number"`
@@ -356,8 +364,16 @@ func TestConvertASN(t *testing.T) {
 		if err := got.Decode(&raw); err != nil {
 			t.Fatal(err)
 		}
-		if len(raw) != 2 {
-			t.Errorf("%s: keys = %v", res.Prefix(), raw)
+		// The two GeoLite2 keys, plus name and country_code when the flat record has them.
+		wantKeys := 2
+		if f.Name != "" {
+			wantKeys++
+		}
+		if f.CountryCode != "" {
+			wantKeys++
+		}
+		if len(raw) != wantKeys || raw["name"] != nilIfEmpty(f.Name) || raw["country_code"] != nilIfEmpty(f.CountryCode) {
+			t.Errorf("%s: keys = %v, flat %+v", res.Prefix(), raw, f)
 		}
 		n++
 	}
@@ -369,6 +385,12 @@ func TestConvertASN(t *testing.T) {
 	r.Lookup(netip.MustParseAddr("8.8.4.4")).Decode(&two)
 	if one.Number != 1 || one.Org != "One Inc." || two.Number != 2 || two.Org == "" {
 		t.Errorf("one %+v two %+v", one, two)
+	}
+	var oneRaw, twoRaw map[string]any
+	r.Lookup(netip.MustParseAddr("8.8.8.8")).Decode(&oneRaw)
+	r.Lookup(netip.MustParseAddr("8.8.4.4")).Decode(&twoRaw)
+	if oneRaw["name"] != "ONE" || oneRaw["country_code"] != "US" || twoRaw["name"] != "TWO" || twoRaw["country_code"] != nil {
+		t.Errorf("extra keys: one %v two %v", oneRaw, twoRaw)
 	}
 	// The same input gives the same bytes.
 	out2 := filepath.Join(root, "again.mmdb")

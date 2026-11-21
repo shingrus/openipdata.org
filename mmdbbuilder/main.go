@@ -49,7 +49,8 @@
 // (continent, country, city, location; English names only; database_type OpenIPData-City). With
 // -geonames a city whose GeoNames place has the record's own coordinates also gets its
 // geoname_id and time zone. A flat ip2asn MMDB becomes the GeoLite2-ASN layout
-// (autonomous_system_number, autonomous_system_organization; database_type
+// (autonomous_system_number, autonomous_system_organization, plus the extra keys name
+// and country_code of the flat file; database_type
 // "OpenIPData-ASN (compat=GeoLite2-ASN)"). The input's database_type decides which.
 // The metadata description and build epoch of the input are kept. See convert.go.
 //
