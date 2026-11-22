@@ -96,7 +96,8 @@ type llmRuleRow struct {
 type lastAnswer struct {
 	Hash             string    // pattern set of the newest complete answer
 	AskedAt          time.Time // when it was asked
-	RuleVersions     []string  // learned versions it was compared with (after its overrides)
+	RuleVersions     []string  // learned versions it was compared with (after its overrides), or only saw if NoRule
+	NoRule           bool      // it gave no rule (no_city, rejected, blocked), so it compared nothing
 	HasComplete      bool
 	NewestIncomplete bool
 }
@@ -183,18 +184,26 @@ func buildDomainInfo(domain string, names []Name) *domainInfo {
 
 // needsAsking: a domain is asked when it never had a complete answer, when its newest question
 // is incomplete (an error, a stop, a failed second opinion), when one of its current learned
-// versions was not checked by its newest complete answer (no wait), or when its patterns
-// changed and that answer is 30 days old; force asks regardless.
+// versions is not in its newest complete answer, or when its patterns changed and that answer is
+// 30 days old; force asks regardless. A new learned version asks at once after an answer with a
+// rule. After an answer with no rule it waits the same 30 days: that answer compared nothing, and
+// asking at once would pay for the same question on every run.
 func needsAsking(info *domainInfo, last *lastAnswer, learned []string, now time.Time, force bool) bool {
 	if force || last == nil || !last.HasComplete || last.NewestIncomplete {
 		return true
 	}
+	old := now.Sub(last.AskedAt) >= reaskAfter
 	for _, v := range learned {
-		if !slicesContains(last.RuleVersions, v) {
+		if !slicesContains(last.RuleVersions, v) && (!last.NoRule || old) {
 			return true
 		}
 	}
-	return info.Hash != last.Hash && now.Sub(last.AskedAt) >= reaskAfter
+	return info.Hash != last.Hash && old
+}
+
+// noRuleVerdict says that a complete answer left the domain without a new rule.
+func noRuleVerdict(v string) bool {
+	return v == verdictNoCity || v == verdictRejected || v == verdictBlocked
 }
 
 // llmRequest is one question to the model: a domain with 5+ hosts, or a pack of small ones.
@@ -267,6 +276,7 @@ type proposeRun struct {
 	progress func(string)
 	parallel int
 	newID    func() string
+	learned  map[string][]string // current learned versions per domain, set before the first request
 
 	mu        sync.Mutex // guards everything below and every store call
 	out       ProposeOutput
@@ -364,6 +374,10 @@ func (r *proposeRun) save(ctx context.Context, rec answerRecord) {
 	if rec.AskedAt.IsZero() {
 		rec.AskedAt = r.now()
 	}
+	// An answer with no rule records the versions it saw, so only a new one can ask it again.
+	if rec.Kind != kindSecond && rec.Status == statusComplete && noRuleVerdict(rec.Verdict) {
+		rec.RuleVersions = r.learned[rec.Domain]
+	}
 	if err := r.store.SaveAnswer(ctx, rec); err != nil {
 		if r.fatal == nil {
 			r.fatal = err
@@ -433,6 +447,7 @@ func (r *proposeRun) execute(ctx context.Context, infos map[string]*domainInfo, 
 	if err != nil {
 		return r.out, err
 	}
+	r.learned = learnedNow
 	only := map[string]bool{}
 	for _, d := range opts.Domains {
 		if d = normalize(d); d != "" {

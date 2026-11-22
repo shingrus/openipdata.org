@@ -14,19 +14,20 @@ type pgProposeStore struct{ conn *pgx.Conn }
 func (s *pgProposeStore) LastAnswers(ctx context.Context) (map[string]lastAnswer, error) {
 	out := map[string]lastAnswer{}
 	// The newest complete answer of each domain.
-	rows, err := s.conn.Query(ctx, `SELECT DISTINCT ON (domain) domain, patterns_hash, asked_at, rule_versions
+	rows, err := s.conn.Query(ctx, `SELECT DISTINCT ON (domain) domain, patterns_hash, asked_at, rule_versions, verdict
 		FROM public.rdns_llm_answers WHERE status = 'complete' AND kind IN ('propose', 'propose_small')
 		ORDER BY domain, asked_at DESC, id DESC`)
 	if err != nil {
 		return nil, safeDBError("read llm answers", err)
 	}
 	for rows.Next() {
-		var d string
+		var d, verdict string
 		a := lastAnswer{HasComplete: true}
-		if err = rows.Scan(&d, &a.Hash, &a.AskedAt, &a.RuleVersions); err != nil {
+		if err = rows.Scan(&d, &a.Hash, &a.AskedAt, &a.RuleVersions, &verdict); err != nil {
 			rows.Close()
 			return nil, safeDBError("read llm answers", err)
 		}
+		a.NoRule = noRuleVerdict(verdict)
 		out[d] = a
 	}
 	rows.Close()

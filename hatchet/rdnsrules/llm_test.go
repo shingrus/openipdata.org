@@ -381,6 +381,18 @@ func TestNeedsAsking(t *testing.T) {
 	incompleteNewest := same
 	incompleteNewest.NewestIncomplete = true
 	onlyIncomplete := lastAnswer{NewestIncomplete: true}
+	noRule := mk("h2", 5*24*time.Hour)
+	noRule.NoRule = true
+	noRuleOld := mk("h1", 31*24*time.Hour)
+	noRuleOld.NoRule = true
+	noRuleRecent := mk("h1", 5*24*time.Hour)
+	noRuleRecent.NoRule = true
+	noRuleIncomplete := noRule
+	noRuleIncomplete.NewestIncomplete = true
+	noRuleSameOld := mk("h2", 31*24*time.Hour)
+	noRuleSameOld.NoRule = true
+	noRuleSeenOld := mk("h2", 31*24*time.Hour, "v1")
+	noRuleSeenOld.NoRule = true
 	for name, tc := range map[string]struct {
 		last    *lastAnswer
 		learned []string
@@ -399,6 +411,14 @@ func TestNeedsAsking(t *testing.T) {
 		"no learned rows, same":         {&same, nil, false, false},
 		"newest question is incomplete": {&incompleteNewest, []string{"v1"}, false, true}, // whatever hash and age
 		"only incomplete questions":     {&onlyIncomplete, nil, false, true},
+		"no rule, learned row":          {&noRule, []string{"v1"}, false, false}, // the leak: paid again on every run
+		"no rule, unseen version, old":  {&noRuleSameOld, []string{"v1"}, false, true},
+		"no rule, seen version, old":    {&noRuleSeenOld, []string{"v1"}, false, false},
+		"no rule, new version, old":     {&noRuleSeenOld, []string{"v2"}, false, true},
+		"no rule, changed but recent":   {&noRuleRecent, []string{"v1"}, false, false},
+		"no rule, changed and old":      {&noRuleOld, []string{"v1"}, false, true},
+		"no rule, force":                {&noRule, []string{"v1"}, true, true},
+		"no rule, newest incomplete":    {&noRuleIncomplete, []string{"v1"}, false, true},
 	} {
 		if got := needsAsking(info, tc.last, tc.learned, now, tc.force); got != tc.want {
 			t.Errorf("%s: %v", name, got)
@@ -1119,6 +1139,55 @@ func TestRunRecordsEveryCurrentLearnedVersion(t *testing.T) {
 	last := lastAnswer{Hash: carrierDomain().Hash, AskedAt: rec.AskedAt, RuleVersions: rec.RuleVersions, HasComplete: true}
 	if needsAsking(carrierDomain(), &last, learned["carrier.net"], run.now(), false) {
 		t.Fatal("asked again for versions it had checked")
+	}
+}
+
+// A domain with a learned rule whose answer gave no rule is not paid for again on the next run,
+// not even a month later, until a learned version it has not seen exists and that month has passed.
+func TestRunDoesNotAskAgainAfterAnAnswerWithNoRule(t *testing.T) {
+	for name, c := range map[string]struct {
+		status  int
+		body    string
+		verdict string
+	}{
+		"no city":  {200, completion(`{"location": false, "comment": "no place"}`, 0.005), verdictNoCity},
+		"rejected": {200, completion(`{"location": true, "regex": "^nothing\\.([a-z]+)\\.carrier\\.net$", "codes": {"fnt": {"country": "DE", "region": "Hesse", "city": "Frankfurt"}}, "comment": "x"}`, 0.005), verdictRejected},
+		"blocked":  {403, `{"error":{"code":403,"metadata":{"reasons":["x"],"flagged_input":"y"}}}`, verdictBlocked},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newFakeStore()
+			learned := func(version string) []llmRuleRow {
+				return []llmRuleRow{{Rank: 1, Version: version, Status: "candidate", Origin: "learned",
+					Pattern: `^([a-z]+)\.carrier\.net$`, Dictionary: "iata", Places: map[string][2]string{}}}
+			}
+			store.rules["carrier.net"] = learned("learned-v1")
+			api := &fakeAPI{chat: func(string, string, int) (int, string) { return c.status, c.body }}
+			run, closeSrv := newTestRun(t, store, api)
+			defer closeSrv()
+			asked := run.now()
+			infos := map[string]*domainInfo{"carrier.net": carrierDomain()}
+			if _, err := run.execute(context.Background(), infos, ProposeOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			rec := store.answer("carrier.net", kindPropose)
+			if rec == nil || rec.Status != statusComplete || rec.Verdict != c.verdict || len(rec.RuleVersions) != 1 || rec.RuleVersions[0] != "learned-v1" {
+				t.Fatalf("first answer %+v", rec)
+			}
+			store.last["carrier.net"] = lastAnswer{Hash: rec.Hash, AskedAt: asked, RuleVersions: rec.RuleVersions,
+				NoRule: noRuleVerdict(rec.Verdict), HasComplete: true}
+			ask := func(at time.Time, wantCalls int) {
+				t.Helper()
+				run.now = func() time.Time { return at }
+				if _, err := run.execute(context.Background(), infos, ProposeOptions{}); err != nil || api.chats != wantCalls {
+					t.Fatalf("at %s: %d calls, want %d (%v)", at, api.chats, wantCalls, err)
+				}
+			}
+			ask(asked.Add(24*time.Hour), 1)    // the next run
+			ask(asked.Add(40*24*time.Hour), 1) // a month later, nothing new
+			store.rules["carrier.net"] = learned("learned-v2")
+			ask(asked.Add(24*time.Hour), 1)    // a new version waits
+			ask(asked.Add(40*24*time.Hour), 2) // and is asked after the month
+		})
 	}
 }
 

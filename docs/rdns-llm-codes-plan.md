@@ -78,7 +78,8 @@ A domain is asked when:
 - its newest answer is incomplete (an error, a credit stop, a failed second opinion), whatever its
   patterns and age;
 - one of its current learned rows (ranks 1-3, not `rejected`) has a version that is not in the
-  `rule_versions` of its newest complete answer (no wait);
+  `rule_versions` of its newest complete answer (no wait after an answer with a rule; after an answer
+  with no rule, `no_city`, `rejected` or `blocked`, only once that answer is at least 30 days old);
 - or its pattern set changed and its last complete answer is at least 30 days old.
 
 Same patterns, same answer: otherwise a domain is not asked again (`force` overrides). This holds for
@@ -157,7 +158,8 @@ part, with resolved GeoNames IDs), `status` (`complete` or `incomplete`), `verdi
 A question counts as answered only with `status = complete`: the answer was checked, and for a domain
 with disagreements the second opinion came back and was applied. An error, a credit stop (`stopped`), or
 a failed second opinion leaves it `incomplete`, and it is asked again on the next run. "Checked" for a
-learned rule = a complete answer whose `rule_versions` holds its current version.
+learned rule = an accepted answer whose `rule_versions` holds its current version. An answer with no
+rule compared nothing: its `rule_versions` only records the versions that existed when it was asked.
 
 ## Spending and errors
 

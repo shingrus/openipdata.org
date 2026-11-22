@@ -198,6 +198,35 @@ func TestLLMAnswersStatusPostgres(t *testing.T) {
 	if e := last["e.net"]; !e.HasComplete || e.NewestIncomplete || e.Hash != "he" {
 		t.Fatalf("e.net %+v", e)
 	}
+	if a.NoRule || last["c.net"].NoRule {
+		t.Fatalf("an accepted answer read as no rule: %+v", a)
+	}
+	// Only the verdict of the newest complete answer says whether it gave a rule.
+	verdict := func(domain, v string, ago time.Duration) {
+		t.Helper()
+		if err := st.SaveAnswer(ctx, answerRecord{AskedAt: at.Add(-ago), Kind: kindPropose, Domain: domain, RequestID: "r", Model: "m",
+			Hash: "h", Status: statusComplete, Verdict: v}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, v := range []string{verdictNoCity, verdictRejected, verdictBlocked} {
+		verdict("no-rule-"+v+".net", v, time.Hour)
+	}
+	verdict("then-rule.net", verdictNoCity, 2*time.Hour)
+	verdict("then-rule.net", verdictAccepted, time.Hour)
+	verdict("then-none.net", verdictAccepted, 2*time.Hour)
+	verdict("then-none.net", verdictNoCity, time.Hour)
+	if last, err = st.LastAnswers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{verdictNoCity, verdictRejected, verdictBlocked} {
+		if !last["no-rule-"+v+".net"].NoRule {
+			t.Fatalf("%s is not read as no rule", v)
+		}
+	}
+	if last["then-rule.net"].NoRule || !last["then-none.net"].NoRule {
+		t.Fatalf("not the newest verdict: %+v %+v", last["then-rule.net"], last["then-none.net"])
+	}
 	// A nil answer and nil slices are stored.
 	if err := st.SaveAnswer(ctx, answerRecord{Kind: kindPropose, Domain: "d.net", RequestID: "r", Model: "m", Status: statusIncomplete, Verdict: verdictStopped, Reason: "x"}); err != nil {
 		t.Fatal(err)
