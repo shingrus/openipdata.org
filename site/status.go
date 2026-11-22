@@ -5,6 +5,7 @@ package main
 // request is used, no address, token or secret is shown.
 
 import (
+	"html/template"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,7 @@ type fileStatus struct {
 type fact struct {
 	Title string
 	Rows  []kv
+	Chart template.HTML // a panel with a chart has it instead of rows
 }
 
 // ageText says how long ago t was: "just now" under a minute, then minutes,
@@ -120,6 +122,11 @@ func (s *server) statusFacts() []fact {
 		acc[4] = kv{K: "Built", V: timeAge(sc.Built, now)}
 	}
 	facts = append(facts, fact{Title: "Accuracy", Rows: acc})
+	hist := fact{Title: "Score history", Rows: []kv{{K: "History", V: "no data", None: true}}}
+	if d != nil && d.chart != "" {
+		hist = fact{Title: "Score history", Chart: d.chart}
+	}
+	facts = append(facts, hist)
 
 	dns := []kv{{K: "Row", V: "off", None: true}}
 	if s.zone != "" {

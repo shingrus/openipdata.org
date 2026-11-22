@@ -15,6 +15,7 @@ import (
 
 	"openipdata.org/hatchet/outputs"
 	"openipdata.org/hatchet/publish"
+	"openipdata.org/hatchet/schema"
 )
 
 const (
@@ -246,13 +247,24 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 		return ExportOutput{}, err
 	}
 
+	// The score history is an extra for the website's status page: build-asn-data does
+	// not own public.geo_eval, so a problem reading it only leaves the table empty.
+	scores, err := store.GeoScores(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ExportOutput{}, ctx.Err()
+		}
+		p.log("export: geo_scores left empty, public.geo_eval could not be read: %v", schema.HideDSN(err))
+		scores = nil
+	}
+
 	dir := p.outDir(src.DateTag)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return ExportOutput{}, err
 	}
 	final := filepath.Join(dir, sqliteFileName)
 	tmp := final + ".tmp"
-	stats, err := ExportSQLite(ctx, tmp, append(parsed.Records, stale...), domainRows, geo)
+	stats, err := ExportSQLite(ctx, tmp, append(parsed.Records, stale...), domainRows, geo, scores)
 	if err != nil {
 		os.Remove(tmp)
 		return ExportOutput{}, err
@@ -260,7 +272,7 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 	if err := os.Rename(tmp, final); err != nil {
 		return ExportOutput{}, err
 	}
-	p.log("export: wrote %s (asns=%d domains=%d geo_pdb=%d)", final, stats.ASNs, stats.Domains, stats.GeoPDB)
+	p.log("export: wrote %s (asns=%d domains=%d geo_pdb=%d geo_scores=%d)", final, stats.ASNs, stats.Domains, stats.GeoPDB, stats.GeoScores)
 	outputs.Prune(filepath.Join(p.DataDir, "out", "asn"), keepOutputDirs)
 	return ExportOutput{Path: final, SizeBytes: outputs.FileSize(final), Stats: stats}, nil
 }

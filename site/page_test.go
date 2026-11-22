@@ -118,6 +118,7 @@ func TestStylePartsFollowThePage(t *testing.T) {
 		{`<div class="pf">`, ".pf{display:grid"},          // pf.css: the prefix lists
 		{`class="tag"`, ".tag{"},                          // db.css: the heading of the visitor page
 		{`class="dbp"`, ".dbp{"},                          // db.css: the Database panel
+		{`<div class="chart">`, ".pw svg{"},               // chart.css: the score history of the status page
 	}
 	as, _ := asnServer(t) // the network, organization and prefix pages are real pages only with ASN data
 	as.public = func(a netip.Addr) bool { return true }
@@ -133,6 +134,7 @@ func TestStylePartsFollowThePage(t *testing.T) {
 		"download":     get(s, "GET", "/download").Body.String(),
 		"ranking":      get(as, "GET", "/top-asn-by-ip-address").Body.String(),
 		"status":       get(as, "GET", "/status").Body.String(),
+		"status, hist": get(historyServer(t), "GET", "/status").Body.String(),
 		"bulk":         get(s, "GET", "/bulk-ip-lookup").Body.String(),
 		"compare":      get(s, "GET", "/geolite2-alternative").Body.String(),
 		"bulk results": post(s, "/bulk-ip-lookup", "ips=203.0.113.9+203.0.113.10").Body.String(),

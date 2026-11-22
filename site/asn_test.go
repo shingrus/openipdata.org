@@ -74,8 +74,15 @@ func nz(l []string) []string {
 	return l
 }
 
-// writeASNFile builds a SQLite file with the worker's tables.
-func writeASNFile(t testing.TB, path string, rows []fixtureRow) {
+// scoreFixture is one row of geo_scores; nil = NULL, any = a raw value.
+type scoreFixture struct {
+	runAt string
+	v     [7]any
+}
+
+// writeASNFile builds a SQLite file with the worker's tables, and the table
+// geo_scores only when score rows are given.
+func writeASNFile(t testing.TB, path string, rows []fixtureRow, scores ...scoreFixture) {
 	t.Helper()
 	tmp := path + ".build"
 	os.Remove(tmp)
@@ -92,6 +99,16 @@ func writeASNFile(t testing.TB, path string, rows []fixtureRow) {
 	} {
 		if _, err := db.Exec(q); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if len(scores) > 0 {
+		if _, err := db.Exec(`CREATE TABLE geo_scores (run_at TEXT PRIMARY KEY, city_pct REAL, atlas_country_pct REAL, atlas_city_pct REAL, precision_pct REAL, holdout_city_pct REAL, maxmind_atlas_city_pct REAL, dbip_atlas_city_pct REAL)`); err != nil {
+			t.Fatal(err)
+		}
+		for _, sc := range scores {
+			if _, err := db.Exec(`INSERT INTO geo_scores VALUES (?,?,?,?,?,?,?,?)`, sc.runAt, sc.v[0], sc.v[1], sc.v[2], sc.v[3], sc.v[4], sc.v[5], sc.v[6]); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	for _, r := range rows {

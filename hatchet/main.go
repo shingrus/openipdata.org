@@ -421,9 +421,14 @@ func taskRetry(opts ...hatchet.TaskOption) []hatchet.TaskOption {
 	return append([]hatchet.TaskOption{hatchet.WithRetries(2), hatchet.WithRetryBackoff(2, 300)}, opts...)
 }
 
+// buildASNName is the name of the build-asn-data workflow (the publish task of build-geo-data starts a run by name).
+const buildASNName = "build-asn-data"
+
+// build-asn-data runs from cron at 06:00 and 18:00 UTC, and after each successful
+// build-geo-data publish (so the geo_scores table of asn.sqlite3 has the newest build soon).
 func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
-	wf := client.NewWorkflow("build-asn-data",
-		hatchet.WithWorkflowDescription("ipverse/asn-ip -> public.asn -> ip2asn MMDB + asn.sqlite3"),
+	wf := client.NewWorkflow(buildASNName,
+		hatchet.WithWorkflowDescription("ipverse/asn-ip -> public.asn -> ip2asn MMDB + asn.sqlite3 (also reads public.asn_domain, public.asn_geo_pdb and the published rows of public.geo_eval, last 60 days, into the geo_scores table)"),
 		hatchet.WithWorkflowCron("0 6,18 * * *"),
 		hatchet.WithWorkflowConcurrency(asnDBLimit()),
 	)
@@ -759,7 +764,7 @@ func syncARINWhoisWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("build-geo-data",
-		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + whois text rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2 and RIPE Atlas (country, city), and ours also on a geofeed holdout"),
+		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + whois text rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2 and RIPE Atlas (country, city), and ours also on a geofeed holdout; a successful publish starts a build-asn-data run"),
 		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
 		hatchet.WithWorkflowCron("0 7,19 * * *"),
 		// Its own limit, not asn-db: it only reads the ASN tables.
@@ -840,6 +845,13 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		out, err := p.Publish(ctx, src, built.Path, scores, input.ForcePublish)
 		if errors.Is(err, geo.ErrGate) {
 			err = hatchet.NewNonRetryableError(err)
+		}
+		if err == nil {
+			// The new top-level run is queued by the asn-db limit if one is running.
+			startASNRun(&out, func() error {
+				_, err := client.RunNoWait(ctx.GetContext(), buildASNName, BuildASNInput{})
+				return err
+			}, taskLog(ctx))
 		}
 		return out, err
 	}, taskRetry(hatchet.WithParents(download, mmdb, eval), hatchet.WithExecutionTimeout(45*time.Minute))...)
@@ -976,6 +988,23 @@ func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	}, taskRetry(hatchet.WithParents(names, sample, pick, trace), hatchet.WithExecutionTimeout(30*time.Minute))...)
 
 	return wf
+}
+
+// startASNRun starts a build-asn-data run through trigger after a publish that put files
+// in place (not a skipped output) and records the result in out.ASNRun. A trigger that
+// fails is logged (the error is the Hatchet client's and holds no secret) and never fails
+// the task: the cron starts the next build-asn-data run anyway.
+func startASNRun(out *geo.PublishOutput, trigger func() error, log func(string)) {
+	if out.Skipped {
+		return
+	}
+	if err := trigger(); err != nil {
+		log("publish: could not start a build-asn-data run: " + err.Error())
+		out.ASNRun = "failed"
+		return
+	}
+	log("publish: a build-asn-data run is queued")
+	out.ASNRun = "started"
 }
 
 // chainNext starts the next resolve-ips run through trigger when the finished run

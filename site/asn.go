@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"html/template"
 	"log"
 	"net/url"
 	"os"
@@ -82,6 +83,8 @@ type asnData struct {
 	cpg       map[string]*cachedPage // country pages, rendered on the first request of each
 	sm        sitemapSet             // sitemap files, built on demand (see seo.go)
 	idx       pfxIndex               // every announced prefix (see pfxindex.go)
+	scores    []scorePoint           // geo score history, oldest first (see scorechart.go)
+	chart     template.HTML          // the Score history panel body, drawn once per load
 	loadedIn  time.Duration
 }
 
@@ -197,6 +200,14 @@ func loadASN(ctx context.Context, db *sql.DB) (*asnData, error) {
 	if d.idx, err = loadPrefixes(ctx, db); err != nil {
 		return nil, err
 	}
+
+	// The score history is an extra of the status page: a table it cannot read
+	// only leaves the chart out, never the ASN data.
+	if d.scores, err = loadScores(ctx, db); err != nil {
+		log.Printf("asn data: geo_scores not read: %v", err)
+		d.scores = nil
+	}
+	d.chart = drawScoreChart(d.scores)
 
 	for i := range d.nets {
 		if d.nets[i].slug != "" {

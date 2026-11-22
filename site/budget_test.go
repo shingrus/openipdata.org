@@ -58,6 +58,7 @@ var pageBudgets = []pageBudget{
 	{"/sitemap.xml", 990, 320, 20000, 2000 * time.Microsecond},                             // 896, 288, 8233, 12µs (main pages with lastmod, 2026-11-21; was the index: 550, 250)
 	{"/sitemap-networks-1.xml", 38000, 2000, 80000, 2000 * time.Microsecond},               // 34295, 1812, 47277, 3µs
 	{"/llms.txt", 3600, 1420, 20000, 2000 * time.Microsecond},                              // 3078, 1190, 9392, 1µs; raised 2026-11-18 for the agent Quick start (owner); 3483, 1359 with the GeoLite2 page line, 2026-11-21
+	{"/status", 18800, 5920, 114000, 2000 * time.Microsecond},                              // 17170, 5412, 103938, 43µs (with a score history chart of 3 points, 2026-11-22; new line)
 	{"/robots.txt", 200, 150, 10000, 2000 * time.Microsecond},                              // 124, 107, 6319, 1µs
 }
 
@@ -65,10 +66,14 @@ func TestPageBudgets(t *testing.T) {
 	log.SetOutput(io.Discard)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	main, _ := asnServer(t)
-	pfx := prefixServer(t) // the fixture with prefix pages; documentation addresses count as public there
+	pfx := prefixServer(t)   // the fixture with prefix pages; documentation addresses count as public there
+	hist := historyServer(t) // /status with a score history
 	const runs = 40
 	for _, c := range pageBudgets {
 		s := main
+		if c.target == "/status" {
+			s = hist
+		}
 		if strings.HasPrefix(c.target, "/prefix/") || strings.HasPrefix(c.target, "/?") {
 			s = pfx
 		}

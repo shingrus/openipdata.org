@@ -24,7 +24,7 @@ func TestExportSQLiteDomains(t *testing.T) {
 		{ASN: 7, Domain: strPtr("noc.ops.example.co.uk"), Source: nil}, // older row: cut to registered domain
 		{ASN: 8, Domain: strPtr("wholesale.telekom.com"), Source: strPtr("rdap")},
 	}
-	stats, err := ExportSQLite(context.Background(), path, records, domainRows, nil)
+	stats, err := ExportSQLite(context.Background(), path, records, domainRows, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

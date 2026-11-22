@@ -136,6 +136,12 @@ func (s *server) renderASN(v *asnView) ([]byte, error) {
 	}
 	if len(v.Facts) > 0 {
 		v.CSS += template.CSS(rowsCSS) // label/value rows (the status page)
+		for _, f := range v.Facts {
+			if f.Chart != "" {
+				v.CSS += template.CSS(chartCSS) // the score history chart
+				break
+			}
+		}
 	}
 	if v.Pfx != nil {
 		v.CSS += template.CSS(pfCSS)

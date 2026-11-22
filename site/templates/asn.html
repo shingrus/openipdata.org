@@ -22,9 +22,9 @@
 {{end}}</section>
 {{end}}{{range .Facts}}<section class="panel fact">
 <div class="head"><h2>{{.Title}}</h2></div>
-<dl>
+{{if .Chart}}{{.Chart}}{{else}}<dl>
 {{range .Rows}}<div><dt>{{.K}}</dt><dd{{if .None}} class="none"{{end}}>{{.V}}</dd></div>
-{{end}}</dl>
+{{end}}</dl>{{end}}
 </section>
 {{end}}{{with .Pfx}}<section class="panel">
 <div class="head"><h2>{{or .Title "Prefixes"}}</h2>{{if .TxtHref}}<a class="r" href="{{.TxtHref}}">prefixes.txt</a>{{end}}</div>

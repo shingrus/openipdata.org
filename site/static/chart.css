@@ -1,0 +1,27 @@
+/* Score history chart of the status page: with style.css, asn.css and rows.css.
+   The plot is an SVG stretched to a fixed-height box; labels are HTML around it. */
+:root{--c1:#5eb0ef;--c2:#3ccf95;--c3:var(--accent);--c4:#b794f6;--c5:#e6c14a;--c6:#ef6f8e;--c7:#4fd1d9}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--c1:#1c6fb8;--c2:#1d9e75;--c4:#7048c9;--c5:#a67a00;--c6:#c2365a;--c7:#0e8a94}}
+:root[data-theme="light"]{--c1:#1c6fb8;--c2:#1d9e75;--c4:#7048c9;--c5:#a67a00;--c6:#c2365a;--c7:#0e8a94}
+.chart{padding:16px 20px 0}
+.pw{position:relative;height:200px;margin-left:36px}
+.pw svg{display:block;width:100%;height:100%;overflow:visible}
+.pw path{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.pw .gr path{stroke:var(--line);stroke-width:1}
+.pw .pt{stroke-width:6}
+.pw .dash{stroke-dasharray:5 4}
+.pw .c1{stroke:var(--c1)}.pw .c2{stroke:var(--c2)}.pw .c3{stroke:var(--c3)}.pw .c4{stroke:var(--c4)}.pw .c5{stroke:var(--c5)}.pw .c6{stroke:var(--c6)}.pw .c7{stroke:var(--c7)}
+.y,.x{position:absolute;font:12px/1 "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);white-space:nowrap}
+.y{right:100%;margin-right:8px;transform:translateY(-50%)}
+.xl{position:relative;height:24px;margin-left:36px}
+.x{top:8px;transform:translateX(-50%)}
+.x.f{transform:none}
+.x.l{transform:translateX(-100%)}
+.lg{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0;padding:6px 0 14px;list-style:none;font-size:13px;color:var(--muted)}
+.lg b{margin-left:4px;font:500 13px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums;color:var(--text)}
+.lg b.none{color:var(--faint)}
+.sw{display:inline-block;width:16px;height:0;margin-right:7px;vertical-align:middle;border-top:2px solid}
+.sw.dash{border-top-style:dashed}
+.sw.c1{border-color:var(--c1)}.sw.c2{border-color:var(--c2)}.sw.c3{border-color:var(--c3)}.sw.c4{border-color:var(--c4)}.sw.c5{border-color:var(--c5)}.sw.c6{border-color:var(--c6)}.sw.c7{border-color:var(--c7)}
+.chart .note{margin-inline:-20px}
+@media (max-width:520px){.chart{padding-inline:16px}.chart .note{margin-inline:-16px}.pw{height:160px}.x.m{display:none}}

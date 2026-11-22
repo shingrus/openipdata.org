@@ -114,7 +114,7 @@ Each workflow lives in its own folder of `hatchet/` and runs as task chains on t
 | `build-asn-data` | `sync-source` | clones or updates ipverse/asn-ip and records its commit and date |
 | | `ingest` | parses `as/*/aggregated.json`, upserts changed rows into `public.asn`, stamps `seen_at` |
 | | `build-mmdb` | runs `mmdbbuilder asn` → `ip2asn-openipdata-<date>.mmdb` |
-| | `export-sqlite` | writes a fresh `asn.sqlite3` (`asn`, `asn_domain`, `asn_geo_pdb`) |
+| | `export-sqlite` | writes a fresh `asn.sqlite3` (`asn`, `asn_domain`, `asn_geo_pdb`, `geo_scores` = the published `public.geo_eval` scores of the last 60 days) |
 | | `publish` | uploads both to R2 `<date>/`, replaces the MMDB on the GitHub release, pings the health check |
 | `sync-geofeeds` | `rdap-lookups` | RDAP for due ARIN, registro.br and LACNIC (Mexico) blocks within a budget; results in `rdap.jsonl` |
 | | `probe-domains` | looks for a geofeed at the usual paths of ASN websites; found feeds and their ASNs' prefixes go to `domain-prefixes.csv` |
@@ -187,7 +187,7 @@ Each table has exactly one writer; data between workflows goes through these tab
 | `public.geo_ix_pdb` | `sync-peeringdb` | `build-geo-data` |
 | `public.asn_domain` | `update-asn-domains` | `build-asn-data` (`asn.sqlite3`), `sync-geofeeds` `probe-domains` |
 | `public.geofeed_urls` | `sync-geofeeds` | `build-geo-data` (holdout sample) |
-| `public.geo_eval` | `build-geo-data` | `build-geo-data` (publish gate) |
+| `public.geo_eval` | `build-geo-data` | `build-geo-data` (publish gate), `build-asn-data` (`geo_scores` of `asn.sqlite3`) |
 | `public.visitor_ips` | external websites | `resolve-ips` |
 | `public.network_traces` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |
 | `public.ip_ptr_names` | `resolve-ips` | `resolve-ips`, `learn-rdns-rules` |

@@ -18,6 +18,7 @@ var exportTables = []string{
 	`CREATE TABLE asn (asn INTEGER PRIMARY KEY, handle TEXT, organization TEXT, organization_slug TEXT, country TEXT, ip_amount int8, ipv4_amount int8, ipv6_amount REAL, json TEXT NOT NULL)`,
 	`CREATE TABLE asn_domain (asn INTEGER PRIMARY KEY, domain TEXT NOT NULL, source TEXT)`,
 	`CREATE TABLE asn_geo_pdb (asn INTEGER PRIMARY KEY, country TEXT, city TEXT, dominance REAL, domain TEXT)`,
+	`CREATE TABLE geo_scores (run_at TEXT PRIMARY KEY, city_pct REAL, atlas_country_pct REAL, atlas_city_pct REAL, precision_pct REAL, holdout_city_pct REAL, maxmind_atlas_city_pct REAL, dbip_atlas_city_pct REAL)`,
 }
 
 // exportIndexes are built after the rows are inserted, which is faster.
@@ -34,12 +35,14 @@ type ExportStats struct {
 	ASNs    int `json:"asns"`
 	Domains int `json:"domains"`
 	GeoPDB  int `json:"geo_pdb"`
+	// GeoScores counts the geo_scores rows (published build-geo-data scores of the last 60 days).
+	GeoScores int `json:"geo_scores"`
 }
 
 // ExportSQLite writes a fresh asn.sqlite3 at path from Postgres-backed data:
 // the parsed records plus stale rows, the usable asn_domain rows (see
-// domains.Usable), and asn_geo_pdb.
-func ExportSQLite(ctx context.Context, path string, records []Record, domainRows []DomainRow, geo []GeoPDBRow) (ExportStats, error) {
+// domains.Usable), asn_geo_pdb and the geo score history.
+func ExportSQLite(ctx context.Context, path string, records []Record, domainRows []DomainRow, geo []GeoPDBRow, scores []GeoScoreRow) (ExportStats, error) {
 	stats := ExportStats{}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return stats, err
@@ -108,6 +111,19 @@ func ExportSQLite(ctx context.Context, path string, records []Record, domainRows
 			return stats, fmt.Errorf("insert geo AS%d: %w", g.ASN, err)
 		}
 		stats.GeoPDB++
+	}
+	scoreStmt, err := tx.PrepareContext(ctx, `INSERT INTO geo_scores
+		(run_at, city_pct, atlas_country_pct, atlas_city_pct, precision_pct, holdout_city_pct, maxmind_atlas_city_pct, dbip_atlas_city_pct)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return stats, err
+	}
+	for _, r := range cleanGeoScores(scores) {
+		if _, err := scoreStmt.ExecContext(ctx, r.RunAt, r.CityPct, r.AtlasCountryPct, r.AtlasCityPct,
+			r.PrecisionPct, r.HoldoutCityPct, r.MaxMindAtlasCity, r.DBIPAtlasCity); err != nil {
+			return stats, fmt.Errorf("insert geo score: %w", err)
+		}
+		stats.GeoScores++
 	}
 	for _, stmt := range exportIndexes {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
