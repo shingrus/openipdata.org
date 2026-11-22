@@ -1025,6 +1025,9 @@ type PublishOutput struct {
 	ReleaseUnchanged bool `json:"release_unchanged,omitempty"`
 	// GeoNames is "on" (geoname_id and time zone of placed cities) or "skipped: no GeoNames copy".
 	GeoNames string `json:"geonames,omitempty"`
+	// ASNRun says whether the publish task started a build-asn-data scores-only run
+	// ("started" or "failed"); empty when it did not try. Set by the Hatchet task, never by Publish.
+	ASNRun string `json:"asn_run,omitempty"`
 }
 
 // errConvert is the fixed error of a failed conversion; the builder's own

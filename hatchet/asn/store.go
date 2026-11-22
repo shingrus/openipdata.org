@@ -94,6 +94,8 @@ type IngestStats struct {
 	Unchanged int `json:"unchanged"`
 	// Stale rows exist in Postgres but not in the source; they are kept.
 	Stale int `json:"stale"`
+	// Skipped says why nothing was done (a scores-only run); empty on a full run.
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // Ingest upserts only records whose digest differs from the stored row.

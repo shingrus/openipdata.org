@@ -49,6 +49,11 @@ type Pipeline struct {
 type Source struct {
 	Commit  string `json:"commit"`
 	DateTag string `json:"date_tag"`
+	// ScoresOnly marks the light run (BuildASNInput.ScoresOnly): DateTag is the date tag of the
+	// newest local build, and only the geo_scores table of its asn.sqlite3 is refreshed.
+	ScoresOnly bool `json:"scores_only,omitempty"`
+	// Skipped says why a scores-only run has nothing to work on; every later task is skipped.
+	Skipped string `json:"skipped,omitempty"`
 }
 
 func (p *Pipeline) repoDir() string { return filepath.Join(p.DataDir, "repos", "asn-ip") }
@@ -154,6 +159,9 @@ func (p *Pipeline) openStore(ctx context.Context) (*Store, error) {
 
 // Ingest writes changed ASN rows to Postgres.
 func (p *Pipeline) Ingest(ctx context.Context, src Source) (IngestStats, error) {
+	if reason := src.skipReason(); reason != "" {
+		return IngestStats{Skipped: reason}, nil
+	}
 	parsed, err := p.parse(ctx, src)
 	if err != nil {
 		return IngestStats{}, err
@@ -179,6 +187,7 @@ type BuildMMDBOutput struct {
 	Entries   int    `json:"entries"`
 	Prefixes  int    `json:"prefixes"`
 	SizeBytes int64  `json:"size_bytes"`
+	Skipped   string `json:"skipped,omitempty"`
 }
 
 // mmdbSummary matches mmdbbuilder's "wrote <path> (N ASN entries, M prefixes)".
@@ -186,6 +195,9 @@ var mmdbSummary = regexp.MustCompile(`\((\d+) ASN entries, (\d+) prefixes\)`)
 
 // BuildMMDB runs "mmdbbuilder asn" on the synced snapshot.
 func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, error) {
+	if reason := src.skipReason(); reason != "" {
+		return BuildMMDBOutput{Skipped: reason}, nil
+	}
 	if err := p.checkSource(ctx, src); err != nil {
 		return BuildMMDBOutput{}, err
 	}
@@ -220,11 +232,18 @@ type ExportOutput struct {
 	Path      string      `json:"path"`
 	SizeBytes int64       `json:"size_bytes"`
 	Stats     ExportStats `json:"stats"`
+	// ScoresOnly is true when only the geo_scores table was rewritten (the light run).
+	ScoresOnly bool `json:"scores_only,omitempty"`
+	// Skipped says why the file was left as it was (path is then empty).
+	Skipped string `json:"skipped,omitempty"`
 }
 
 // ExportSQLite writes a fresh asn.sqlite3 from Postgres-backed data, then
 // prunes old output directories.
 func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, error) {
+	if src.ScoresOnly || src.Skipped != "" {
+		return p.exportScoresOnly(ctx, src)
+	}
 	parsed, err := p.parse(ctx, src)
 	if err != nil {
 		return ExportOutput{}, err
@@ -262,6 +281,11 @@ func (p *Pipeline) ExportSQLite(ctx context.Context, src Source) (ExportOutput, 
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return ExportOutput{}, err
 	}
+	// Both daily runs share the dir of their day: this run's file is not published yet, so
+	// the light run must not use the dir until this run's publish marks it again.
+	if err := os.Remove(filepath.Join(dir, publishedMark)); err != nil && !os.IsNotExist(err) {
+		return ExportOutput{}, err
+	}
 	final := filepath.Join(dir, sqliteFileName)
 	tmp := final + ".tmp"
 	stats, err := ExportSQLite(ctx, tmp, append(parsed.Records, stale...), domainRows, geo, scores)
@@ -292,6 +316,8 @@ type PublishOutput struct {
 	// The SQLite file on the same release, reported like the MMDB.
 	ReleaseSQLiteURL       string `json:"release_sqlite_url,omitempty"`
 	ReleaseSQLiteUnchanged bool   `json:"release_sqlite_unchanged,omitempty"`
+	// ScoresOnly is true for the light run: only the SQLite file went out, no MMDB, no ping.
+	ScoresOnly bool `json:"scores_only,omitempty"`
 }
 
 // r2Putter is what publishFiles needs from R2 (tests fake it).
@@ -334,6 +360,9 @@ func (p *Pipeline) CheckPublish() error {
 // the published file). Missing settings fail the task, so a misconfiguration
 // cannot go unnoticed.
 func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath string) (PublishOutput, error) {
+	if src.ScoresOnly || src.Skipped != "" {
+		return p.publishScoresOnly(ctx, src, sqlitePath)
+	}
 	started := time.Now()
 	out := PublishOutput{}
 	r2, release, err := p.publishers()
@@ -346,6 +375,10 @@ func (p *Pipeline) Publish(ctx context.Context, src Source, mmdbPath, sqlitePath
 	}
 	if err := p.publishFiles(ctx, r2, release, src, date, mmdbPath, sqlitePath, &out); err != nil {
 		return out, err
+	}
+	// The light run (scores_only) only works on a build that got this far.
+	if err := os.WriteFile(filepath.Join(p.outDir(src.DateTag), publishedMark), nil, 0o640); err != nil {
+		p.log("publish: could not mark the build as published, the next scores-only run skips it: %v", err)
 	}
 	if err := publish.Ping(ctx, p.HCPing); err != nil {
 		p.log("publish: %v", err) // the uploads succeeded; a missed ping only delays the alert
@@ -365,8 +398,18 @@ func (p *Pipeline) publishFiles(ctx context.Context, r2 r2Putter, release releas
 	if err != nil {
 		return err
 	}
+	if err := p.putR2(ctx, r2, date, out, pubPath, sqlitePath); err != nil {
+		return err
+	}
+	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB and the asn SQLite database.\n\nBuilt: %s\nSource: %s@%s",
+		date.Format(dateFolderShape), strings.TrimPrefix(sourceRepoURL, "https://github.com/"), src.Commit)
+	return p.publishRelease(ctx, release, pubPath, sqlitePath, body, out)
+}
+
+// putR2 puts the files in R2 under <YYYY-MM-DD>/ and records them in out.
+func (p *Pipeline) putR2(ctx context.Context, r2 r2Putter, date time.Time, out *PublishOutput, paths ...string) error {
 	folder := date.Format(dateFolderShape)
-	for _, path := range []string{pubPath, sqlitePath} {
+	for _, path := range paths {
 		location, status, err := r2.Put(ctx, folder+"/"+filepath.Base(path), path, publish.PutOptions{})
 		if err != nil {
 			return err
@@ -378,9 +421,7 @@ func (p *Pipeline) publishFiles(ctx context.Context, r2 r2Putter, release releas
 		}
 		out.Bytes += outputs.FileSize(path)
 	}
-	body := fmt.Sprintf("Rolling release of the openipdata ip2asn MMDB and the asn SQLite database.\n\nBuilt: %s\nSource: %s@%s",
-		date.Format(dateFolderShape), strings.TrimPrefix(sourceRepoURL, "https://github.com/"), src.Commit)
-	return p.publishRelease(ctx, release, pubPath, sqlitePath, body, out)
+	return nil
 }
 
 // convertPublished runs "mmdbbuilder convert" and returns the published file's path.

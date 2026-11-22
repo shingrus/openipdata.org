@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 
@@ -18,8 +19,11 @@ var exportTables = []string{
 	`CREATE TABLE asn (asn INTEGER PRIMARY KEY, handle TEXT, organization TEXT, organization_slug TEXT, country TEXT, ip_amount int8, ipv4_amount int8, ipv6_amount REAL, json TEXT NOT NULL)`,
 	`CREATE TABLE asn_domain (asn INTEGER PRIMARY KEY, domain TEXT NOT NULL, source TEXT)`,
 	`CREATE TABLE asn_geo_pdb (asn INTEGER PRIMARY KEY, country TEXT, city TEXT, dominance REAL, domain TEXT)`,
-	`CREATE TABLE geo_scores (run_at TEXT PRIMARY KEY, city_pct REAL, atlas_country_pct REAL, atlas_city_pct REAL, precision_pct REAL, holdout_city_pct REAL, maxmind_atlas_city_pct REAL, dbip_atlas_city_pct REAL)`,
+	geoScoresTable,
 }
+
+// geoScoresTable is the geo_scores table; a scores-only run creates it again with this statement.
+const geoScoresTable = `CREATE TABLE geo_scores (run_at TEXT PRIMARY KEY, city_pct REAL, atlas_country_pct REAL, atlas_city_pct REAL, precision_pct REAL, holdout_city_pct REAL, maxmind_atlas_city_pct REAL, dbip_atlas_city_pct REAL)`
 
 // exportIndexes are built after the rows are inserted, which is faster.
 var exportIndexes = []string{
@@ -112,18 +116,8 @@ func ExportSQLite(ctx context.Context, path string, records []Record, domainRows
 		}
 		stats.GeoPDB++
 	}
-	scoreStmt, err := tx.PrepareContext(ctx, `INSERT INTO geo_scores
-		(run_at, city_pct, atlas_country_pct, atlas_city_pct, precision_pct, holdout_city_pct, maxmind_atlas_city_pct, dbip_atlas_city_pct)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
+	if stats.GeoScores, err = insertGeoScores(ctx, tx, scores); err != nil {
 		return stats, err
-	}
-	for _, r := range cleanGeoScores(scores) {
-		if _, err := scoreStmt.ExecContext(ctx, r.RunAt, r.CityPct, r.AtlasCountryPct, r.AtlasCityPct,
-			r.PrecisionPct, r.HoldoutCityPct, r.MaxMindAtlasCity, r.DBIPAtlasCity); err != nil {
-			return stats, fmt.Errorf("insert geo score: %w", err)
-		}
-		stats.GeoScores++
 	}
 	for _, stmt := range exportIndexes {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
@@ -134,6 +128,95 @@ func ExportSQLite(ctx context.Context, path string, records []Record, domainRows
 		return stats, err
 	}
 	return stats, nil
+}
+
+// insertGeoScores inserts the cleaned score rows into the (empty) geo_scores table of tx
+// and returns how many.
+func insertGeoScores(ctx context.Context, tx *sql.Tx, scores []GeoScoreRow) (int, error) {
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO geo_scores
+		(run_at, city_pct, atlas_country_pct, atlas_city_pct, precision_pct, holdout_city_pct, maxmind_atlas_city_pct, dbip_atlas_city_pct)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+	n := 0
+	for _, r := range cleanGeoScores(scores) {
+		if _, err := stmt.ExecContext(ctx, r.RunAt, r.CityPct, r.AtlasCountryPct, r.AtlasCityPct,
+			r.PrecisionPct, r.HoldoutCityPct, r.MaxMindAtlasCity, r.DBIPAtlasCity); err != nil {
+			return n, fmt.Errorf("insert geo score: %w", err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// replaceGeoScores is the light run's one write: it copies the SQLite file at src to
+// dst (a temporary file in the same directory), replaces the geo_scores table of the copy
+// in one transaction and leaves every other table as it is. The caller renames dst over
+// src; on an error dst is removed. It returns the number of rows written.
+func replaceGeoScores(ctx context.Context, src, dst string, scores []GeoScoreRow) (int, error) {
+	if err := copyFile(src, dst); err != nil {
+		os.Remove(dst)
+		return 0, err
+	}
+	n, err := rewriteGeoScores(ctx, dst, scores)
+	if err != nil {
+		os.Remove(dst)
+		return 0, err
+	}
+	return n, nil
+}
+
+func rewriteGeoScores(ctx context.Context, path string, scores []GeoScoreRow) (int, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, pragma := range []string{"PRAGMA journal_mode=OFF", "PRAGMA synchronous=OFF"} {
+		if _, err := db.ExecContext(ctx, pragma); err != nil {
+			return 0, err
+		}
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS geo_scores`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, geoScoresTable); err != nil {
+		return 0, fmt.Errorf("create geo_scores: %w", err)
+	}
+	n, err := insertGeoScores(ctx, tx, scores)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, db.Close()
+}
+
+// copyFile copies a regular file to dst (mode 0640), replacing dst.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o640)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func textOrNull(s string) any {

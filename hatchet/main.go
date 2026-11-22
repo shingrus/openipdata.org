@@ -3,7 +3,7 @@
 //
 //	openipdata-worker version                    # print the build version and exit (no environment needed)
 //	openipdata-worker                            # serve: connect to Hatchet (HATCHET_CLIENT_TOKEN)
-//	openipdata-worker run-asn [-skip-publish]    # build-asn-data
+//	openipdata-worker run-asn [-skip-publish] [-scores-only]    # build-asn-data
 //	openipdata-worker run-pdb                    # sync-peeringdb
 //	openipdata-worker run-domains                # update-asn-domains
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
@@ -71,6 +71,11 @@ import (
 type BuildASNInput struct {
 	// SkipPublish builds everything but uploads nothing (for manual test runs).
 	SkipPublish bool `json:"skip_publish"`
+	// ScoresOnly is the light run, started by the publish task of build-geo-data: it
+	// refreshes only the geo_scores table of the last full build's asn.sqlite3 and publishes
+	// only that file (no git fetch, no Postgres writes, no MMDB, no health-check ping).
+	// Cron runs use the zero value, a full run.
+	ScoresOnly bool `json:"scores_only,omitempty"`
 }
 
 // The other workflows take no input options.
@@ -421,11 +426,18 @@ func taskRetry(opts ...hatchet.TaskOption) []hatchet.TaskOption {
 	return append([]hatchet.TaskOption{hatchet.WithRetries(2), hatchet.WithRetryBackoff(2, 300)}, opts...)
 }
 
-// build-asn-data runs from cron at 06:00 and 18:00 UTC. Its geo_scores table holds the
-// geo builds published before the run (build-geo-data runs at 07:00 and 19:00).
+// buildASNName is the name of the build-asn-data workflow (the publish task of build-geo-data starts a run by name).
+const buildASNName = "build-asn-data"
+
+// build-asn-data runs from cron at 06:00 and 18:00 UTC (a full build). After each
+// successful build-geo-data publish it is also started with scores_only: the light run
+// refreshes only the geo_scores table of the last full build's asn.sqlite3 and publishes
+// only that file. It is the one exception to "output files are rebuilt from scratch": it
+// rewrites one table of an existing file. It shares the asn-db limit, so it never overlaps
+// a full run.
 func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
-	wf := client.NewWorkflow("build-asn-data",
-		hatchet.WithWorkflowDescription("ipverse/asn-ip -> public.asn -> ip2asn MMDB + asn.sqlite3 (also reads public.asn_domain, public.asn_geo_pdb and the published rows of public.geo_eval, last 60 days, into the geo_scores table)"),
+	wf := client.NewWorkflow(buildASNName,
+		hatchet.WithWorkflowDescription("ipverse/asn-ip -> public.asn -> ip2asn MMDB + asn.sqlite3 (also reads public.asn_domain, public.asn_geo_pdb and the published rows of public.geo_eval, last 60 days, into the geo_scores table); with scores_only (started after each build-geo-data publish) only the geo_scores table of the last build's asn.sqlite3 is rewritten and published"),
 		hatchet.WithWorkflowCron("0 6,18 * * *"),
 		hatchet.WithWorkflowConcurrency(asnDBLimit()),
 	)
@@ -439,6 +451,9 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 			if err := p.CheckPublish(); err != nil {
 				return asn.Source{}, hatchet.NewNonRetryableError(err)
 			}
+		}
+		if input.ScoresOnly {
+			return p.SyncScoresOnly(), nil
 		}
 		return p.SyncSource(ctx, time.Now())
 	}, taskRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
@@ -761,7 +776,7 @@ func syncARINWhoisWorkflow(client *hatchet.Client) *hatchet.Workflow {
 
 func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("build-geo-data",
-		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + whois text rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2 and RIPE Atlas (country, city), and ours also on a geofeed holdout"),
+		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + whois text rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2 and RIPE Atlas (country, city), and ours also on a geofeed holdout; a successful publish starts a build-asn-data scores-only run (refreshes only the geo_scores table)"),
 		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
 		hatchet.WithWorkflowCron("0 7,19 * * *"),
 		// Its own limit, not asn-db: it only reads the ASN tables.
@@ -843,10 +858,35 @@ func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		if errors.Is(err, geo.ErrGate) {
 			err = hatchet.NewNonRetryableError(err)
 		}
+		if err == nil {
+			// The light run refreshes only the geo_scores table of asn.sqlite3; the new
+			// top-level run is queued by the asn-db limit if a build-asn-data run is going.
+			startASNRun(&out, func() error {
+				_, err := client.RunNoWait(ctx.GetContext(), buildASNName, BuildASNInput{ScoresOnly: true})
+				return err
+			}, taskLog(ctx))
+		}
 		return out, err
 	}, taskRetry(hatchet.WithParents(download, mmdb, eval), hatchet.WithExecutionTimeout(45*time.Minute))...)
 
 	return wf
+}
+
+// startASNRun starts a scores-only build-asn-data run through trigger after a publish
+// that put files in place (not a skipped output) and records the result in out.ASNRun. A
+// trigger that fails is logged (the error is the Hatchet client's and holds no secret) and
+// never fails the task: the next full build-asn-data run refreshes the table anyway.
+func startASNRun(out *geo.PublishOutput, trigger func() error, log func(string)) {
+	if out.Skipped {
+		return
+	}
+	if err := trigger(); err != nil {
+		log("publish: could not start a build-asn-data scores-only run: " + err.Error())
+		out.ASNRun = "failed"
+		return
+	}
+	log("publish: a build-asn-data scores-only run is queued")
+	out.ASNRun = "started"
 }
 
 // resolveIPsName is the name of the resolve-ips workflow (its last task starts the next run by name).
@@ -1000,6 +1040,7 @@ func chainNext(pick rdns.PickOutput, trace rdns.TraceOutput, trigger func() erro
 func runASN(ctx context.Context, args []string) error {
 	flags := flag.NewFlagSet("run-asn", flag.ExitOnError)
 	skipPublish := flags.Bool("skip-publish", false, "build everything but upload nothing")
+	scoresOnly := flags.Bool("scores-only", false, "only refresh the geo_scores table of the last build's asn.sqlite3 and publish that file")
 	flags.Parse(args)
 	if flags.NArg() > 0 {
 		return fmt.Errorf("run-asn: unexpected argument %q", flags.Arg(0))
@@ -1013,6 +1054,19 @@ func runASN(ctx context.Context, args []string) error {
 		if err := p.CheckPublish(); err != nil {
 			return err
 		}
+	}
+	if *scoresOnly {
+		src := p.SyncScoresOnly()
+		exported, err := p.ExportSQLite(ctx, src)
+		if err != nil {
+			return err
+		}
+		if *skipPublish {
+			cliLog("publish: skipped (-skip-publish)")
+			return nil
+		}
+		_, err = p.Publish(ctx, src, "", exported.Path)
+		return err
 	}
 	src, err := p.SyncSource(ctx, time.Now())
 	if err != nil {
