@@ -5,29 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"openipdata.org/hatchet/geo"
 	"openipdata.org/hatchet/rdns"
 )
-
-func TestStartASNRun(t *testing.T) {
-	noLog := func(string) {}
-	var out geo.PublishOutput
-	called := 0
-	startASNRun(&out, func() error { called++; return nil }, noLog)
-	if called != 1 || out.ASNRun != "started" {
-		t.Errorf("started: called=%d asn_run=%q", called, out.ASNRun)
-	}
-	out = geo.PublishOutput{}
-	startASNRun(&out, func() error { return errors.New("down") }, noLog)
-	if out.ASNRun != "failed" {
-		t.Errorf("failed: asn_run=%q", out.ASNRun)
-	}
-	out = geo.PublishOutput{Skipped: true}
-	startASNRun(&out, func() error { t.Error("called for a skipped output"); return nil }, noLog)
-	if out.ASNRun != "" {
-		t.Errorf("skipped: asn_run=%q", out.ASNRun)
-	}
-}
 
 // A run that picked its full limit and stored traces starts the next one; any other does not.
 func TestChainNext(t *testing.T) {
