@@ -220,7 +220,7 @@
   `public.asn_domain` and `public.asn`) and has its own `geofeeds` limit; `build-geo-data` only reads them and has its own `geo` limit.
 - `public.geofeed_urls` is the one list of every geofeed URL ever found (the table pre-dates this repo and its definition
   must not change). `discover` upserts into it (new URL: insert; known URL: `last_seen_at = now()` and `sources` = sorted
-  distinct union, never a removed source) and never deletes rows. `check-feeds` writes only `last_checked_at`,
+  distinct union, never a removed source) and never deletes rows. `check-feeds` fetches a GitHub file page (`github.com/<owner>/<repo>/blob/<ref>/<path>`, a web page) from `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` (`feedFetchURL`; the row, the stored copy and its header keep the address as found; 2026-11-22: of the 285 `html` rows, 52 such pages were feeds with about 700 IPv4 rows no other feed had, +1 RIPE Atlas probe; Google Sheets exports and following links on pages were measured too and left out: 31 and 100 rows). `check-feeds` writes only `last_checked_at`,
   `last_success_at`, `last_fetch_status` (our status names) and `result_text` (`HTTP 200, 3412 rows`, `HTTP 404`, or a short
   error), in batches. Its backoff and the 30-day working window depend only on the timestamps (failing since
   `last_success_at`, or `first_seen_at` if it never worked), never on the status text, so rows written by an older tool

@@ -243,6 +243,8 @@ found it has finished; a GitHub feed after the `search-github` run that found it
   at once. The copies are caches: the table is the record.
 - A dump that cannot be read to its end adds nothing. A local file error (such as a full disk)
   fails the task instead of counting against the feeds.
+- `check-feeds` fetches a GitHub file page (`github.com/<owner>/<repo>/blob/<ref>/<path>`, which answers a web page) from
+  `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` instead; the row keeps the address as found.
 - `check-feeds` reads every row of `public.geofeed_urls` and writes back, every 200 feeds (a retried task
   skips feeds checked in the last hour), `last_checked_at`, `last_success_at`, `last_fetch_status` and
   `result_text`. The status is one of ours (`ok`, `http_error`, `timeout`, `host_down`, ...);

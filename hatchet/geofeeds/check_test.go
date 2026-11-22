@@ -128,6 +128,29 @@ func TestFetchFeed(t *testing.T) {
 	}
 }
 
+// A GitHub file page is fetched from the raw host; every other address as it is.
+func TestFeedFetchURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/Viasat/geofeed/blob/main/geofeed.csv":                   "https://raw.githubusercontent.com/Viasat/geofeed/main/geofeed.csv",
+		"http://www.github.com/a/b/blob/7e6bafdb/dir/x%20y.csv?raw=true#L1":         "https://raw.githubusercontent.com/a/b/7e6bafdb/dir/x%20y.csv",
+		"https://GitHub.com/geocheck/geofeed/blob/main/89.116.200.0-24_vilnius.csv": "https://raw.githubusercontent.com/geocheck/geofeed/main/89.116.200.0-24_vilnius.csv",
+		"https://github.com:443/a/b/blob/main/x.csv":                                "https://raw.githubusercontent.com/a/b/main/x.csv",
+		"https://github.com:8443/a/b/blob/main/x.csv":                               "https://github.com:8443/a/b/blob/main/x.csv",
+		"https://github.com/a/b/blob/main":                                          "https://github.com/a/b/blob/main",
+		"https://github.com/a/b/tree/main/x.csv":                                    "https://github.com/a/b/tree/main/x.csv",
+		"https://github.com/a//blob/main/x.csv":                                     "https://github.com/a//blob/main/x.csv",
+		"https://user@github.com/a/b/blob/main/x.csv":                               "https://user@github.com/a/b/blob/main/x.csv",
+		"https://github.com.evil.example/a/b/blob/main/x.csv":                       "https://github.com.evil.example/a/b/blob/main/x.csv",
+		"ftp://github.com/a/b/blob/main/x.csv":                                      "ftp://github.com/a/b/blob/main/x.csv",
+		"https://example.net/geofeed.csv":                                           "https://example.net/geofeed.csv",
+		"https://raw.githubusercontent.com/a/b/main/x.csv":                          "https://raw.githubusercontent.com/a/b/main/x.csv",
+	} {
+		if got := feedFetchURL(in); got != want {
+			t.Errorf("feedFetchURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestInterleaveByHost(t *testing.T) {
 	got := interleaveByHost([]string{"https://a/1", "https://a/2", "https://a/3", "https://b/1", "https://c/1"})
 	want := []string{"https://a/1", "https://b/1", "https://c/1", "https://a/2", "https://a/3"}

@@ -137,7 +137,7 @@ type fetchResult struct {
 // and stores the valid rows. Network errors become statuses; a transfer that
 // fails keeps the stored copy.
 func fetchFeed(ctx context.Context, client *http.Client, rawURL, path string, now time.Time) fetchResult {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feedFetchURL(rawURL), nil)
 	if err != nil {
 		return fetchResult{status: feedConnection}
 	}
@@ -202,6 +202,31 @@ func fetchFeed(ctx context.Context, client *http.Client, rawURL, path string, no
 	}
 	os.Remove(path) // the server answered with something that is not a feed
 	return res
+}
+
+// feedFetchURL is the address a feed is fetched from. A GitHub file page
+// (github.com/<owner>/<repo>/blob/<ref>/<path>) answers a web page; the file itself is at
+// raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>, which is fetched instead (without
+// a token, like every feed). The feed keeps the address it was found under: the table row,
+// the stored copy's name and its header use rawURL. Any other address is fetched as it is.
+// Measured 2026-11-22: 52 such whois-linked pages were feeds, with about 700 IPv4 rows no
+// other feed had.
+func feedFetchURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil {
+		return rawURL
+	}
+	if host := strings.ToLower(u.Hostname()); host != "github.com" && host != "www.github.com" {
+		return rawURL
+	}
+	if port := u.Port(); port != "" && port != map[string]string{"https": "443", "http": "80"}[u.Scheme] {
+		return rawURL
+	}
+	parts := strings.SplitN(strings.TrimPrefix(u.EscapedPath(), "/"), "/", 5)
+	if len(parts) != 5 || parts[2] != "blob" || parts[0] == "" || parts[1] == "" || parts[3] == "" || parts[4] == "" {
+		return rawURL
+	}
+	return "https://raw.githubusercontent.com/" + parts[0] + "/" + parts[1] + "/" + parts[3] + "/" + parts[4]
 }
 
 type countingReader struct {
