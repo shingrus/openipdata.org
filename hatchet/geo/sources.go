@@ -101,6 +101,24 @@ func layerRow(w *csv.Writer, prefix, country, city string) {
 	w.Write([]string{prefix, country, "", city, ""})
 }
 
+// euBlockRows gives countries to the delegated blocks that the registry tags
+// only EU, by the block's prefix. The block's own row is the holder's address in
+// its RIPE record. A nested row keeps the country of a part that a network or a
+// layer places elsewhere, because the layers that only add cities cannot change
+// a country once this one is set.
+var euBlockRows = map[string][][2]string{
+	"139.191.0.0/16": {
+		{"139.191.0.0/16", "IT"},   // Joint Research Centre, Ispra
+		{"139.191.112.0/20", "BE"}, // announced by AS2611, Brussels in 25-bgp and 30-pdb
+		{"139.191.152.0/21", "ES"}, // announced by AS198096
+		{"139.191.184.0/21", "DE"}, // announced by AS680
+		{"139.191.192.0/24", "NL"}, // Amsterdam in 35-speedtest-site
+	},
+	"145.218.0.0/16": {{"145.218.0.0/16", "DK"}}, // DSV A/S, Hedehusene
+	"151.175.0.0/16": {{"151.175.0.0/16", "NL"}}, // Shell Information Technology International B.V., The Hague
+	"158.67.0.0/16":  {{"158.67.0.0/16", "NL"}},  // KPN B.V., Rotterdam
+}
+
 // writeStatsRows writes one layer row per allocated or assigned block of a
 // delegated-extended file and returns the number of blocks. A block without a
 // real country is written with an empty one: it gives no country, but it
@@ -114,12 +132,19 @@ func writeStatsRows(path string, w *csv.Writer) (int, error) {
 	blocks := 0
 	err = rirstats.Parse(f, func(country string, prefixes []netip.Prefix) {
 		code := strings.ToUpper(country)
+		isEU := code == "EU"
 		// ZZ, EU and AP are not countries: ZZ is "unknown", EU and AP are the
 		// regions some old RIR blocks are tagged with.
 		if !ipdata.IsCountryCode(code) || code == "ZZ" || code == "EU" || code == "AP" {
 			code = ""
 		}
 		for _, p := range prefixes {
+			if rows, ok := euBlockRows[p.String()]; ok && isEU {
+				for _, r := range rows {
+					layerRow(w, r[0], r[1], "")
+				}
+				continue
+			}
 			layerRow(w, p.String(), code, "")
 		}
 		blocks++

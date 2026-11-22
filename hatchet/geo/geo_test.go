@@ -46,16 +46,21 @@ func TestWriteStatsRows(t *testing.T) {
 		"arin|ZZ|ipv4|45.50.0.0|256|20100101|assigned|abc\n"+
 		"arin|EU|ipv4|45.60.0.0|256|20100101|assigned|abc\n"+
 		"arin|ap|ipv4|45.70.0.0|256|20100101|assigned|abc\n"+
+		"ripencc|EU|ipv4|158.67.0.0|65536|20100101|assigned|abc\n"+ // in the table of EU blocks
+		"ripencc|EU|ipv4|139.191.0.0|65536|20100101|assigned|abc\n"+ // in the table, with nested rows
+		"ripencc|ZZ|ipv4|145.218.0.0|65536|20100101|assigned|abc\n"+ // in the table, but not tagged EU
 		"arin|US|asn|64512|1|20100101|allocated|abc\n"), 0o640)
 	var blocks int
 	got := layerRows(t, func(w *csv.Writer) (err error) {
 		blocks, err = writeStatsRows(path, w)
 		return err
 	})
-	// Blocks without a real country keep their row, with no country.
+	// Blocks without a real country keep their row, with no country, unless the table names an EU block.
 	want := "prefix,country,region,city,source\n45.10.0.0/22,US,,,\n45.20.0.0/23,CA,,,\n45.20.2.0/24,CA,,,\n2600:1000::/28,US,,,\n" +
-		"45.40.0.0/24,,,,\n45.50.0.0/24,,,,\n45.60.0.0/24,,,,\n45.70.0.0/24,,,,\n"
-	if got != want || blocks != 7 {
+		"45.40.0.0/24,,,,\n45.50.0.0/24,,,,\n45.60.0.0/24,,,,\n45.70.0.0/24,,,,\n158.67.0.0/16,NL,,,\n" +
+		"139.191.0.0/16,IT,,,\n139.191.112.0/20,BE,,,\n139.191.152.0/21,ES,,,\n139.191.184.0/21,DE,,,\n139.191.192.0/24,NL,,,\n" +
+		"145.218.0.0/16,,,,\n"
+	if got != want || blocks != 10 {
 		t.Errorf("%d blocks, layer:\n%s", blocks, got)
 	}
 }
