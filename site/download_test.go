@@ -37,7 +37,7 @@ func TestDownloadPage(t *testing.T) {
 		"<h2>Prompt for a coding agent</h2>", "<h2>Python</h2>", "<h2>Go</h2>",
 		`<a href="/">Accuracy</a>`, `<a href="https://www.geonames.org/">GeoNames (CC BY 4.0)</a>`, `<a href="https://creativecommons.org/publicdomain/zero/1.0/">Licence: CC0 1.0</a>`,
 		"country.iso_code, country.names.en, city.names.en, location.latitude, location.longitude, city_source", "GeoLite2-City layout", `value=""`,
-		`<footer class="foot"><a href="/download">Download</a><a href="/bulk-ip-lookup">Bulk lookup</a><a href="/geolite2-alternative">vs GeoLite2</a><a href="/top-asn-by-ip-address">`,
+		`<footer class="foot"><a href="/download">Download</a><a href="/bulk-ip-lookup">Bulk lookup</a><a href="/geolite2-alternative">vs GeoLite2</a><a href="/blog">Blog</a><a href="/top-asn-by-ip-address">`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)

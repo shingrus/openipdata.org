@@ -1,0 +1,23 @@
+title: City from M-Lab speed test servers
+date: 2026-11-20
+summary: A client that reaches an M-Lab speed test server within 5 ms is very likely in the city of that server. This gives a new city layer.
+---
+<p>M-Lab runs speed test servers in many cities and publishes its measurements as open data (CC0). For each client /24 the data records the lowest round-trip time to each server. A client that answers a server within a few milliseconds cannot be far from it.</p>
+<h2>The rule</h2>
+<p>A /24 gets the city of the nearest server when its lowest reply time is at most 5 ms. The city must be a GeoNames place in the server's country; one site of 80 is not a GeoNames place and gets no row. The layer is <code>35-speedtest-site</code>, and it only adds cities: it never changes a country.</p>
+<h2>Why 5 ms</h2>
+<p>We tried limits from 2 to 10 ms on RIPE Atlas devices:</p>
+<table>
+<thead><tr><th>Limit</th><th>Right</th><th>Lost</th></tr></thead>
+<tbody>
+<tr><td>3 ms</td><td>+46</td><td>-7</td></tr>
+<tr><td><b>5 ms</b></td><td><b>+63</b></td><td><b>-13</b></td></tr>
+<tr><td>8 ms</td><td>+72</td><td>-20</td></tr>
+<tr><td>9 ms</td><td>+77</td><td>-20</td></tr>
+<tr><td>10 ms</td><td>+80</td><td>-28</td></tr>
+</tbody>
+</table>
+<p>Above 5 ms, an added answer is right only 27% to 40% of the time, so we stopped there.</p>
+<h2>Accuracy</h2>
+<p>A rebuild from an export of 21 days (3.05M rows, 1.66M client /24s) gave 401,813 rows. Right devices rose by 63 and 13 were lost: right city went from 59.14% to 59.49%. The layer's own city was right for 64% of the 372 devices it answers.</p>
+<p>This is below the M-Lab hop city (<code>36-mlab</code>), so it sits under it in the order of layers. The export is made by hand about once a month.</p>

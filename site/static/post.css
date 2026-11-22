@@ -1,0 +1,18 @@
+/* A blog post: with style.css it is the whole style of /blog/<slug>. */
+.pb{padding:24px 20px 28px}
+.pb h1{max-width:680px;font-size:28px;font-weight:600;line-height:1.2;letter-spacing:-.02em;overflow-wrap:anywhere}
+.meta{margin-top:8px;font:13px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+.body{max-width:680px;margin-top:20px;font-size:16px;line-height:1.6;overflow-wrap:anywhere}
+.body>*+*{margin-top:14px}
+.body h2{margin-top:28px;font-size:20px;font-weight:600;line-height:1.3}
+.body h3{margin-top:22px;font-size:17px;font-weight:600;line-height:1.3}
+.body ul,.body ol{padding-left:22px}
+.body li+li{margin-top:4px}
+.body a{color:var(--accent)}
+.body a:hover{text-decoration:underline}
+.body code,.body pre{font:13.5px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+.body pre{padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--raised);line-height:1.5;overflow-x:auto;overflow-wrap:normal}
+.body table{width:100%;border-collapse:collapse;font-size:14px}
+.body th,.body td{padding:8px;text-align:left;border-bottom:1px solid var(--line)}
+.body th{font-size:11px;font-weight:500;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+@media (max-width:700px){.pb{padding-inline:16px}.pb h1{font-size:24px}}

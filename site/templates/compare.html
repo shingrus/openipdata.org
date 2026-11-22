@@ -27,7 +27,11 @@
 <p class="note">Our share with a city includes guessed cities; their <code>city_source</code> starts with 8, so you can leave them out.</p>
 {{if .Probes}}<p class="note">Measured on <span class="mono">{{.Probes}}</span> RIPE Atlas devices with a known location.</p>
 {{end}}</section>
-<section class="panel">
+{{if .Chart}}<section class="panel">
+<div class="head"><h2>Accuracy over time</h2></div>
+{{.Chart}}
+</section>
+{{end}}<section class="panel">
 <div class="head"><h2>Switch from GeoLite2</h2></div>
 <div class="code"><button class="cp" type="button" hidden aria-label="Copy"><svg viewBox="0 0 16 16" aria-hidden="true"><use class="u1" href="#i-cp"/><use class="u2" href="#i-ck"/></svg></button><pre>{{.Code}}</pre></div>
 <p class="note">Get <a href="{{.Download}}">{{.File}}</a> and point the reader at it.</p>

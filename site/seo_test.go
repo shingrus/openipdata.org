@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -233,8 +234,8 @@ func TestSitemaps(t *testing.T) {
 	}
 
 	main, pages := check("/sitemap.xml")
-	if !strings.Contains(main, "<urlset") || fmt.Sprint(pages.URLs) != fmt.Sprint([]string{"https://openipdata.org/", "https://openipdata.org/geolite2-alternative", "https://openipdata.org/download", "https://openipdata.org/bulk-ip-lookup", "https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/top-asn-by-ipv6",
-		"https://openipdata.org/top-organizations-by-ip-address", "https://openipdata.org/list-of-countries-by-ipv4-allocation"}) {
+	if !strings.Contains(main, "<urlset") || fmt.Sprint(pages.URLs) != fmt.Sprint(slices.Concat([]string{"https://openipdata.org/", "https://openipdata.org/geolite2-alternative", "https://openipdata.org/download", "https://openipdata.org/bulk-ip-lookup"}, blogURLs(), []string{"https://openipdata.org/top-asn-by-ip-address", "https://openipdata.org/top-asn-by-ipv6",
+		"https://openipdata.org/top-organizations-by-ip-address", "https://openipdata.org/list-of-countries-by-ipv4-allocation"})) {
 		t.Errorf("pages %v", pages.URLs)
 	}
 	mods := sitemapMods(t, main)
@@ -346,8 +347,10 @@ func TestSitemapsWithoutData(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := get(e, "GET", "/sitemap.xml").Body.String()
-	if strings.Contains(body, "lastmod") {
-		t.Errorf("dates without data: %s", body)
+	for u, m := range sitemapMods(t, body) { // the blog dates are the posts' own, not data dates
+		if m != "" && !strings.HasPrefix(u, "https://openipdata.org/blog") {
+			t.Errorf("date without data: %s %s", u, m)
+		}
 	}
 	// ASN MMDB loaded but no SQLite: the rankings (built from SQLite) have no date.
 	m := sitemapMods(t, body2(t, s))
@@ -389,4 +392,13 @@ func TestSEOHomeVariantsNotIndexed(t *testing.T) {
 func body2(t *testing.T, s *server) string {
 	t.Helper()
 	return get(s, "GET", "/sitemap.xml").Body.String()
+}
+
+// blogURLs are the blog entries of /sitemap.xml: the list, then every post newest first.
+func blogURLs() []string {
+	u := []string{"https://openipdata.org/blog"}
+	for _, p := range blogPosts {
+		u = append(u, "https://openipdata.org"+p.Href)
+	}
+	return u
 }

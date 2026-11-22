@@ -1,0 +1,18 @@
+title: How we compare with GeoLite2 and DB-IP Lite
+date: 2026-11-21
+summary: A new page compares the accuracy and terms of openipdata, GeoLite2 and DB-IP Lite, measured on the same RIPE Atlas devices.
+---
+<p>The page <a href="/geolite2-alternative">Free GeoLite2 alternative</a> compares our database with GeoLite2 and DB-IP Lite. It has two parts: the terms of the free databases, and their accuracy.</p>
+<h2>Terms</h2>
+<p>The table lists licence, sign-up and update rhythm. Ours is CC0, needs no sign-up and is rebuilt twice a day. GeoLite2 comes under the MaxMind EULA with a licence key, and DB-IP Lite is CC BY and monthly. IP2Location LITE and IPinfo Lite are in the table too. The page does not call ours a substitute for any of them; it says only that the layout is the same.</p>
+<h2>Accuracy</h2>
+<p>We measure on RIPE Atlas devices with a known location. Each device is looked up in every database, and we count three things:</p>
+<ul>
+<li><b>Have a city</b>: the share of addresses with a city in the record.</li>
+<li><b>Right country</b>: the country matches the device.</li>
+<li><b>Right city</b>: the city is within 50 km of the device.</li>
+</ul>
+<p>All three databases are scored on the same devices. The numbers come from the stamp inside each build of our file, so the page updates itself when we publish a new build. The device count is shown on the page.</p>
+<h2>Guessed cities</h2>
+<p>Our share with a city includes guessed cities. Their <code>city_source</code> starts with 8 (<code>80-asn-main</code> to <code>89-asn-anywhere</code>), so you can leave them out. A guess is weaker than a city from a geofeed, and the file says which is which.</p>
+<p>The page also shows the one line that changes in a program that reads GeoLite2 with Python.</p>

@@ -1,0 +1,23 @@
+title: The database files now use the GeoLite2 layout
+date: 2026-11-21
+summary: openipdata-org-ip2geo.mmdb and openipdata-org-ip2asn.mmdb are published in the GeoLite2-City and GeoLite2-ASN record layout.
+---
+<p>The two MMDB files we publish now use the record layout of GeoLite2-City and GeoLite2-ASN. A program that reads GeoLite2 with MaxMind's Python reader, or with any plain MMDB reader, can read ours by changing the file path.</p>
+<h2>Files</h2>
+<ul>
+<li><code>openipdata-org-ip2geo.mmdb</code>: country, city, coordinates. <code>database_type</code> is <code>OpenIPData-City</code>.</li>
+<li><code>openipdata-org-ip2asn.mmdb</code>: the network of an address. <code>database_type</code> is <code>OpenIPData-ASN (compat=GeoLite2-ASN)</code>.</li>
+<li><code>asn-openipdata.sqlite3</code>: networks, organizations and prefixes.</li>
+</ul>
+<h2>Fields</h2>
+<p>The city file has <code>country.iso_code</code>, <code>country.names.en</code>, <code>city.names.en</code>, <code>location.latitude</code> and <code>location.longitude</code>, plus <code>continent</code>, <code>location.time_zone</code> and <code>country.is_in_european_union</code>. A field is absent when we do not know it. There is one extra top-level key, <code>city_source</code>, which names the source of the city. The ASN file has <code>autonomous_system_number</code> and <code>autonomous_system_organization</code>.</p>
+<h2>Python</h2>
+<pre>import geoip2.database
+reader = geoip2.database.Reader("openipdata-org-ip2geo.mmdb")
+r = reader.city("8.8.8.8")
+r.country.iso_code, r.city.names["en"]</pre>
+<h2>Go</h2>
+<p>The Go library geoip2-golang accepts only a fixed list of database types, so it refuses both files. The plain <code>maxminddb-golang</code> reader works: define a struct with the fields you need and look up into it.</p>
+<h2>Old files</h2>
+<p>The earlier flat files, <code>ip2geo-openipdata.mmdb</code> and <code>ip2asn-openipdata.mmdb</code>, stay on the release for about 60 days and are no longer updated.</p>
+<p>Get the files and the field list on the <a href="/download">download page</a>. The data is CC0; the GeoNames ids, time zones and coordinates are credited to GeoNames (CC BY 4.0).</p>

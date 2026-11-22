@@ -1,0 +1,14 @@
+title: Cities for Amazon and Oracle cloud regions
+date: 2026-11-19
+summary: Region files of Amazon and Oracle give a city to cloud address ranges that the registry data places in the wrong country.
+---
+<p>Cloud providers publish files that list address ranges by region, such as <code>eu-west-1</code>. They give no city. The registry data often labels these ranges with the country of the company, usually the US, although the region is abroad. We now turn the region files into a layer of cities, <code>68-cloud-regions</code>.</p>
+<h2>Amazon</h2>
+<p>Amazon's own geofeed already places part of its ranges. We learn the city of each region from those rows: a region gets a city only when its geofeed addresses put at least 80% of them in one city. In all 42 regions that share was 97 to 100%. Nothing is written by hand. Local Zones and Wavelength zones are separate groups and never get the city of the parent region.</p>
+<p>The region file lists 102.1M IPv4 addresses. 79.9M already had a geofeed city and 20.6M had none. The layer gives a place to 16.5M addresses and corrects the country of 14.1M.</p>
+<h2>Oracle</h2>
+<p>Oracle publishes no geofeed, so nothing can be learned. The city of a region comes from a fixed table of 45 regions, taken from Oracle's regions documentation. The region code can mislead: <code>uk-cardiff-1</code> is in Newport.</p>
+<p>Oracle's file lists 4.48M IPv4 addresses in 57 regions. 44 of them are in the table, giving 994 rows and 4.33M addresses. Of these, 1.86M addresses had no city, 1.25M get another city and 2.97M get another country.</p>
+<h2>Accuracy</h2>
+<p>On RIPE Atlas devices in Oracle ranges that no geofeed covers, the table city was right for 136 of 139 connected devices, and no device was lost. Right city went from 58.13% to 58.93% on a test build, with 113 more right devices.</p>
+<p>Google Cloud and Azure are not used: their own geofeeds already cover all addresses of their region files.</p>

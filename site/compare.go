@@ -6,7 +6,9 @@ package main
 // program. Rendered once and kept; it holds no visitor data.
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"html/template"
 	"math"
 	"net/http"
@@ -52,9 +54,10 @@ type cmpView struct {
 	Why      []cmpRow // label in Name, the value in Cells[0]
 	Free     []cmpRow
 	Acc      []cmpRow
-	Built    string // "2 Jan 2006" or empty
-	Probes   string // thousands separated, or empty
-	Download string // the geo file URL
+	Chart    template.HTML // the Score history chart of /status, or empty (then the block is left out)
+	Built    string        // "2 Jan 2006" or empty
+	Probes   string        // thousands separated, or empty
+	Download string        // the geo file URL
 	File     string
 	Code     string
 	DBIP, MM string
@@ -156,8 +159,17 @@ func (s *server) comparePage() (*cachedPage, bool, error) {
 	if sc.Probes > 0 {
 		v.Probes = fmtInt(sc.Probes)
 	}
+	asnLoaded := false
+	if d := s.asnf.data(); d != nil {
+		asnLoaded = true
+		if d.chart != "" {
+			v.Chart = d.chart
+			v.CSS += template.CSS(chartCSS)
+		}
+	}
+	h := sha256.Sum256([]byte(v.Chart))
 	var k strings.Builder
-	k.WriteString(s.origin + "|" + v.Built + "|" + v.Probes)
+	k.WriteString(s.origin + "|" + v.Built + "|" + v.Probes + "|" + hex.EncodeToString(h[:8]))
 	for _, rows := range [][]cmpRow{v.Why, v.Acc} {
 		for _, r := range rows {
 			for _, c := range r.Cells {
@@ -171,7 +183,7 @@ func (s *server) comparePage() (*cachedPage, bool, error) {
 	c := &s.cmp
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	complete := !sc.Built.IsZero() && have.Text != dash
+	complete := asnLoaded && !sc.Built.IsZero() && have.Text != dash
 	if c.pg != nil && c.key == k.String() {
 		return c.pg, complete, nil
 	}

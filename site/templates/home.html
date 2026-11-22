@@ -32,5 +32,6 @@
 <div><span>Rebuilt twice a day</span><b>{{.Rebuilt}}</b></div>
 <div><span>Covers</span><b>IPv4, IPv6</b></div>
 </div>
-</section>
+{{with .Latest}}<p class="note">Latest: <a href="{{.Href}}">{{.Title}}</a> · <span class="mono"><time datetime="{{.ISO}}">{{.DateText}}</time></span></p>
+{{end}}</section>
 {{end}}{{template "bottom" .}}

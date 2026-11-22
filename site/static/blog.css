@@ -1,0 +1,9 @@
+/* The blog list: with style.css it is the whole style of /blog. */
+.bl{list-style:none}
+.bl li{display:flex;gap:20px;padding:14px 20px;border-bottom:1px solid var(--line)}
+.bl li:last-child{border-bottom:0}
+.bl time{flex:none;width:92px;padding-top:2px;font:13px "Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+.bl div{min-width:0}
+.bl a{font-weight:500}
+.bl p{margin-top:3px;font-size:14px;color:var(--muted)}
+@media (max-width:700px){.bl li{flex-direction:column;gap:2px;padding:13px 16px}.bl time{width:auto;padding-top:0}}

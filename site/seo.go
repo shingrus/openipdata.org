@@ -365,6 +365,12 @@ func (s *server) mainSitemap() *cachedPage {
 	b = appendURL(b, eo, comparePath, mods[0])
 	b = appendURL(b, eo, downloadPath, mods[1])
 	b = appendURL(b, eo, bulkPath, "")
+	if len(blogPosts) > 0 { // static per binary, so the cache key needs nothing for it
+		b = appendURL(b, eo, blogPath, lastmod(blogNewest()))
+		for i := range blogPosts {
+			b = appendURL(b, eo, blogPosts[i].Href, lastmod(blogPosts[i].lastChange()))
+		}
+	}
 	for _, rk := range rankings {
 		b = appendURL(b, eo, rk.path, mods[2])
 	}

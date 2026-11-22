@@ -113,6 +113,7 @@ type server struct {
 	bulk        bulkCache                 // the rendered GET /bulk-ip-lookup page
 	smMain      smMainCache               // the rendered /sitemap.xml
 	cmp         cmpCache                  // the rendered /geolite2-alternative page
+	blog        blogCache                 // the rendered /blog pages
 	shareMu     [64]sync.Mutex            // updates of one report run one after another (see updateReport)
 	cspPnl      [8]string                 // csp of a page that has panel.js, by fill (1), res (2) and the Share button (4)
 	public      func(netip.Addr) bool
@@ -335,6 +336,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveBulk(w, r)
 	case p == comparePath:
 		s.serveCompare(w, r)
+	case p == blogPath || strings.HasPrefix(p, blogPath+"/"):
+		s.serveBlog(w, r)
 	case p == "/maxmind-alternative":
 		w.Header().Set("Cache-Control", asnCache)
 		to := comparePath
@@ -468,6 +471,9 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	v.Home = q.kind == "visitor"
+	if v.Home {
+		v.Latest = blogLatest()
+	}
 	p.H2 = v.Home // the heading in the header is the page's h1
 	share := p.Share
 	v.Share = share

@@ -1,0 +1,18 @@
+title: Bulk IP lookup and the JSON list API
+date: 2026-11-17
+summary: Look up to 1000 addresses at once on a web page or with curl, and get a table, a CSV file or a JSON array back.
+---
+<p>The page <a href="/bulk-ip-lookup">Bulk IP lookup</a> takes a text with up to 1000 IP addresses. Paste a log or a list; the addresses are found in any text. You get a table of country, city, coordinates and network, and a button that downloads it as CSV.</p>
+<h2>Privacy</h2>
+<p>The form is a POST, so a pasted list never reaches a URL, a log or the browser history. Nothing you paste or get back is stored.</p>
+<h2>API</h2>
+<p>The same lookups work from the command line. Up to 100 addresses in the URL, separated by commas:</p>
+<pre>curl https://openipdata.org/json/1.1.1.1,8.8.8.8</pre>
+<p>Up to 1000 addresses in the body, one per line (or a JSON array of strings, body up to 64 KB):</p>
+<pre>curl --data-binary @ips.txt https://openipdata.org/json</pre>
+<p>Both answer a JSON array with one entry per item, in the order you sent them, duplicates included. An entry is the same object as <code>/json/&lt;ip&gt;</code>. An address that cannot be looked up gives an error entry instead:</p>
+<pre>{"ip": "10.0.0.1", "error": "not a public address"}
+{"input": "abc", "error": "not an IP address"}</pre>
+<p>A single address without a comma keeps the single-object answer. A field is absent when it is unknown.</p>
+<h2>CSV</h2>
+<p>On the page, the button <b>Download CSV</b> gives the same rows as <code>ip-geolocation.csv</code>. Text values that start with <code>=</code>, <code>+</code>, <code>-</code> or <code>@</code> get a leading quote, so a spreadsheet does not read them as a formula.</p>

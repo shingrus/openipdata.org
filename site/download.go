@@ -275,6 +275,9 @@ func (s *server) llmsText() string {
 	b.WriteString("\n## Pages\n\n")
 	b.WriteString("- [Download](" + o + downloadPath + ")\n")
 	b.WriteString("- [Bulk IP lookup](" + o + bulkPath + "): up to 1000 addresses at once, as a table or CSV\n")
+	if len(blogPosts) > 0 {
+		b.WriteString("- [Blog](" + o + blogPath + "): updates to the database, new sources and measurements\n")
+	}
 	b.WriteString("- [Free GeoLite2 alternative](" + o + comparePath + "): same MMDB layout, accuracy compared with GeoLite2 and DB-IP\n")
 	for _, rk := range rankings {
 		b.WriteString("- [" + rk.title + "](" + o + rk.path + ")\n")

@@ -1,0 +1,14 @@
+title: City from small ARIN records, by RDAP
+date: 2026-11-19
+summary: ARIN publishes no whois dump, so we ask its RDAP service about one address per /24 and use small records, schools and local governments.
+---
+<p>RIPE, APNIC, AFRINIC and LACNIC publish their whois data. ARIN does not. To use the registrant city of ARIN records we ask its RDAP service instead, and the result is the layer <code>37-whois-arin</code>.</p>
+<h2>The walk</h2>
+<p>The walk covers the IPv4 /24s where our own published file has a country but only a weak city or none. For each one we ask about a single address, at two requests a second, and keep the range, country, state and city of the registrant. A /24 is asked again after 180 days.</p>
+<h2>Which records are used</h2>
+<p>A record gives a city only when GeoNames places the city in the record's own state. Records of at most a /20 are used. Records up to a /16 are used too when the registrant is a school or a local government. Only this class is kept, never a name.</p>
+<p>The reason is how the city of a record behaves. A record wider than a /16 usually holds the head office of a company, and its city was right for only 9% of the devices. For schools the city was right for 78% (29 of 37 devices), for local governments 11 of 11, and for everyone else 26%.</p>
+<h2>Accuracy</h2>
+<p>On RIPE Atlas devices, the layer's city was right for 61% of 531 rows (records of at most a /20). It added 197 right devices and lost 37.</p>
+<p>The wider records are not wasted. For address space that no network announces, the city of the holder block is used as a weak guess, <code>85-holder-city</code>, below every real layer.</p>
+<p>No visitor address and no registrant name is stored by this layer.</p>

@@ -119,7 +119,7 @@ The data is the SQLite file the worker builds (`asn-openipdata.sqlite3`: tables 
 | `/json`, `/json/<ip>` | JSON of one address (see "JSON API" below) |
 | `/json/<ip>,<ip>`, `POST /json` | JSON array, one entry per address in order (at most 100 in the URL, 1000 in the body) |
 | `/bulk-ip-lookup` | bulk lookup: a POST form for a pasted list (any text), results as a table with a TSV copy button or a CSV download; the GET page is indexable, the results are `no-store`, noindex |
-| `/geolite2-alternative` | why switch from GeoLite2, the free databases, accuracy against GeoLite2 and DB-IP Lite (from the stamp of the ip2geo MMDB), the one line that changes in a GeoLite2 program; indexable, `ETag`, rendered again only when the stamp changes; `/maxmind-alternative` redirects (301) to it |
+| `/geolite2-alternative` | why switch from GeoLite2, the free databases, accuracy against GeoLite2 and DB-IP Lite (from the stamp of the ip2geo MMDB), the one line that changes in a GeoLite2 program, and the score history chart of `/status` (only with ASN data and a history); indexable, `ETag`, rendered again only when the stamp changes; `/maxmind-alternative` redirects (301) to it |
 | `/robots.txt` | `Disallow: /api/`, `/resolver`, `/ip`, `/json` and the `Sitemap:` line (`SITE_ORIGIN`); `public, max-age=3600` |
 | `/sitemap.xml`, `/sitemap-pages.xml`, `/sitemap-networks-<k>.xml`, `/sitemap-organizations-<k>.xml` | sitemap index, home and rankings, and every network or organization page, 50,000 URLs per file; built from memory; 503 without ASN data, 404 for a bad `k`; `public, max-age=3600` |
 | `/api/as15169` | JSON: `{"asn":15169,"domain":"about.google","data":{...}}`, `data` is the `json` column as it is (all prefixes), `domain` is left out when unknown |
@@ -132,6 +132,21 @@ Memory and speed: the lists need only a compact record per network (number, hand
 Cache: the four rankings are rendered once per data load and served from memory with an `ETag` (a matching `If-None-Match` gives 304) and `Cache-Control: public, max-age=300`. The network, organization and JSON responses are rendered per request and are `public, max-age=300` too. No ASN page holds visitor data, and the lookup bar on them is empty. Edge cache (2026-11-20): the good answers (200 and 304) of the network, organization, prefix, country, ranking, `prefixes.txt`, `/api/as<n>`, `/download` and `/bulk-ip-lookup` (GET) pages are `public, max-age=300, s-maxage=43200` (`edgeCache`), so Cloudflare, with a Cache Rule set to "use cache-control header", keeps them 12 hours and a browser 5 minutes; redirects, 404s, 400s, errors and every other page keep their old header. After a deploy old pages can stay up to 12 hours unless purged. They use the same two inline scripts as the home page and add a second inline stylesheet part (`static/asn.css`) only on these pages.
 
 The worker must publish `asn-openipdata.sqlite3` to the release `latest` before the server can show the ASN pages (see "Server"). Until then the puller logs `not published yet` (no failure ping, as long as there is no local copy) and the pages answer 503.
+
+## Blog
+
+Posts are files `site/blog/<slug>.html` (slug `[a-z0-9-]`), embedded in the binary. A file is a header, a line `---`, then the HTML body:
+
+```
+title: How we compare with GeoLite2
+date: 2026-11-21
+summary: One sentence, under 155 characters (description and list line).
+updated: 2026-11-25
+---
+<p>Text. Links in the text are plain <a href="/download">links</a>.</p>
+```
+
+`updated` is optional. Allowed in the body: `p`, `h2`, `h3`, `ul`, `ol`, `pre`, `code`, `table`, links. Not allowed (the start fails): `<script`, `<style`, `<img`, `<iframe`, `on...=` and `style=` attributes. Write `&lt;` for a `<` in text and code. Check it with `go test ./...` (`TestCommittedPostsAreValid`), look at it with `TEST_IP=81.2.69.142 go run .` and `/blog`, then deploy like any site change: merge to `master` and push a `site-*` tag. The list, the sitemap, the home page line and `llms.txt` pick the post up by themselves.
 
 ## Where the numbers come from
 

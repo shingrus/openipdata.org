@@ -1,0 +1,15 @@
+{{template "top" .}}{{if .Post}}<article class="panel">
+<div class="head"><a href="/blog">&larr; Blog</a></div>
+<div class="pb">
+<h1>{{.Post.Title}}</h1>
+<p class="meta"><time datetime="{{.Post.ISO}}">{{.Post.DateText}}</time>{{if .Post.UpdText}} · updated {{.Post.UpdText}}{{end}}</p>
+<div class="body">{{.Post.Body}}</div>
+</div>
+</article>
+{{else}}<section class="panel">
+<div class="head"><h2>Blog</h2></div>
+<ul class="bl">
+{{range .Posts}}<li><time datetime="{{.ISO}}">{{.DateText}}</time><div><a href="{{.Href}}">{{.Title}}</a><p>{{.Summary}}</p></div></li>
+{{end}}</ul>
+</section>
+{{end}}{{template "bottom" .}}

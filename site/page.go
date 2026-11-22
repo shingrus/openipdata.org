@@ -209,7 +209,8 @@ type view struct {
 	Updated     bool
 	UpdatedISO  string
 	UpdatedText string
-	Rebuilt     string // age of the loaded geo database ("5 hours ago") or a dash: the Database panel
+	Latest      *blogPost // the newest blog post: the last line of the Database panel; nil = none
+	Rebuilt     string    // age of the loaded geo database ("5 hours ago") or a dash: the Database panel
 	Panel       *panel
 	Net         *netPanel // the Network panel (visitor and lookup pages with the network in the ASN data)
 	API         *apiPanel // the API panel below the Network panel; nil = none

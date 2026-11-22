@@ -42,7 +42,9 @@ var pageBudgets = []pageBudget{
 	{"/", 13000, 4700, 110000, 2000 * time.Microsecond},                                    // 11634, 4239, 75278, 27µs (home heading and Database panel, 2026-11-20; 10185, 3888, 59609, 25µs before)
 	{"/download", 21000, 6900, 40000, 2000 * time.Microsecond},                             // 18649, 6240, 25772, 3µs
 	{"/bulk-ip-lookup", 16200, 5500, 30000, 2000 * time.Microsecond},                       // 14711, 5004, 22714, 2µs
-	{"/geolite2-alternative", 19300, 6150, 40000, 2000 * time.Microsecond},                 // 17505, 5597, 27380, 3µs (new page, 2026-11-21)
+	{"/geolite2-alternative", 24400, 7450, 51000, 2000 * time.Microsecond},                 // 22158, 6796, 46516, 4µs with the score history chart of 3 points (2026-11-22, owner agreed; was 19300/6150/40000 for 18258, 5799, 28084 without a chart; a longer history draws a longer chart); 17505, 5597, 27380, 3µs 17505, 5597, 27380, 3µs (new page, 2026-11-21)
+	{"/blog", 12000, 4650, 22000, 2000 * time.Microsecond},                                 // 10917, 4246, 18602, 2µs (new page, 2026-11-22; six posts)
+	{"/blog/cloud-regions", 14100, 5300, 22000, 2000 * time.Microsecond},                   // 12857, 4831, 19914, 2µs (new page, 2026-11-22)
 	{"/as64500", 16100, 5330, 130000, 2000 * time.Microsecond},                             // 14611, 4842, 104124, 77µs (name band and cells, no map, 2026-11-17; limits were 17900 raw, 6350 gz, 140000 alloc; before 16249, 5778, 124460)
 	{"/as64503", 79000, 12000, 1290000, 19000 * time.Microsecond},                          // 71991, 10877, 1028954, 1797µs (name band and cells, no map, 2026-11-17; gz limit was 13300, alloc 1490000; before 74125, 12086, 1060929)
 	{"/as64600", 32200, 6670, 490000, 7000 * time.Microsecond},                             // 29253, 6065, 389413, 712µs (name band and cells, no map, 2026-11-17; limits were 36600 raw, 8750 gz; before 33292, 7956, 434588)
@@ -55,7 +57,7 @@ var pageBudgets = []pageBudget{
 	{"/list-of-countries-by-ipv4-allocation", 14500, 4900, 30000, 2000 * time.Microsecond}, // 12884, 4377, 19946, 2µs
 	{"/as64500/prefixes.txt", 100, 100, 30000, 2000 * time.Microsecond},                    // 45, 60, 16020, 7µs
 	{"/asn-huge-net/prefixes.txt", 100, 70, 60000, 2000 * time.Microsecond},                // 13, 34, 35956, 24µs
-	{"/sitemap.xml", 990, 320, 20000, 2000 * time.Microsecond},                             // 896, 288, 8233, 12µs (main pages with lastmod, 2026-11-21; was the index: 550, 250)
+	{"/sitemap.xml", 1800, 420, 20000, 2000 * time.Microsecond},                            // 1635, 371, 8208, 1µs (the blog list and six posts, 2026-11-22; was 990/320 for 896, 288); 896, 288, 8233, 12µs (main pages with lastmod, 2026-11-21; was the index: 550, 250)
 	{"/sitemap-networks-1.xml", 38000, 2000, 80000, 2000 * time.Microsecond},               // 34295, 1812, 47277, 3µs
 	{"/llms.txt", 3600, 1420, 20000, 2000 * time.Microsecond},                              // 3078, 1190, 9392, 1µs; raised 2026-11-18 for the agent Quick start (owner); 3483, 1359 with the GeoLite2 page line, 2026-11-21
 	{"/status", 18800, 5920, 114000, 2000 * time.Microsecond},                              // 17170, 5412, 103938, 43µs (with a score history chart of 3 points, 2026-11-22; new line)
@@ -71,7 +73,7 @@ func TestPageBudgets(t *testing.T) {
 	const runs = 40
 	for _, c := range pageBudgets {
 		s := main
-		if c.target == "/status" {
+		if c.target == "/status" || c.target == "/geolite2-alternative" {
 			s = hist
 		}
 		if strings.HasPrefix(c.target, "/prefix/") || strings.HasPrefix(c.target, "/?") {

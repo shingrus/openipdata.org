@@ -118,26 +118,31 @@ func TestStylePartsFollowThePage(t *testing.T) {
 		{`<div class="pf">`, ".pf{display:grid"},          // pf.css: the prefix lists
 		{`class="tag"`, ".tag{"},                          // db.css: the heading of the visitor page
 		{`class="dbp"`, ".dbp{"},                          // db.css: the Database panel
+		{`class="pb"`, ".pb{"},                            // blog.css: a post page
+		{`class="bl"`, ".bl{"},                            // blog.css: the list
 		{`<div class="chart">`, ".pw svg{"},               // chart.css: the score history of the status page
 	}
 	as, _ := asnServer(t) // the network, organization and prefix pages are real pages only with ASN data
 	as.public = func(a netip.Addr) bool { return true }
 	pages := map[string]string{
-		"visitor":      fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(),
-		"unknown":      get(s, "GET", "/").Body.String(),
-		"lookup":       get(s, "GET", "/?203.0.113.9").Body.String(),
-		"lookup, none": get(s, "GET", "/?198.51.100.200").Body.String(),
-		"bad query":    get(s, "GET", "/?1.2.3").Body.String(),
-		"network":      get(as, "GET", "/as64500").Body.String(),
-		"organization": get(as, "GET", "/asn-example-net").Body.String(),
-		"prefix":       get(as, "GET", "/prefix/203.0.113.0/24").Body.String(),
-		"download":     get(s, "GET", "/download").Body.String(),
-		"ranking":      get(as, "GET", "/top-asn-by-ip-address").Body.String(),
-		"status":       get(as, "GET", "/status").Body.String(),
-		"status, hist": get(historyServer(t), "GET", "/status").Body.String(),
-		"bulk":         get(s, "GET", "/bulk-ip-lookup").Body.String(),
-		"compare":      get(s, "GET", "/geolite2-alternative").Body.String(),
-		"bulk results": post(s, "/bulk-ip-lookup", "ips=203.0.113.9+203.0.113.10").Body.String(),
+		"visitor":       fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9").Body.String(),
+		"unknown":       get(s, "GET", "/").Body.String(),
+		"lookup":        get(s, "GET", "/?203.0.113.9").Body.String(),
+		"lookup, none":  get(s, "GET", "/?198.51.100.200").Body.String(),
+		"bad query":     get(s, "GET", "/?1.2.3").Body.String(),
+		"network":       get(as, "GET", "/as64500").Body.String(),
+		"organization":  get(as, "GET", "/asn-example-net").Body.String(),
+		"prefix":        get(as, "GET", "/prefix/203.0.113.0/24").Body.String(),
+		"download":      get(s, "GET", "/download").Body.String(),
+		"ranking":       get(as, "GET", "/top-asn-by-ip-address").Body.String(),
+		"status":        get(as, "GET", "/status").Body.String(),
+		"status, hist":  get(historyServer(t), "GET", "/status").Body.String(),
+		"bulk":          get(s, "GET", "/bulk-ip-lookup").Body.String(),
+		"compare":       get(s, "GET", "/geolite2-alternative").Body.String(),
+		"compare, hist": get(historyServer(t), "GET", "/geolite2-alternative").Body.String(),
+		"blog":          get(s, "GET", "/blog").Body.String(),
+		"blog post":     get(s, "GET", "/blog/"+blogPosts[0].Slug).Body.String(),
+		"bulk results":  post(s, "/bulk-ip-lookup", "ips=203.0.113.9+203.0.113.10").Body.String(),
 	}
 	seen := map[string]bool{}
 	for name, b := range pages {
