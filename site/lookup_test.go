@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -471,5 +472,50 @@ func TestFlatAndNewLayoutsAgree(t *testing.T) {
 	g, n, _ := nw.addrData(netip.MustParseAddr("203.0.113.9"))
 	if g.CityName != "Lisbon" || g.CountryCode != "PT" || n.ASN != "64500" || n.Org != "Example Net" {
 		t.Errorf("new layout: %+v %+v", g, n)
+	}
+}
+
+// A lookup page has the JSON answer's fields as rows, each only when known;
+// the visitor's own page and the report do not.
+func TestLookupJSONRows(t *testing.T) {
+	s := fixtureServer(t)
+	s.public = func(a netip.Addr) bool { return !a.IsLoopback() && !a.IsPrivate() }
+	j := s.ipJSONFor(netip.MustParseAddr("203.0.113.9"))
+	if j.CitySource != "90-fixture" || j.Latitude == nil {
+		t.Fatalf("fixture changed: %+v", j)
+	}
+	b := get(s, "GET", "/?203.0.113.9").Body.String()
+	f := func(x float64) string { return strconv.FormatFloat(x, 'f', -1, 64) }
+	for _, want := range []string{
+		"<dt>Continent</dt><dd>" + j.ContinentName + " <small>EU</small></dd>", // Portugal: an EU member
+		"<dt>Coordinates</dt><dd>" + f(*j.Latitude) + ", " + f(*j.Longitude) + "</dd>",
+		"<dt>Time zone</dt><dd>" + j.TimeZone + "</dd>",
+	} {
+		if !strings.Contains(b, want) {
+			t.Errorf("lookup page lacks %s", want)
+		}
+	}
+	if j.InEU == nil || !*j.InEU || strings.Contains(b, "<dt>EU</dt>") {
+		t.Error("the fixture should be an EU member, shown only as the mark on Continent, never as an EU row")
+	}
+	// A country-only address (Spain): continent with the EU mark, no Coordinates, no Time zone.
+	b = get(s, "GET", "/?198.51.100.1").Body.String()
+	for _, k := range []string{"Coordinates", "Time zone", "City source"} {
+		if strings.Contains(b, "<dt>"+k+"</dt>") {
+			t.Errorf("country-only page has %s", k)
+		}
+	}
+	if !strings.Contains(b, "<dt>Continent</dt><dd>Europe <small>EU</small></dd>") { // Spain: an EU member
+		t.Error("country-only page lacks Continent")
+	}
+	// The visitor's own page and a message panel have none of them.
+	w := fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "203.0.113.9")
+	for _, k := range []string{"Continent", "EU", "Coordinates", "Time zone", "City source"} {
+		if strings.Contains(w.Body.String(), "<dt>"+k+"</dt>") {
+			t.Errorf("visitor page has %s", k)
+		}
+		if strings.Contains(get(s, "GET", "/?10.0.0.1").Body.String(), "<dt>"+k+"</dt>") {
+			t.Errorf("message panel has %s", k)
+		}
 	}
 }

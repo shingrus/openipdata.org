@@ -576,6 +576,11 @@ func TestReportPage(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
+	for _, k := range []string{"Continent", "EU", "Coordinates", "Time zone", "City source"} {
+		if strings.Contains(b, "<dt>"+k+"</dt>") {
+			t.Errorf("report has a %s row", k)
+		}
+	}
 	for _, x := range []string{
 		"<title>Shared report · openipdata.org</title>", `<meta name="robots" content="noindex">`, "<h2>Shared report</h2>", `<span class="r">Shared 15 Nov 2026 16:50 UTC · expires 15 Dec 2026</span>`,
 		`<dt>IPv4</dt><dd class="c"><span class="w"><span class="v">203.0.113.9</span><button class="cp"`, `<dt>IPv6</dt><dd class="c"><span class="w"><span class="v">2001:db8::9</span><button class="cp"`,

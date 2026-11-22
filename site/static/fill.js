@@ -1,4 +1,4 @@
-// Fills the row of the other address family; a failed, slow (4 s) or implausible answer shows none (until then, and without JavaScript, the dash).
+// Fills the row of the other address family with the address as a link to its lookup page; a failed, slow (4 s) or implausible answer shows none (until then, and without JavaScript, the dash).
 (function () {
   var d = document.getElementById("other");
   if (!d) return;
@@ -18,7 +18,7 @@
       var c = new AbortController(), k = setTimeout(function () { c.abort(); }, 4000);
       fetch(u, { signal: c.signal, cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
         .then(function (r) { return r.ok ? r.text() : ""; })
-        .then(function (t) { t = t.trim(); if (v && ok(t)) { v.textContent = t; if (b) b.hidden = false; } else no(); })
+        .then(function (t) { t = t.trim(); if (v && ok(t)) { var a = document.createElement("a"); a.href = "/?" + t; a.textContent = t; v.replaceChildren(a); if (b) b.hidden = false; } else no(); })
         .catch(no)
         .then(function () { clearTimeout(k); });
     } catch (e) { no(); }

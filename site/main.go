@@ -437,6 +437,9 @@ func (s *server) serveHome(w http.ResponseWriter, r *http.Request) {
 			visitor = a
 			input = a.String()
 			p = s.panelFor("Your connection", a)
+			if i := slices.IndexFunc(p.Rows, func(r row) bool { return r.Own }); i >= 0 {
+				p.Rows[i].Look = "/?" + a.String() // the visitor's address opens its lookup page
+			}
 			fill = s.addFill(&p, a)
 			res = s.addDNS(&p)
 			if p.Msg == "" {

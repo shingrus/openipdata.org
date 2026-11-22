@@ -73,13 +73,13 @@ func TestVisitorRows(t *testing.T) {
 	if i4 < 0 || i6 < i4 {
 		t.Fatalf("rows IPv4, IPv6 not in order: %d %d", i4, i6)
 	}
-	if !strings.Contains(b, "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">203.0.113.9</span><button class=\"cp\"") ||
+	if !strings.Contains(b, "<dt>IPv4</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\"><a href=\"/?203.0.113.9\">203.0.113.9</a></span><button class=\"cp\"") ||
 		!strings.Contains(b, `<dt>IPv6</dt><dd id="other" class="c o6" data-fam="6" data-from="`+u6+`"><span class="w"><span class="v">—</span><button class="cp" type="button" hidden`) {
 		t.Errorf("v4 visitor rows wrong:\n%s", b)
 	}
 	// An IPv6 visitor: IPv4 is the dash row.
 	b = fromPeer(s, "/", "127.0.0.1:1", "X-Real-IP", "2001:db8::9").Body.String()
-	if !strings.Contains(b, "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\">2001:db8::9</span><button class=\"cp\"") ||
+	if !strings.Contains(b, "<dt>IPv6</dt><dd class=\"c\"><span class=\"w\"><span class=\"v\"><a href=\"/?2001:db8::9\">2001:db8::9</a></span><button class=\"cp\"") ||
 		!strings.Contains(b, `<dt>IPv4</dt><dd id="other" class="c o4" data-fam="4" data-from="`+u4+`"><span class="w"><span class="v">—</span><button class="cp" type="button" hidden`) ||
 		strings.Index(b, "<dt>IPv4</dt>") > strings.Index(b, "<dt>IPv6</dt>") {
 		t.Errorf("v6 visitor rows wrong:\n%s", b)

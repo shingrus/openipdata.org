@@ -80,6 +80,9 @@ func netRowsOf(t *testing.T, body string) string {
 		if strings.HasPrefix(r, "<dt>Organization") || strings.HasPrefix(r, "<dt>Network") {
 			on = true
 		}
+		if strings.HasPrefix(r, "<dt>Continent") { // the JSON rows of a lookup page come after the network rows
+			break
+		}
 		if on {
 			out = append(out, r)
 		}
@@ -128,10 +131,10 @@ func TestPanelRowOrder(t *testing.T) {
 		t.Error("the place block is not before the rows")
 	}
 	b = get(s, "GET", "/?203.0.113.9").Body.String()
-	if got := strings.Join(keys(b), ","); got != "IPv4,Organization" {
+	if got := strings.Join(keys(b), ","); got != "IPv4,Organization,Continent,Coordinates,Time zone" {
 		t.Errorf("lookup rows: %s", got)
 	}
-	if got := strings.Join(keys(get(s, "GET", "/?2001:db8::5").Body.String()), ","); got != "IPv6,Organization" {
+	if got := strings.Join(keys(get(s, "GET", "/?2001:db8::5").Body.String()), ","); got != "IPv6,Organization,Continent,Coordinates,Time zone" {
 		t.Errorf("lookup v6 rows: %s", got)
 	}
 }

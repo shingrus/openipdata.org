@@ -430,6 +430,7 @@ type part struct {
 
 type row struct {
 	K, V  string
+	Small string // muted word after V (plain rows only, joined by a space)
 	Parts []part // the value is these parts, joined by " · " (the Network row)
 	VHref string // V is a link to this page
 	Fam   string // "4" or "6": a row the page script fills in with the address of that family, found at From
@@ -437,6 +438,7 @@ type row struct {
 	Zone  string // the DNS row: the page script fills it in with the address and company of the visitor's DNS resolver, using names under this zone
 	Copy  bool   // V is an address with a copy button (hidden until the page script runs)
 	Own   bool   // the row of the address family that is looked up (addFill places the other family's row by it)
+	Look  string // the visitor's own page: V links to its lookup page (the other family's row gets its link from fill.js)
 }
 
 // panel is the "Your connection" / "Lookup" panel.
@@ -574,6 +576,9 @@ func (s *server) panelFor(title string, a netip.Addr) panel {
 		net = info.orgRow()
 	}
 	p.Rows = append([]row{{K: family, V: a.String(), Own: true, Copy: true}}, net...)
+	if title == "Lookup" {
+		p.Rows = append(p.Rows, s.jsonRows(a)...)
+	}
 	p.Copy = true
 	p.snap = &snapshot{Created: s.now().UTC().Format(time.RFC3339), IP: a.String(), Family: fam, Network: info}
 	if g.CityName != "" || g.CountryCode != "" || g.CountryName != "" {
@@ -668,4 +673,26 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// jsonRows are the rows of a lookup page that come from the JSON API answer
+// (ipJSONFor, so page and API cannot differ), each only when known.
+func (s *server) jsonRows(a netip.Addr) []row {
+	j := s.ipJSONFor(a)
+	var l []row
+	if j.ContinentName != "" {
+		r := row{K: "Continent", V: j.ContinentName}
+		if j.InEU != nil && *j.InEU {
+			r.Small = "EU" // only a member says something; "EU: No" next to a US city said nothing
+		}
+		l = append(l, r)
+	}
+	if j.Latitude != nil && j.Longitude != nil {
+		f := func(x float64) string { return strconv.FormatFloat(x, 'f', -1, 64) }
+		l = append(l, row{K: "Coordinates", V: f(*j.Latitude) + ", " + f(*j.Longitude)})
+	}
+	if j.TimeZone != "" {
+		l = append(l, row{K: "Time zone", V: j.TimeZone})
+	}
+	return l
 }
