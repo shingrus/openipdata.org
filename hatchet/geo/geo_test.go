@@ -280,6 +280,15 @@ func TestPDBQueryChecksSeenAt(t *testing.T) {
 	}
 }
 
+// 30-pdb uses only networks whose main PeeringDB city holds at least 40%; both queries agree.
+func TestPDBQueryMinDominance(t *testing.T) {
+	for name, q := range map[string]string{"reduced": pdbQuery, "whole": pdbWholeQuery} {
+		if !strings.Contains(q, "g.dominance >= 0.4\n") {
+			t.Errorf("%s pdb query has no 40%% dominance bar", name)
+		}
+	}
+}
+
 // Global-scope networks keep their dominant city: leaving them out halved the
 // holdout city score.
 func TestPDBQueryKeepsGlobalScope(t *testing.T) {

@@ -138,15 +138,16 @@ func runGeo(args []string) {
 		os.Exit(2)
 	}
 	var index geoNames
+	var folded foldedNames
 	if *geonames != "" {
 		var err error
-		if index, err = loadGeoNames(*geonames); err != nil {
+		if index, folded, err = loadGeoNamesFolded(*geonames, true); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %s: %v\n", *geonames, err)
 			os.Exit(1)
 		}
 	}
-	stats, err := buildGeoGuesses(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, *asnMain, *fallback, *holders, *rttCountry)
-	prefixes, placed, unplaced := 0, 0, 0
+	stats, err := buildGeoNames(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, folded, *asnMain, *fallback, *holders, *rttCountry)
+	prefixes, placed, unplaced, renamed := 0, 0, 0, 0
 	for _, s := range stats {
 		fmt.Printf("layer %s: %d rows, %d prefixes, %d skipped\n", s.name, s.rows, s.prefixes, s.skipped)
 		if s.note != "" {
@@ -158,12 +159,14 @@ func runGeo(args []string) {
 		prefixes += s.prefixes
 		placed += s.placed
 		unplaced += s.unplaced
+		renamed += s.renamed
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 	if index != nil {
+		fmt.Printf("city-names: %d rows renamed\n", renamed)
 		fmt.Printf("coordinates: %d records placed, %d cities not placed\n", placed, unplaced)
 	}
 	fmt.Printf("wrote %s (%d layers, %d prefixes)\n", *out, len(stats), prefixes)

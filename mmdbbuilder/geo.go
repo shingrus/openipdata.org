@@ -40,6 +40,7 @@ type geoLayerStats struct {
 	noCity   int    // rows whose city was left out (too long or not plain text)
 	placed   int    // new records that got coordinates (only with GeoNames)
 	unplaced int    // new records with a city that GeoNames could not place
+	renamed  int    // rows whose city the name cleanup replaced (cityclean.go)
 	note     string // one more line to print after the layer line (the ASN main city fill)
 }
 
@@ -114,6 +115,17 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 // needs the GeoNames index) the speed-of-light country check runs after all layers and before
 // the guesses (rttcountry.go). Without them the output is exactly buildGeo's.
 func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string, fallback bool, holders string, rttCountry string) ([]geoLayerStats, error) {
+	return buildGeoNames(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, nil, asnMain, fallback, holders, rttCountry)
+}
+
+// buildGeoNames is buildGeoGuesses with the folded GeoNames index (nil: none; it needs index):
+// a layer city the index does not place exactly is cleaned first (cityclean.go), and the number
+// of rows renamed is in the stats (geoLayerStats.renamed).
+func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, folded foldedNames, asnMain string, fallback bool, holders string, rttCountry string) ([]geoLayerStats, error) {
+	var cleaner *cityCleaner
+	if index != nil && folded != nil {
+		cleaner = &cityCleaner{index: index, folded: folded}
+	}
 	if rttCountry != "" && index == nil {
 		return nil, errors.New("-rtt-country needs -geonames")
 	}
@@ -191,6 +203,12 @@ func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool,
 				if parts = countryParts(firstTree, p, code); len(parts) == 0 {
 					warnf(&s, "%s:%d: %s has no address where %s gives %s", s.name, line, prefix, stats[0].name, code)
 					return
+				}
+			}
+			if cleaner != nil {
+				var renamed bool
+				if city, renamed = cleaner.clean(code, city); renamed {
+					s.renamed++
 				}
 			}
 			key := place{code: code, city: cleanCity(city)}

@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,6 +17,12 @@ import (
 // it only when it holds at least 30% of the ASN's presence) and whose
 // PeeringDB country matches the whois country of public.asn. Read only.
 //
+// Only networks whose main city holds at least pdbMinDominance (40%) of their
+// presence are used, although sync-peeringdb stores cities from 30% (the website and the SQLite
+// export read that table). Measured 2026-11-22 on RIPE Atlas: networks at 30-40% dominance were
+// right 29.5% of the time, below every guess; the 40% bar gained +44 and lost 30 probes (net +14),
+// a 50% bar net +13.
+//
 // Global-scope networks are kept: leaving them out (2026-11-10) halved the
 // holdout city score (6.48% to 3.41%), so their dominant city is mostly right.
 //
@@ -26,6 +33,8 @@ import (
 //
 // The json column is read reduced to its prefixes object (ipdata.PrefixesJSON);
 // pdbWholeQuery is the same with the whole json, for a damaged value (writeASNPrefixRows).
+const pdbMinDominance = 0.4
+
 var (
 	pdbQuery      = pdbSelect(ipdata.PrefixesJSON)
 	pdbWholeQuery = pdbSelect("a.json")
@@ -36,6 +45,7 @@ func pdbSelect(doc string) string {
 	FROM public.asn a JOIN public.asn_geo_pdb g USING (asn)
 	WHERE btrim(coalesce(g.city, '')) <> ''
 	  AND upper(btrim(a.country)) = upper(btrim(g.country))
+	  AND g.dominance >= ` + strconv.FormatFloat(pdbMinDominance, 'f', -1, 64) + `
 	  AND ` + ipdata.SeenAtFilter + `
 	ORDER BY a.asn`
 }

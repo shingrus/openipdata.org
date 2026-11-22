@@ -1084,12 +1084,24 @@ func geoNamesKey(country, city string) string { return country + "|" + normCity(
 // indexes every place by country and by its name, ascii name and each
 // alternate name. On a collision the most populous place wins (the first on a tie).
 func loadGeoNames(path string) (geoNames, error) {
+	index, _, err := loadGeoNamesFolded(path, false)
+	return index, err
+}
+
+// loadGeoNamesFolded is loadGeoNames that, with withFold, also returns the folded name index of
+// the same names (cityclean.go; only "geo" needs it, the rest pay nothing for it).
+func loadGeoNamesFolded(path string, withFold bool) (geoNames, foldedNames, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
 	index := geoNames{}
+	var folded foldedNames
+	if withFold {
+		folded = foldedNames{}
+	}
+	seen := map[string]bool{} // the folded keys of the current line
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
 	for sc.Scan() {
@@ -1109,12 +1121,33 @@ func loadGeoNames(path string) (geoNames, error) {
 			continue
 		}
 		pop, _ := strconv.ParseInt(fields[14], 10, 64)
+		clear(seen)
 		set := func(name string, primary bool) {
 			key := geoNamesKey(country, name)
 			old, ok := index[key]
 			// A primary name beats any alternate; otherwise the more populous place wins.
 			if !ok || (primary && !old.primary) || (primary == old.primary && pop > old.pop) {
 				index[key] = gnPlace{lat, lon, pop, primary, uint32(id64), tz}
+			}
+			if folded != nil {
+				if fk := foldName(name); fk != "" {
+					fk = country + "|" + fk
+					if seen[fk] {
+						return // the same place under the same folded name again
+					}
+					seen[fk] = true
+					fo, ok := folded[fk]
+					switch {
+					case !ok:
+						folded[fk] = foldEntry{primary, pop, strings.Clone(strings.TrimSpace(fields[1])), uint32(id64), 1, 0}
+					case primary && !fo.primary || primary == fo.primary && pop > fo.pop:
+						folded[fk] = foldEntry{primary, pop, strings.Clone(strings.TrimSpace(fields[1])), uint32(id64), fo.places + 1, max(fo.second, fo.pop)}
+					default:
+						fo.places++
+						fo.second = max(fo.second, pop)
+						folded[fk] = fo
+					}
+				}
 			}
 		}
 		for _, name := range fields[1:3] {
@@ -1129,12 +1162,12 @@ func loadGeoNames(path string) (geoNames, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(index) == 0 {
-		return nil, errors.New("no places")
+		return nil, nil, errors.New("no places")
 	}
-	return index, nil
+	return index, folded, nil
 }
 
 // geoNamesPlacer looks addresses up in our MMDB (country_code, city_name) and
