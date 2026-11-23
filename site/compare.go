@@ -63,15 +63,16 @@ type cmpView struct {
 	DBIP, MM string
 }
 
-// freeRows is the table of the free databases (static facts).
+// freeRows is the table of the free databases (static facts). We lead or tie
+// every column, so the checks are ours alone.
 func freeRows() []cmpRow {
 	y := func(t string) cmpCell { return cmpCell{Text: t, Win: true} }
 	n := func(t string) cmpCell { return cmpCell{Text: t} }
 	return []cmpRow{
 		{"openipdata", true, []cmpCell{y("CC0"), y("no"), y("2× day"), y("yes")}},
-		{"GeoLite2", false, []cmpCell{n("EULA"), n("key"), n("2× week"), y("yes")}},
-		{"DB-IP Lite", false, []cmpCell{n("CC BY"), y("no"), n("monthly"), y("yes")}},
-		{"IP2Location LITE", false, []cmpCell{n("attribution"), n("account"), n("monthly"), y("yes")}},
+		{"GeoLite2", false, []cmpCell{n("EULA"), n("key"), n("2× week"), n("yes")}},
+		{"DB-IP Lite", false, []cmpCell{n("CC BY"), n("no"), n("monthly"), n("yes")}},
+		{"IP2Location LITE", false, []cmpCell{n("attribution"), n("account"), n("monthly"), n("yes")}},
 		{"IPinfo Lite", false, []cmpCell{n("CC BY-SA"), n("token"), n("daily"), n("no")}},
 	}
 }
@@ -85,8 +86,9 @@ func pctTenths(v float64) (int, bool) {
 	return int(math.Round(v * 10)), true
 }
 
-// accRows is the Accuracy table: the highest value of each column (all of a
-// tie) gets the check; a column with no value has none.
+// accRows is the Accuracy table: the highest value of each column gets the
+// check (a tie with us: ours alone; a tie of the others: both); a column with
+// no value has none.
 func accRows(s scores) []cmpRow {
 	src := []struct {
 		name string
@@ -106,6 +108,12 @@ func accRows(s scores) []cmpRow {
 			}
 		}
 	}
+	// A tie with us: the check is ours alone.
+	var oursTop [3]bool
+	for c, v := range src[0].v {
+		t, ok := pctTenths(v)
+		oursTop[c] = ok && t == best[c]
+	}
 	rows := make([]cmpRow, len(src))
 	for i, r := range src {
 		rows[i] = cmpRow{Name: r.name, Ours: r.ours}
@@ -113,7 +121,7 @@ func accRows(s scores) []cmpRow {
 			txt, _ := fmtPct(v)
 			if t, ok := pctTenths(v); ok {
 				txt += "%"
-				rows[i].Cells = append(rows[i].Cells, cmpCell{Text: txt, Win: t == best[c]})
+				rows[i].Cells = append(rows[i].Cells, cmpCell{Text: txt, Win: t == best[c] && (r.ours || !oursTop[c])})
 			} else {
 				rows[i].Cells = append(rows[i].Cells, cmpCell{Text: txt})
 			}

@@ -93,13 +93,23 @@ func TestCompareLinks(t *testing.T) {
 	}
 }
 
+func TestFreeRowsChecksAreOurs(t *testing.T) {
+	for _, r := range freeRows() {
+		for c, cell := range r.Cells {
+			if cell.Win != r.Ours {
+				t.Errorf("%s column %d: %q win %v", r.Name, c, cell.Text, cell.Win)
+			}
+		}
+	}
+}
+
 func TestAccRows(t *testing.T) {
 	sc := noScores()
 	sc.Coverage, sc.Country, sc.City = 70, 98.5, 55
-	sc.MM = vendor{65, 99.2, 55.04} // GeoLite2 wins the country; the city ties at 55.0
+	sc.MM = vendor{65, 99.2, 55.04} // GeoLite2 wins the country; its city ties ours at 55.0, so the check is ours
 	sc.DB = vendor{72.34, 97, 40}   // DB-IP wins "have a city"
 	rows := accRows(sc)
-	want := [3][3]bool{{false, false, true}, {false, true, true}, {true, false, false}}
+	want := [3][3]bool{{false, false, true}, {false, true, false}, {true, false, false}}
 	for i, r := range rows {
 		for c, cell := range r.Cells {
 			if cell.Win != want[i][c] {
@@ -109,6 +119,14 @@ func TestAccRows(t *testing.T) {
 	}
 	if rows[2].Cells[0].Text != "72.3%" || rows[0].Cells[1].Text != "98.5%" {
 		t.Errorf("formatting: %+v", rows)
+	}
+
+	// A tie between the other two, above us: both keep the check.
+	sc = noScores()
+	sc.City, sc.MM.City, sc.DB.City = 60, 66, 66
+	rows = accRows(sc)
+	if rows[0].Cells[2].Win || !rows[1].Cells[2].Win || !rows[2].Cells[2].Win {
+		t.Errorf("vendor tie: %+v", rows)
 	}
 
 	// Missing values are dashes and never win; a column with no value has no check.
