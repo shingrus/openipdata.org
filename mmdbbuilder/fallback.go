@@ -19,12 +19,16 @@ package main
 //  6. 88-asn-far: only where the country has NO main city (rung 5 cannot apply): the city
 //     of the nearest piece of the same group, like rung 3 but when the piece lies in the
 //     same /16. Decided per /24 chunk.
-//  7. 89-asn-anywhere: the last rung, only for a chunk rung 6 gave nothing (the country has
+//  7. 89-asn-anywhere: only for a chunk rung 6 gave nothing (the country has
 //     no main city and the nearest piece is outside the same /16): the city of the nearest
-//     piece of the same group, however far away in address space. A chunk stays without a
-//     city only when its group has no piece at all.
+//     piece of the same group, however far away in address space. A chunk whose
+//     group has no piece at all goes on to rung 8.
+//  8. 89-country-near: the last rung, for what rung 7 left in a country with no main city
+//     (a part with no ASN, or in a group with no piece): the city of the nearest address
+//     with a city in the same country, from any network, however far away. Decided per /24
+//     chunk. A country with no address with a city stays without one.
 //
-// Rungs 80 to 84, 88 and 89 need the ASN prefixes (-asn-main); 82, 84, 86, 88 and 89 need
+// Rungs 80 to 84, 88, 89 and 89-country-near need the ASN prefixes (-asn-main); 82, 84, 86, 88, 89 and 89-country-near need
 // -fallback; rung 85 needs -holders, which needs -asn-main (the announced prefixes say what is unannounced).
 // Without -fallback and -holders only rung 80 runs, byte for byte as before. A part that
 // has an ASN never gets rung 85.
@@ -47,13 +51,16 @@ import (
 )
 
 const (
-	// asnLikelySource, asnNearSource, countryMainSource, asnFarSource and
-	// asnAnywhereSource are the city_sources of the five -fallback guesses.
+	// asnLikelySource, asnNearSource, countryMainSource, asnFarSource,
+	// asnAnywhereSource and countryNearSource are the city_sources of the six -fallback guesses.
+	// countryNearSource carries an 8 like every guess (the comparison page says guessed
+	// sources start with 8); it is the last rung.
 	asnLikelySource   = "82-asn-likely"
 	asnNearSource     = "84-asn-near"
 	countryMainSource = "86-country-main"
 	asnFarSource      = "88-asn-far"
 	asnAnywhereSource = "89-asn-anywhere"
+	countryNearSource = "89-country-near"
 
 	// asnLikelyMinShare: the group's main city needs this share of its addresses with a
 	// city (no minimum number of addresses).
@@ -105,7 +112,7 @@ type piece struct {
 	rec    uint32 // index into the (country, city) pairs
 }
 
-// nearPiece decides rung 84 (block 12), rung 88 (block 16) or rung 89 (block 32, no limit) for one chunk whose middle
+// nearPiece decides rung 84 (block 12), rung 88 (block 16), or rung 89 and 89-country-near (block 32, no limit) for one chunk whose middle
 // address is x: the nearest of the last piece starting at or before x and the first piece starting after x (pieces never
 // overlap the chunk). On equal distance the bigger piece wins, then the earlier one. The
 // piece counts only when its nearest edge (its end before x, its start after x) is in the
@@ -147,7 +154,7 @@ func nearPiece(pieces []piece, x uint32, block uint) (rec uint32, ok bool) {
 // in order: 80-asn-main and, with fallback, 82-asn-likely and 84-asn-near (all three only
 // when asnPath, the asn-prefixes file, is given), then 85-holder-city (only when
 // holdersPath is given, which needs asnPath), then with fallback 86-country-main and,
-// with asnPath too, 88-asn-far and 89-asn-anywhere.
+// with asnPath too, 88-asn-far, 89-asn-anywhere and 89-country-near.
 // recordFor makes the shared record of a place. It only fills: an address that has a
 // city, or another country, is never touched. The result is deterministic.
 func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geoNames, holdersPath string, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) ([]geoLayerStats, error) {
@@ -200,6 +207,12 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	groups := map[groupKey]*asnGroup{}
 	countries := map[string]*asnGroup{}
 	pieces := map[groupKey][]piece{}
+	// countryPieces: the pieces of each country over all networks (rung 89-country-near),
+	// in address order because the leaves are. Only with -fallback and the ASN prefixes.
+	var countryPieces map[string][]piece
+	if fallback && useASN {
+		countryPieces = map[string][]piece{}
+	}
 	newGroup := func() *asnGroup { return &asnGroup{cities: map[string]*cityCount{}} }
 	for _, l := range leaves {
 		p := pairs[l.rec]
@@ -220,6 +233,9 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 				countries[p.code] = g
 			}
 			g.add(city, norm, p.city, uint64(l.hi)-uint64(l.lo)+1)
+			if useASN {
+				countryPieces[p.code] = append(countryPieces[p.code], piece{l.lo, l.hi, l.rec})
+			}
 		}
 		if !useASN {
 			continue
@@ -256,18 +272,39 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	}
 
 	// Give every cityless part to the first rung that applies, in address order.
-	var r80, r82, r84, r85, r86, r88, r89 rung
-	r80.stats.name, r82.stats.name, r84.stats.name, r85.stats.name, r86.stats.name, r88.stats.name, r89.stats.name = asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource, asnFarSource, asnAnywhereSource
+	var r80, r82, r84, r85, r86, r88, r89, r89c rung
+	r80.stats.name, r82.stats.name, r84.stats.name, r85.stats.name, r86.stats.name, r88.stats.name, r89.stats.name, r89c.stats.name = asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource, asnFarSource, asnAnywhereSource, countryNearSource
 	r85.stats.skipped = holderSkipped
 	for _, l := range leaves {
 		p := pairs[l.rec]
 		if normCity(p.city) != "" {
 			continue // has a city (counted or not): never touched
 		}
-		// country is rung 4 for a part nothing before it took.
+		// country is the last stop for a part nothing before it took: rung 86, or in a
+		// country with no main city (with the ASN prefixes) 89-country-near.
 		country := func(a, b uint32) {
-			if g := countries[p.code]; fallback && g != nil && g.ok {
+			g := countries[p.code]
+			if !fallback || g == nil {
+				return
+			}
+			if g.ok {
 				r86.add(a, b, p.code, g.main)
+				return
+			}
+			// No main city: the nearest address with a city of the country, per /24 chunk.
+			ps := countryPieces[p.code]
+			if len(ps) == 0 {
+				return
+			}
+			for c := a; ; {
+				e := min(b, c|0xff)
+				if rec, ok := nearPiece(ps, c+(e-c)/2, asnAnywhereBlock); ok {
+					r89c.add(c, e, p.code, pairs[rec].city)
+				}
+				if e == b {
+					break
+				}
+				c = e + 1
 			}
 		}
 		part := func(a, b uint32, asn uint32, hasASN bool) {
@@ -342,6 +379,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	r86.stats.note = fmt.Sprintf("country-main: %d countries qualified of %d, %d addresses filled", qualifiedCountries, len(countries), r86.addrs)
 	r88.stats.note = fmt.Sprintf("asn-far: %d addresses filled", r88.addrs)
 	r89.stats.note = fmt.Sprintf("asn-anywhere: %d addresses filled", r89.addrs)
+	r89c.stats.note = fmt.Sprintf("country-near: %d addresses filled", r89c.addrs)
 	var ran []*rung
 	if useASN {
 		ran = append(ran, &r80)
@@ -355,7 +393,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	if fallback {
 		ran = append(ran, &r86)
 		if useASN {
-			ran = append(ran, &r88, &r89)
+			ran = append(ran, &r88, &r89, &r89c)
 		}
 	}
 	stats := make([]geoLayerStats, 0, len(ran))

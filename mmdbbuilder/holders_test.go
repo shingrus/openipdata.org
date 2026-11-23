@@ -99,7 +99,7 @@ func TestHolderCityIsNoEvidence(t *testing.T) {
 	out, stats := holderBuild(t, t.TempDir(), layer, "100,10.200.0.0/16\n", &holders, true)
 	checkCities(t, out, map[string]string{
 		"10.8.0.9": "DE/Berlin/85-holder-city",
-		"10.9.0.9": "DE/<nil>/<nil>",
+		"10.9.0.9": "DE/Cologne/89-country-near",
 	})
 	if s := statsOf(t, stats, countryMainSource); s.rows != 0 || s.note != "country-main: 0 countries qualified of 1, 0 addresses filled" {
 		t.Errorf("86 stats = %+v", s)

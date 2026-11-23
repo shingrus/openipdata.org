@@ -1,7 +1,7 @@
 package main
 
 // The gap list of an ip2geo MMDB (mmdbbuilder gaps): the /24s that have a country
-// but no city. A city of a weak source (city_source 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far, 89-asn-anywhere, 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds; see
+// but no city. A city of a weak source (city_source 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far, 89-asn-anywhere, 89-country-near, 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds; see
 // noSampleSources) does not count as a city, so those /24s stay in the list. resolve-ips
 // samples customer PTR names in them.
 

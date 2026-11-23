@@ -108,7 +108,7 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 }
 
 // buildGeoGuesses is buildGeo with the fallback switch: with fallback, more guesses
-// follow the ASN main city fill (82-asn-likely, 84-asn-near, 86-country-main, 88-asn-far, 89-asn-anywhere; see
+// follow the ASN main city fill (82-asn-likely, 84-asn-near, 86-country-main, 88-asn-far, 89-asn-anywhere, 89-country-near; see
 // fallback.go), and with fallback and no asnMain only the country one runs. With holders
 // (the path of a holders file, "" for none; it needs asnMain) the holder city guess runs
 // as well (85-holder-city, holders.go). With rttCountry (the path of the RTT file, "" for none; it
