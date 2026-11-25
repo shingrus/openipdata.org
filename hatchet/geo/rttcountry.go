@@ -32,6 +32,10 @@ const (
 	// rttCountryFlag is the "mmdbbuilder geo" flag that gives the builder the RTT file.
 	rttCountryFlag = "-rtt-country"
 
+	// rttCityFlag gives the builder the same file for the city check (rttcity.go in mmdbbuilder),
+	// which runs after the guesses and is passed exactly when rttCountryFlag is.
+	rttCityFlag = "-rtt-city"
+
 	rttCountryFile = mlab.SiteRTTFile
 )
 

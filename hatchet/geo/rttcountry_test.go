@@ -119,6 +119,7 @@ func TestBuildMMDBRTTCountry(t *testing.T) {
 	os.WriteFile(script, []byte("#!/bin/sh\necho \"$@\" >> "+argsFile+"\n"+
 		"for a in \"$@\"; do if [ -f \"$a\" ] && grep -q BAD \"$a\" 2>/dev/null; then echo \"error: $a: bad\" >&2; exit 1; fi; done\n"+
 		"echo 'rtt-country: 100 rows, 2 skipped, 40 /24s, 7 /24s changed, 7 parts changed'\n"+
+		"echo 'rtt-city: 100 rows, 2 skipped, 40 /24s, 30 impossible parts, 20 87-rtt-network, 6 87-rtt-country, 4 kept'\n"+
 		"echo 'layer 10-rir.csv.gz: 10 rows, 9 prefixes, 0 skipped'\n"+
 		"echo 'wrote x (1 layers, 9 prefixes)'\n"), 0o755)
 	archive := zipBytes(t, geoNamesSample)
@@ -140,28 +141,28 @@ func TestBuildMMDBRTTCountry(t *testing.T) {
 
 	// No file: not passed.
 	out, args := build()
-	if strings.Contains(args, "-rtt-country") || out.RTTCountry != "skipped: no reply times" {
-		t.Errorf("no file: %s, %q", args, out.RTTCountry)
+	if strings.Contains(args, "-rtt-country") || strings.Contains(args, "-rtt-city") || out.RTTCountry != "skipped: no reply times" || out.RTTCity != out.RTTCountry {
+		t.Errorf("no file: %s, %q, %q", args, out.RTTCountry, out.RTTCity)
 	}
 	// With GeoNames and a good file: passed after -fallback.
 	writeGzip(t, rtt, rttFileHeader+"10.0.0.0/24,GB,London,8\n")
 	out, args = build()
-	if !strings.Contains(args, " -fallback -rtt-country "+rtt+" ") || out.RTTCountry != "on" || out.RTTCountryChanged != 7 {
+	if !strings.Contains(args, " -fallback -rtt-country "+rtt+" ") || !strings.Contains(args, " -rtt-city "+rtt+" ") || out.RTTCountry != "on" || out.RTTCountryChanged != 7 || out.RTTCity != "on" || out.RTTCityChanged != 26 {
 		t.Errorf("args %s\nout %+v", args, out)
 	}
 	// A bad file: not passed, the build succeeds.
 	os.WriteFile(rtt, []byte("not gzip"), 0o640)
 	out, args = build()
-	if strings.Contains(args, "-rtt-country") || out.RTTCountry != "skipped: reply times unreadable" {
-		t.Errorf("bad file: %s, %q", args, out.RTTCountry)
+	if strings.Contains(args, "-rtt-country") || strings.Contains(args, "-rtt-city") || out.RTTCity != "skipped: reply times unreadable" || out.RTTCountry != "skipped: reply times unreadable" {
+		t.Errorf("bad file: %s, %q, %q", args, out.RTTCountry, out.RTTCity)
 	}
 	// The retry without GeoNames does not pass it.
 	writeGzip(t, rtt, rttFileHeader+"10.0.0.0/24,GB,London,8\n")
 	os.WriteFile(geonames, []byte("BAD\n"), 0o640)
 	out, args = build()
 	lines := strings.Split(strings.TrimSpace(args), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], "-rtt-country") || strings.Contains(lines[1], "-rtt-country") || strings.Contains(lines[1], "-geonames") || out.RTTCountry != "skipped: no GeoNames" {
-		t.Errorf("retry: %s, %q", args, out.RTTCountry)
+	if len(lines) != 2 || !strings.Contains(lines[0], "-rtt-country") || strings.Contains(lines[1], "-rtt-country") || strings.Contains(lines[1], "-geonames") || strings.Contains(lines[1], "-rtt-city") || out.RTTCity != "skipped: no GeoNames" || out.RTTCountry != "skipped: no GeoNames" {
+		t.Errorf("retry: %s, %q, %q", args, out.RTTCountry, out.RTTCity)
 	}
 }
 
@@ -187,7 +188,7 @@ func TestPrepareHoldoutNoRTTCountry(t *testing.T) {
 		t.Fatal(err)
 	}
 	args, _ := os.ReadFile(argsFile)
-	if strings.Contains(string(args), "-rtt-country") || strings.Contains(string(args), "-geonames") {
+	if strings.Contains(string(args), "-rtt-country") || strings.Contains(string(args), "-rtt-city") || strings.Contains(string(args), "-geonames") {
 		t.Errorf("args = %s", args)
 	}
 }

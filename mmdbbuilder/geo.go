@@ -115,19 +115,22 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 // needs the GeoNames index) the speed-of-light country check runs after all layers and before
 // the guesses (rttcountry.go). Without them the output is exactly buildGeo's.
 func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string, fallback bool, holders string, rttCountry string) ([]geoLayerStats, error) {
-	return buildGeoNames(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, nil, asnMain, fallback, holders, rttCountry)
+	return buildGeoNames(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, nil, asnMain, fallback, holders, rttCountry, "")
 }
 
 // buildGeoNames is buildGeoGuesses with the folded GeoNames index (nil: none; it needs index):
 // a layer city the index does not place exactly is cleaned first (cityclean.go), and the number
 // of rows renamed is in the stats (geoLayerStats.renamed).
-func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, folded foldedNames, asnMain string, fallback bool, holders string, rttCountry string) ([]geoLayerStats, error) {
+func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, folded foldedNames, asnMain string, fallback bool, holders string, rttCountry string, rttCity string) ([]geoLayerStats, error) {
 	var cleaner *cityCleaner
 	if index != nil && folded != nil {
 		cleaner = &cityCleaner{index: index, folded: folded}
 	}
 	if rttCountry != "" && index == nil {
 		return nil, errors.New("-rtt-country needs -geonames")
+	}
+	if rttCity != "" && index == nil {
+		return nil, errors.New("-rtt-city needs -geonames")
 	}
 	names, err := loadNames(namesPath)
 	if err != nil {
@@ -282,12 +285,23 @@ func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, s
 		}
 		fmt.Println(counts)
 	}
+	var segs []asnSeg // the ASN segments fillGuesses read, shared with the RTT city check
 	if asnMain != "" || fallback || holders != "" {
-		guesses, err := fillGuesses(writer, asnMain, fallback, index, holders, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
+		guesses, guessSegs, err := fillGuesses(writer, asnMain, fallback, index, holders, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
 		stats = append(stats, guesses...)
 		if err != nil {
 			return stats, err
 		}
+		segs = guessSegs
+	}
+	if rttCity != "" {
+		// After the guesses, just before the write; one line and one layer line per source.
+		counts, cityStats, err := applyRTTCity(writer, rttCity, segs, index, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
+		if err != nil {
+			return stats, fmt.Errorf("%s: %w", filepath.Base(rttCity), err)
+		}
+		fmt.Println(counts)
+		stats = append(stats, cityStats...)
 	}
 	return stats, writeAtomic(writer, outPath)
 }

@@ -44,8 +44,10 @@ const (
 
 // guessSources are the city_sources of the guessed cities, the one list: the ASN main
 // city (80-asn-main), the six -fallback guesses (82-asn-likely, 84-asn-near,
-// 86-country-main, 88-asn-far, 89-asn-anywhere, 89-country-near; see fallback.go) and the holder city (85-holder-city, -holders).
-var guessSources = []string{asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource, asnFarSource, asnAnywhereSource, countryNearSource}
+// 86-country-main, 88-asn-far, 89-asn-anywhere, 89-country-near; see fallback.go), the holder city
+// (85-holder-city, -holders) and the two cities of the RTT city check (87-rtt-network,
+// 87-rtt-country; rttcity.go).
+var guessSources = []string{asnMainSource, asnLikelySource, asnNearSource, holderCitySource, countryMainSource, rttNetworkSource, rttCountrySource, asnFarSource, asnAnywhereSource, countryNearSource}
 
 // isGuessSource reports whether a city_source names a guessed city. Guesses
 // must not count as evidence for anything we build from our own MMDB (the router
@@ -55,7 +57,7 @@ func isGuessSource(source string) bool { return slices.Contains(guessSources, so
 // noSampleSources are the city_sources whose city is weak evidence: a /24 whose city comes
 // from one of them still counts as having no city in the gap list (mmdbbuilder gaps), so
 // sample-names keeps sampling customer PTR names there (a customer name is far more precise).
-// They are the eight guesses (guessSources), the BGP community layer (25-bgp), the M-Lab speed
+// They are the ten guesses (guessSources), the BGP community layer (25-bgp), the M-Lab speed
 // test site layer (35-speedtest-site: right about 64% of the time, below a customer name), the
 // M-Lab hop layer (36-mlab), the whois text layer (37-whois-text: right about 68% of the time, a
 // customer name about 82%) and the ARIN registrant city layer (37-whois-arin: right about 61% of

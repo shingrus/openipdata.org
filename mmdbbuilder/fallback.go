@@ -156,19 +156,20 @@ func nearPiece(pieces []piece, x uint32, block uint) (rec uint32, ok bool) {
 // holdersPath is given, which needs asnPath), then with fallback 86-country-main and,
 // with asnPath too, 88-asn-far, 89-asn-anywhere and 89-country-near.
 // recordFor makes the shared record of a place. It only fills: an address that has a
-// city, or another country, is never touched. The result is deterministic.
-func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geoNames, holdersPath string, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) ([]geoLayerStats, error) {
+// city, or another country, is never touched. The result is deterministic. It also returns
+// the ASN segments it read (nil without asnPath), which the RTT city check reuses.
+func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geoNames, holdersPath string, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) ([]geoLayerStats, []asnSeg, error) {
 	useASN := asnPath != ""
 	useHolders := holdersPath != ""
 	if useHolders && !useASN {
-		return nil, fmt.Errorf("%s: holders need the ASN prefixes", holdersPath)
+		return nil, nil, fmt.Errorf("%s: holders need the ASN prefixes", holdersPath)
 	}
 	var segs []asnSeg
 	var announced []addrRange
 	if useASN {
 		var err error
 		if segs, announced, err = readASNData(asnPath); err != nil {
-			return nil, fmt.Errorf("%s: %w", asnPath, err)
+			return nil, nil, fmt.Errorf("%s: %w", asnPath, err)
 		}
 	}
 	var holders []holderSeg
@@ -176,7 +177,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	if useHolders {
 		var err error
 		if holders, holderBlocks, holderSkipped, err = readHolders(holdersPath); err != nil {
-			return nil, fmt.Errorf("%s: %w", holdersPath, err)
+			return nil, nil, fmt.Errorf("%s: %w", holdersPath, err)
 		}
 	}
 	leaves, pairs := treeLeaves(tree) // the snapshot
@@ -399,11 +400,11 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 	stats := make([]geoLayerStats, 0, len(ran))
 	for _, r := range ran {
 		if err := r.insert(tree, debug, recordFor, records); err != nil {
-			return stats, err
+			return stats, segs, err
 		}
 		stats = append(stats, r.stats)
 	}
-	return stats, nil
+	return stats, segs, nil
 }
 
 // insert writes the fills into the tree, only where the address still has the fill's

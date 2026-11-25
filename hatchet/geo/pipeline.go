@@ -784,6 +784,11 @@ type BuildMMDBOutput struct {
 	// "skipped: reply times unreadable". RTTCountryChanged counts the /24s whose country it changed.
 	RTTCountry        string `json:"rtt_country"`
 	RTTCountryChanged int    `json:"rtt_country_changed,omitempty"`
+	// RTTCity is the status of the speed-of-light city check (-rtt-city, after the guesses; it
+	// gets the same file and has the same values as RTTCountry). RTTCityChanged counts the tree
+	// parts it gave another city (87-rtt-network plus 87-rtt-country).
+	RTTCity        string `json:"rtt_city"`
+	RTTCityChanged int    `json:"rtt_city_changed,omitempty"`
 	// Fallback is "on": the build passes -fallback, so the addresses still without a city
 	// get the guesses 82-asn-likely, 84-asn-near, 88-asn-far, 89-asn-anywhere and 89-country-near (only with the ASN prefixes)
 	// and 86-country-main (always).
@@ -796,6 +801,9 @@ type BuildMMDBOutput struct {
 
 // coordinatesSummary matches mmdbbuilder's "coordinates: P records placed, U cities not placed".
 var coordinatesSummary = regexp.MustCompile(`(?m)^coordinates: (\d+) records placed, (\d+) cities not placed$`)
+
+// rttCitySummary matches mmdbbuilder's "rtt-city: R rows, S skipped, N /24s, I impossible parts, B 87-rtt-network, C 87-rtt-country, K kept".
+var rttCitySummary = regexp.MustCompile(`(?m)^rtt-city: \d+ rows, \d+ skipped, \d+ /24s, \d+ impossible parts, (\d+) 87-rtt-network, (\d+) 87-rtt-country, \d+ kept$`)
 
 // rttCountrySummary matches mmdbbuilder's "rtt-country: R rows, S skipped, N /24s, C /24s changed, P parts changed".
 var rttCountrySummary = regexp.MustCompile(`(?m)^rtt-country: \d+ rows, \d+ skipped, \d+ /24s, (\d+) /24s changed, \d+ parts changed$`)
@@ -821,7 +829,7 @@ func (p *Pipeline) prepareGeoNames(ctx context.Context) (path, status string) {
 
 // layerSummary matches mmdbbuilder's "layer <name>: R rows, P prefixes, S skipped". The
 // guesses print the same line (layer 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main,
-// 88-asn-far, 89-asn-anywhere, 89-country-near),
+// 87-rtt-network, 87-rtt-country, 88-asn-far, 89-asn-anywhere, 89-country-near),
 // so they are in the prefixes of the task output.
 var layerSummary = regexp.MustCompile(`(?m)^layer (\S+): \d+ rows, (\d+) prefixes, (\d+) skipped$`)
 
@@ -960,6 +968,9 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	if geonames != "" {
 		extra = []string{"-geonames", geonames}
 		rttArgs, rttStatus = p.rttCountryArgs(true)
+		if len(rttArgs) == 2 { // the city check takes the same file
+			rttArgs = append(rttArgs, rttCityFlag, rttArgs[1])
+		}
 		coordinates = "on"
 		if strings.HasPrefix(status, "stale: ") {
 			coordinates = "on (" + status + ")"
@@ -969,7 +980,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	holderArgs, holderCity := p.holderArgs(asnMain == "on")
 	guesses := slices.Concat(asnMainArgs, holderArgs, []string{fallbackFlag}) // the flags of the guesses; the retry without GeoNames passes the same ones
 	extra = append(extra, guesses...)
-	extra = append(extra, rttArgs...) // not in guesses: the retry without GeoNames must not pass it
+	extra = append(extra, rttArgs...) // -rtt-country and -rtt-city; not in guesses: the retry without GeoNames must not pass them
 	args, err := p.geoArgs(final, nil, extra...)
 	if err != nil {
 		return BuildMMDBOutput{}, err
@@ -990,13 +1001,18 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
-	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, RTTCountry: rttStatus, Fallback: "on"}
+	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, RTTCountry: rttStatus, RTTCity: rttStatus, Fallback: "on"}
 	if m := coordinatesSummary.FindStringSubmatch(stdout); m != nil {
 		out.CoordinatesPlaced, _ = strconv.Atoi(m[1])
 		out.CoordinatesUnplaced, _ = strconv.Atoi(m[2])
 	}
 	if m := rttCountrySummary.FindStringSubmatch(stdout); m != nil {
 		out.RTTCountryChanged, _ = strconv.Atoi(m[1])
+	}
+	if m := rttCitySummary.FindStringSubmatch(stdout); m != nil {
+		b, _ := strconv.Atoi(m[1])
+		c, _ := strconv.Atoi(m[2])
+		out.RTTCityChanged = b + c
 	}
 	for _, m := range layerSummary.FindAllStringSubmatch(stdout, -1) {
 		out.Prefixes[m[1]], _ = strconv.Atoi(m[2])

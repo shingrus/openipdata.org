@@ -78,7 +78,7 @@ func (s *server) ipJSONFor(a netip.Addr) ipJSON {
 // fails when the two lists differ.
 var guessSources = map[string]bool{
 	"80-asn-main": true, "82-asn-likely": true, "84-asn-near": true, "85-holder-city": true,
-	"86-country-main": true, "88-asn-far": true, "89-asn-anywhere": true, "89-country-near": true,
+	"86-country-main": true, "87-rtt-network": true, "87-rtt-country": true, "88-asn-far": true, "89-asn-anywhere": true, "89-country-near": true,
 }
 
 // writeIPJSON writes one JSON object and a newline.

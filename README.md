@@ -474,7 +474,7 @@ HAVING client24 IS NOT NULL
 
 #### Reply-time export
 
-The same 21-day window is good (about 3M rows and 150 MB). Only client /24s within 30 ms of a server are exported. Change only the two dates.
+Use a 90-day window (the RTT city check needs it: measured +57 net right probes against +28 for 21 days). It is about 5.5M rows and 270 MB (a 21-day one was about 3M rows and 150 MB). Only client /24s within 30 ms of a server are exported. Change only the two dates.
 
 ```sql
 SELECT
@@ -488,7 +488,7 @@ SELECT
   ROUND(APPROX_QUANTILES(a.MinRTT, 10)[OFFSET(1)], 2) AS p10_rtt,
   ROUND(APPROX_QUANTILES(a.MinRTT, 10)[OFFSET(5)], 2) AS median_rtt
 FROM `measurement-lab.ndt.ndt7`
-WHERE date BETWEEN '2026-10-30' AND '2026-11-19'
+WHERE date BETWEEN '2026-08-22' AND '2026-11-19'
   AND STRPOS(raw.ClientIP, ':') = 0
   AND a.MinRTT > 0
 GROUP BY client24, site
@@ -966,7 +966,7 @@ and records the /24s that have at least one name in `public.customer_name_networ
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
 pass over all indexes it waits until 180 days after the pass began. Rows older than 200 days are deleted. A DNS
 problem never fails the task; with no usable MMDB it reports `skipped`.
-`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `30-pdb`, `35-rdns-wide`, `35-speedtest-site`, `36-mlab`, `37-whois-arin`, `37-whois-text` or `39-github-geofeeds` as no city too (like the eight guesses `80-asn-main`, `82-asn-likely`, `84-asn-near`, `85-holder-city`, `86-country-main`, `88-asn-far`, `89-asn-anywhere`, `89-country-near`), so customer names keep being sampled there.
+`mmdbbuilder gaps` counts a /24 whose city comes from `25-bgp`, `30-pdb`, `35-rdns-wide`, `35-speedtest-site`, `36-mlab`, `37-whois-arin`, `37-whois-text` or `39-github-geofeeds` as no city too (like the ten guesses `80-asn-main`, `82-asn-likely`, `84-asn-near`, `85-holder-city`, `86-country-main`, `87-rtt-network`, `87-rtt-country`, `88-asn-far`, `89-asn-anywhere`, `89-country-near`), so customer names keep being sampled there.
 `learn-rdns-rules` (and so `propose-codes`) also reads those names (at most 5000 per registered domain, the
 smallest hash of the IP; router names win) with the country of the row. It also reads the ok names of the M-Lab router
 hops in `public.mlab_hop_names` (at most 5000 per registered domain, the same smallest-hash rule; no country yet, so the
@@ -1040,7 +1040,7 @@ mmdbbuilder lookup -db <file.mmdb> -ip 1.1.1.1
 mmdbbuilder lookup -db <file.mmdb> -ips ips.txt # one IP per line, plus the builtin IPs
 mmdbbuilder lookup -db <ip2geo.mmdb or published City file> -in ips.txt -out cities.tsv  # reads both layouts; ip<TAB>country<TAB>city for each IP of the file that has a city (used by resolve-ips)
 mmdbbuilder lookup -db <ip2geo.mmdb> -in ips.txt -out cities.tsv -with-source  # same, with a fourth column: the record's city_source (used by import-mlab); add -countries to also write IPs that have a country but no city (empty city)
-mmdbbuilder gaps -db <ip2geo.mmdb or published City file> -out gaps.txt  # reads both layouts; the IPv4 /24s with a country and no city (a city from one of the eight guesses 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 88-asn-far, 89-asn-anywhere, 89-country-near, or from 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
+mmdbbuilder gaps -db <ip2geo.mmdb or published City file> -out gaps.txt  # reads both layouts; the IPv4 /24s with a country and no city (a city from one of the ten guesses 80-asn-main, 82-asn-likely, 84-asn-near, 85-holder-city, 86-country-main, 87-rtt-network, 87-rtt-country, 88-asn-far, 89-asn-anywhere, 89-country-near, or from 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as runs "<first /24> <count> <country>" (used by resolve-ips sample-names)
 mmdbbuilder convert -db <ip2geo.mmdb|ip2asn.mmdb> -out <file.mmdb> [-geonames <cities1000.txt>]  # the published layouts: ip2geo -> GeoLite2-City layout (database_type OpenIPData-City: country.iso_code, city.names.en, location, extra city_source), ip2asn -> GeoLite2-ASN layout (OpenIPData-ASN (compat=GeoLite2-ASN)); used by publish
 mmdbbuilder stamp -db <ip2geo.mmdb> -meta meta.json -out <stamped.mmdb>  # rewrites only the metadata: description.openipdata = the compact JSON of meta.json (used by evaluate)
 ```

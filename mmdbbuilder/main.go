@@ -2,7 +2,7 @@
 //
 //	mmdbbuilder version
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
-//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-debug] <layer.csv.gz>...
+//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]
 //	mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>
@@ -43,7 +43,7 @@
 // row (empty city). See lookup.go.
 //
 // gaps lists the IPv4 /24s of an ip2geo MMDB that have a country and no city (a city whose
-// source is one of the eight guesses, 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as lines
+// source is one of the ten guesses, 25-bgp, 35-speedtest-site, 36-mlab, 37-whois-arin, 37-whois-text or 39-github-geofeeds counts as none), as lines
 // "<first /24> <count of consecutive /24s> <country>". See gaps.go.
 //
 // stamp rewrites only the metadata section of an MMDB: description.en becomes a
@@ -102,7 +102,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder version")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-debug] <layer.csv.gz>...")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>")
@@ -124,6 +124,7 @@ func runGeo(args []string) {
 	fallback := flags.Bool("fallback", false, "after the ASN main city fill, more guesses for addresses still without a city: 82-asn-likely, 84-asn-near, 88-asn-far, 89-asn-anywhere, 89-country-near (all need -asn-main) and 86-country-main")
 	holders := flags.String("holders", "", "holder-cities.csv.gz (layer layout; needs -asn-main): address space that no network announces gets the city of the holder block that covers it (a guess, city_source 85-holder-city)")
 	rttCountry := flags.String("rtt-country", "", "speedtest-rtt.csv.gz (prefix,country,city,rtt_ms; needs -geonames): after all layers and before the guesses, a /24 whose country is too far from the M-Lab server that answered it in r ms gets the country of its fastest server")
+	rttCity := flags.String("rtt-city", "", "speedtest-rtt.csv.gz (the file of -rtt-country; needs -geonames): after the guesses, a city outside a reply-time disk of its /24 (not from 70-geofeeds) is replaced by a network city that fits (87-rtt-network) or the most populous city of the country that fits (87-rtt-country)")
 	firstCountry := flags.String("first-country", "", "layer file names (comma-separated) whose rows apply only to the addresses where the first layer gives the row's country")
 	flags.Parse(args)
 
@@ -138,6 +139,10 @@ func runGeo(args []string) {
 		fmt.Fprintln(os.Stderr, "error: -rtt-country needs -geonames")
 		os.Exit(2)
 	}
+	if *rttCity != "" && *geonames == "" {
+		fmt.Fprintln(os.Stderr, "error: -rtt-city needs -geonames")
+		os.Exit(2)
+	}
 	var index geoNames
 	var folded foldedNames
 	if *geonames != "" {
@@ -147,7 +152,7 @@ func runGeo(args []string) {
 			os.Exit(1)
 		}
 	}
-	stats, err := buildGeoNames(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, folded, *asnMain, *fallback, *holders, *rttCountry)
+	stats, err := buildGeoNames(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, folded, *asnMain, *fallback, *holders, *rttCountry, *rttCity)
 	prefixes, placed, unplaced, renamed := 0, 0, 0, 0
 	for _, s := range stats {
 		fmt.Printf("layer %s: %d rows, %d prefixes, %d skipped\n", s.name, s.rows, s.prefixes, s.skipped)
