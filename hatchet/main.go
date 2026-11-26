@@ -9,7 +9,7 @@
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-bgp [-skip-upload | -force-upload] [-mrt file] # sync-bgp (-mrt: read a local dump, no download, no upload)
 //	openipdata-worker run-mlab [-sites] [-file path] [-skip-upload | -force-upload] # import-mlab (-file: any local CSV instead of the newest in the inbox); -sites: import-mlab-sites instead (layer 35-speedtest-site, from the sites inbox or -file)
-//	openipdata-worker run-ping [-file path] [-skip-upload | -force-upload] # import-hosting-ping (check hosting-rtt.csv.gz from the inbox or -file, upload it to R2)
+//	openipdata-worker run-hosting-ping [-skip-upload | -force-upload] # sync-hosting-ping (the tasks targets, ping and publish in order; needs GCP_PING_KEY)
 //	openipdata-worker run-arin [-skip-upload] [-force-upload] [-force-export] # sync-arin-whois
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
@@ -35,7 +35,8 @@
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN (the release uploads; also read by sync-geofeeds, for the GitHub repository search only),
 // GITHUB_REPO (default shingrus/openipdata.org), HC_PING_ASN and
-// HC_PING_GEO and HC_PING_BGP (optional), MAXMIND_LICENSE_KEY (optional secret: the
+// HC_PING_GEO, HC_PING_BGP and HC_PING_HOSTING (optional), GCP_PING_KEY (a secret: a Google Cloud service-account JSON key,
+// base64; without it sync-hosting-ping does nothing) and GCP_PING_PROJECT (optional, default the project of the key), MAXMIND_LICENSE_KEY (optional secret: the
 // MaxMind GeoLite2 City reference of build-geo-data's evaluate task), OPENIPDATA_DATA_DIR (default /var/lib/openipdata).
 // PTR_RESOLVER (optional, host:port of a local recursive resolver on loopback, e.g. 127.0.0.1:5335: the PTR
 // lookups of resolve-ips and import-mlab ask it first, then DoH; empty = the system resolver; checked at start),
@@ -129,11 +130,8 @@ type ImportMLabSitesInput struct {
 	ForceUpload bool `json:"force_upload"`
 }
 
-// ImportHostingPingInput is the import-hosting-ping input; there is no cron, the workflow is started by hand.
-type ImportHostingPingInput struct {
-	// File is the base name of a .csv.gz file in the inbox (/var/lib/openipdata/ping/inbox); empty
-	// means the newest one there, and with no file the task does nothing.
-	File string `json:"file"`
+// SyncHostingPingInput is the sync-hosting-ping input; cron runs use the zero value.
+type SyncHostingPingInput struct {
 	// ForceUpload sends the file even when R2 already holds the same bytes.
 	ForceUpload bool `json:"force_upload"`
 }
@@ -229,8 +227,8 @@ func main() {
 		err = runBGP(ctx, os.Args[2:])
 	case "run-mlab":
 		err = runMLab(ctx, os.Args[2:])
-	case "run-ping":
-		err = runPing(ctx, os.Args[2:])
+	case "run-hosting-ping":
+		err = runHostingPing(ctx, os.Args[2:])
 	case "run-arin":
 		err = runARIN(ctx, os.Args[2:])
 	case "run-geo":
@@ -240,7 +238,7 @@ func main() {
 	case "run-rdns-rules":
 		err = runRDNSRules(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, version, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-ping, run-arin, run-geo, run-rdns, or run-rdns-rules)", command)
+		err = fmt.Errorf("unknown command %q (want serve, version, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-hosting-ping, run-arin, run-geo, run-rdns, or run-rdns-rules)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -280,7 +278,10 @@ func newMLabPipeline(progress func(string)) *mlab.Pipeline {
 
 // newPingPipeline reads the environment; progress receives log lines.
 func newPingPipeline(progress func(string)) *ping.Pipeline {
-	return &ping.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2")}
+	return &ping.Pipeline{
+		DataDir: dataDir(), Progress: progress, R2: env("R2"), PGSQL: pgsql(),
+		GCPKey: env("GCP_PING_KEY"), GCPProject: env("GCP_PING_PROJECT"), HCPing: env("HC_PING_HOSTING"),
+	}
 }
 
 // newARINPipeline reads the environment; progress receives log lines. mmdbbuilder is the binary
@@ -406,7 +407,7 @@ func serve(ctx context.Context) error {
 			syncBGPWorkflow(client),
 			importMLabWorkflow(client),
 			importMLabSitesWorkflow(client),
-			importHostingPingWorkflow(client),
+			syncHostingPingWorkflow(client),
 			syncARINWhoisWorkflow(client),
 			buildGeoWorkflow(client),
 			resolveIPsWorkflow(client),
@@ -444,8 +445,12 @@ func oneRunLimit(name string) hatchet.Concurrency {
 
 // taskRetry is the retry policy shared by the workflow tasks.
 func taskRetry(opts ...hatchet.TaskOption) []hatchet.TaskOption {
-	return append([]hatchet.TaskOption{hatchet.WithRetries(2), hatchet.WithRetryBackoff(2, 300)}, opts...)
+	return append([]hatchet.TaskOption{hatchet.WithRetries(taskRetries), hatchet.WithRetryBackoff(2, 300)}, opts...)
 }
+
+// taskRetries is the number of retries taskRetry gives a task (sync-hosting-ping pings its
+// health check's /fail only on the last attempt).
+const taskRetries = 2
 
 // buildASNName is the name of the build-asn-data workflow (the publish task of build-geo-data starts a run by name).
 const buildASNName = "build-asn-data"
@@ -769,27 +774,57 @@ func importMLabSitesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	return wf
 }
 
-// importHostingPingWorkflow checks the hosting ping file the owner copied into the inbox (ping
-// times from Google Cloud regions to the .1 of every /24 of hosting networks) and uploads it as it
-// is to private R2, where build-geo-data reads it for the speed-of-light country check
-// (-ping-country). There is no cron and no database.
-func importHostingPingWorkflow(client *hatchet.Client) *hatchet.Workflow {
-	wf := client.NewWorkflow("import-hosting-ping",
-		hatchet.WithWorkflowDescription("hosting ping file (ping inbox) -> hosting-rtt.csv.gz in private R2; started by hand"),
+// syncHostingPingWorkflow pings the .1 of every /24 of the hosting networks from small Google
+// Cloud VMs in about 27 regions, once a month, and uploads the lowest times to private R2, where
+// build-geo-data reads them for the speed-of-light country check (-ping-country). The tasks:
+// targets (the address list, from public.asn), ping (the VMs) and publish (merge, check, upload).
+// Without GCP_PING_KEY every task skips.
+func syncHostingPingWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("sync-hosting-ping",
+		hatchet.WithWorkflowDescription("hosting networks -> ping times from Google Cloud regions -> hosting-rtt.csv.gz in private R2; monthly"),
+		hatchet.WithWorkflowCron("0 2 1 * *"),
 		hatchet.WithWorkflowConcurrency(oneRunLimit("hosting-ping")),
 	)
-	wf.NewTask("upload", func(ctx hatchet.Context, input ImportHostingPingInput) (ping.Output, error) {
+	// A setting problem is fixed by the owner, not by a retry; a failed run pings the health check's /fail.
+	fixed := func(p *ping.Pipeline, ctx hatchet.Context, err error) error {
+		if err == nil {
+			return nil
+		}
+		final := errors.Is(err, ping.ErrPermanent) || errors.Is(err, ping.ErrInvalidGCPKey)
+		// /fail only when no retry follows (a non-retryable error or the last attempt), so a
+		// failure that a retry fixes does not alert.
+		if ctx.Err() == nil && (final || ctx.RetryCount() >= taskRetries) {
+			p.Fail(ctx)
+		}
+		if final {
+			return hatchet.NewNonRetryableError(err)
+		}
+		return err
+	}
+	targets := wf.NewTask("targets", func(ctx hatchet.Context, _ SyncHostingPingInput) (ping.TargetsOutput, error) {
 		p := newPingPipeline(taskLog(ctx))
-		if err := p.CheckUpload(); err != nil {
-			return ping.Output{}, hatchet.NewNonRetryableError(err)
+		if err := p.CheckSettings(true); err != nil {
+			return ping.TargetsOutput{}, hatchet.NewNonRetryableError(err)
 		}
-		out, err := p.Upload(ctx, input.File, ping.Options{ForceUpload: input.ForceUpload})
-		// A file or setting problem is fixed by the owner, not by a retry.
-		if errors.Is(err, ping.ErrPermanent) {
-			err = hatchet.NewNonRetryableError(err)
+		out, err := p.Targets(ctx)
+		return out, fixed(p, ctx, err)
+	}, taskRetry(hatchet.WithExecutionTimeout(time.Hour))...)
+	pinged := wf.NewTask("ping", func(ctx hatchet.Context, _ SyncHostingPingInput) (ping.PingOutput, error) {
+		p := newPingPipeline(taskLog(ctx))
+		if err := p.CheckSettings(false); err != nil {
+			return ping.PingOutput{}, hatchet.NewNonRetryableError(err)
 		}
-		return out, err
-	}, taskRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
+		out, err := p.Ping(ctx)
+		return out, fixed(p, ctx, err)
+	}, taskRetry(hatchet.WithParents(targets), hatchet.WithExecutionTimeout(4*time.Hour))...)
+	wf.NewTask("publish", func(ctx hatchet.Context, input SyncHostingPingInput) (ping.PublishOutput, error) {
+		p := newPingPipeline(taskLog(ctx))
+		if err := p.CheckSettings(false); err != nil {
+			return ping.PublishOutput{}, hatchet.NewNonRetryableError(err)
+		}
+		out, err := p.Publish(ctx, ping.PublishOptions{ForceUpload: input.ForceUpload})
+		return out, fixed(p, ctx, err)
+	}, taskRetry(hatchet.WithParents(pinged), hatchet.WithExecutionTimeout(time.Hour))...)
 	return wf
 }
 
@@ -1306,25 +1341,38 @@ func runMLabSites(ctx context.Context, p *mlab.Pipeline, file string, skipUpload
 	return err
 }
 
-// runPing runs the upload task of import-hosting-ping once, without Hatchet and without a database.
-// -file names a local .csv.gz; without it the newest file of the inbox is used.
-func runPing(ctx context.Context, args []string) error {
-	flags := flag.NewFlagSet("run-ping", flag.ExitOnError)
-	file := flags.String("file", "", "check and upload this local .csv.gz instead of the newest file in the inbox")
-	skipUpload := flags.Bool("skip-upload", false, "check the file but do not upload it")
+// runHostingPing runs the three tasks of sync-hosting-ping once, in order, without Hatchet. It
+// needs PGSQL, R2 and GCP_PING_KEY; without the key every task skips. -skip-upload merges and
+// checks the file but does not upload it (and leaves the objects of the run in R2).
+// Never run it while the Hatchet run is in progress: its targets task deletes that run's VMs and objects.
+func runHostingPing(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-hosting-ping", flag.ExitOnError)
+	skipUpload := flags.Bool("skip-upload", false, "merge and check the file but do not upload it")
 	forceUpload := flags.Bool("force-upload", false, "send the file even if R2 already holds the same bytes")
 	flags.Parse(args)
 	if flags.NArg() > 0 {
-		return fmt.Errorf("run-ping: unexpected argument %q", flags.Arg(0))
+		return fmt.Errorf("run-hosting-ping: unexpected argument %q", flags.Arg(0))
+	}
+	if *skipUpload && *forceUpload {
+		return errors.New("run-hosting-ping: -skip-upload and -force-upload cannot be combined")
 	}
 	p := newPingPipeline(cliLog)
-	if !*skipUpload {
-		if err := p.CheckUpload(); err != nil {
-			return err
-		}
+	if err := p.CheckSettings(true); err != nil {
+		return err
 	}
-	_, err := p.Upload(ctx, "", ping.Options{Path: *file, SkipUpload: *skipUpload, ForceUpload: *forceUpload})
-	return err
+	if _, err := p.Targets(ctx); err != nil {
+		p.Fail(ctx)
+		return err
+	}
+	if _, err := p.Ping(ctx); err != nil {
+		p.Fail(ctx)
+		return err
+	}
+	if _, err := p.Publish(ctx, ping.PublishOptions{SkipUpload: *skipUpload, ForceUpload: *forceUpload}); err != nil {
+		p.Fail(ctx)
+		return err
+	}
+	return nil
 }
 
 // runARIN runs the sync-arin-whois tasks once, in order, without Hatchet. The lookup task works for

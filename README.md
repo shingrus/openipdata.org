@@ -24,12 +24,11 @@ The published data files are CC0 (see [`LICENSE-DATA`](LICENSE-DATA)); the code 
 | `iplistener/` | `iplistener`: runs on web servers, tails the nginx log into `public.visitor_ips` ([README](iplistener/README.md)) |
 | `mmdbbuilder/` | `mmdbbuilder`: standalone MMDB build tool |
 | `tools/llm-codes-test/` | scratch LLM comparison for rDNS city codes, with results ([README](tools/llm-codes-test/README.md)) |
-| `tools/hostingping/` | the monthly hosting ping run in Google Cloud Shell ([README](tools/hostingping/README.md)) |
 
 Shared code in `hatchet/`: `schema/` (Postgres tables), `publish/` (R2 and GitHub
 releases), `rirstats/` (RIR delegated-extended stats parsing, address range to
 prefixes), `download/` (conditional HTTP download) and `outputs/` (pruning old output
-directories, last log lines, file size). `import-hosting-ping` (`hatchet/ping/`) checks and uploads the hosting ping file. `sync-geofeeds`, `sync-bgp`, `import-mlab`, `import-mlab-sites`, `sync-arin-whois` and
+directories, last log lines, file size). `sync-hosting-ping` (`hatchet/ping/`) pings the hosting networks from Google Cloud once a month. `sync-geofeeds`, `sync-bgp`, `import-mlab`, `import-mlab-sites`, `sync-arin-whois` and
 `build-geo-data` share `rirstats` and `download` but keep their own downloaded files.
 
 `hatchet/` and `mmdbbuilder/` are separate Go modules and build separately.
@@ -509,36 +508,35 @@ HAVING client24 IS NOT NULL AND min_rtt <= 30
 3. Start `import-mlab-sites` in Hatchet (input `{}` takes the newest file of the sites inbox, or `{"file": "mlab-sites-2026-11.csv"}`), or run `sudo -u openipdata openipdata-worker run-mlab -sites` on the VM (it needs only the `R2` setting in the env file).
 4. The next `build-geo-data` run uses the layer. It is used for 45 days after the upload of a new export (running it again on the same file does not renew that date); export again about once a month, together with the hop export.
 
-### `import-hosting-ping` (`hatchet/ping/`, no cron, started by hand)
+### `sync-hosting-ping` (`hatchet/ping/`, cron `0 2 1 * *` UTC: 02:00 on the 1st of each month)
 
-Takes the hosting ping file `hosting-rtt.csv.gz` (made by hand in Google Cloud Shell, see "Hosting ping run" below), checks it and uploads it to
-the private R2 bucket, where `build-geo-data` reads it for the ping country check. It needs no database (only the `R2` setting). Own concurrency
-limit `hosting-ping`.
+Pings the .1 of every /24 of the hosting networks once from 27 Google Cloud regions (one small VM per region) and puts the lowest
+times in the private R2 bucket, where `build-geo-data` reads them for the ping country check. About 2.2M targets, about 60M pings,
+about $1.5-2 a run (paid by the owner's Google Cloud project), about an hour. Own concurrency limit `hosting-ping`. Without
+`GCP_PING_KEY` every task succeeds with `skipped: no GCP key`.
 
 | Task | Runs after | Does |
 |---|---|---|
-| `upload` | | Reads the newest `*.csv.gz` of the inbox `/var/lib/openipdata/ping/inbox/` (input `file`: a base name there, ending in `.csv.gz`; with no file the task succeeds with `skipped: no file`). The file is untrusted and streamed: at most 1 GB, at most 20M rows, header `prefix` then 3 to 64 distinct site columns `<CC>/<City>` (any header error is a permanent error), each row an IPv4 /24 in masked form, public, in strictly ascending order, each cell empty or a time above 0 and at most 2000 ms, at least 3 times. Bad rows are counted by reason and never echoed (`bad_columns`, `bad_prefix`, `not_public`, `not_sorted`, `bad_rtt`, `few_sites`). Fewer than 100,000 valid rows, or more than 1% bad rows, is a permanent error and nothing is uploaded. Otherwise the file is put AS IT IS at the fixed key `internal/ping/hosting-rtt.csv.gz` (sha256 in the object's metadata; an identical object is not sent again and keeps its date, so the 45 days of `build-geo-data` count from the last new run; `force_upload` always sends). |
+| `targets` | | Deletes the objects of the last run under `internal/ping/run/`, reads the hosting networks from `public.asn` (`$.metadata.category` = `hosting`, `ipdata.SeenAtFilter`, read only), lists the .1 of every public /24 of their IPv4 prefixes (prefixes broader than /8 are skipped) minus the opt-out list `hatchet/ping/exclude.txt`, refuses fewer than 100,000 or more than 6,000,000 targets, and uploads the shuffled list to `internal/ping/run/targets.txt`. |
+| `ping` | `targets` | Deletes any VM with the label `openipdata=hosting-ping` left by a crashed run, then creates one VM per region without a result yet (`e2-micro`, Debian 12, an external IP, NO service account, and `maxRunDuration` 4 hours with the action DELETE, so a VM deletes itself even if the worker dies). The VM only talks to R2, through presigned URLs (6 hours) in its startup script: it downloads the target list, shuffles its own copy, pings each address once with `fping` in chunks of 200,000, and uploads its sorted answers to `internal/ping/run/out/<region>.txt.gz` and short progress notes to `internal/ping/run/progress/<region>.txt`. The task polls R2 every minute, deletes each VM as soon as its result is there, retries a VM that could not be created every 10 minutes, gives a region up after 3 hours, logs counts every 5 minutes, and always deletes every VM before it returns (also on an error or a cancel). Fewer than 20 regions with a result fails the task (Hatchet retries it; regions that have a result are kept). |
+| `publish` | `ping` | Downloads the region results, merges them (one row per /24, the lowest time per region with one decimal, only /24s with at least 3 answers), checks the file (header, every row, at least 100,000 valid rows, at most 1% bad), puts it at `internal/ping/hosting-rtt.csv.gz` (sha256 in the metadata; an identical object keeps its date; `force_upload` always sends), deletes the run's objects and pings `HC_PING_HOSTING`. |
 
-- `run-ping [-file <path>] [-skip-upload] [-force-upload]` runs the task once locally; `-file` is a local file, else the newest file of the inbox. Workflow input: `{"file": "hosting-rtt-2026-12.csv.gz", "force_upload": false}`.
-- The output has counts only (rows, valid, sites, bad rows by reason, upload status). No IP or secret is logged or returned.
+- `run-hosting-ping [-skip-upload | -force-upload]` runs the three tasks once locally (it needs `PGSQL`, `R2` and `GCP_PING_KEY`; never while the Hatchet run is in progress: it deletes that run's VMs and objects). Workflow input: `{"force_upload": false}`.
+- Task outputs have counts only; no IP, presigned URL, token or key is ever logged or returned. A task that fails for good (non-retryable, or its last attempt) pings `<HC_PING_HOSTING>/fail`.
+- Settings in the env file: `GCP_PING_KEY` (a secret: the base64 of a Google Cloud service-account JSON key), `GCP_PING_PROJECT` (optional, default the key's project), `HC_PING_HOSTING` (optional).
+- To opt a network out, add its prefix to `hatchet/ping/exclude.txt` (one IPv4 prefix per line); every /24 that overlaps it is not pinged.
 
-### Hosting ping run
+One-time setup, in Google Cloud Shell of a project with billing and the Compute Engine API enabled (the default network must exist):
 
-About once a month, ping the .1 of every /24 of the hosting networks once from 27 Google Cloud regions. The tool is `tools/hostingping/` (its
-README has the details, cost and the opt-out list `exclude.txt`): about 2.2M targets, about 60M pings, about $1.5-2 a run, about an hour (all 27 regions at once).
+```bash
+gcloud iam service-accounts create hosting-ping --display-name="openipdata hosting ping"
+gcloud projects add-iam-policy-binding "$(gcloud config get-value project)" \
+  --member="serviceAccount:hosting-ping@$(gcloud config get-value project).iam.gserviceaccount.com" --role=roles/compute.instanceAdmin.v1
+gcloud iam service-accounts keys create key.json --iam-account="hosting-ping@$(gcloud config get-value project).iam.gserviceaccount.com"
+base64 -w0 key.json; echo; rm key.json
+```
 
-1. In a Google Cloud project with billing, open Cloud Shell, put the folder `tools/hostingping/` there and run `bash run.sh`. It is safe to run again
-   after a disconnect (finished regions are skipped, a VM that is still pinging is waited for).
-2. Download `hosting-rtt.csv.gz` from Cloud Shell's menu and copy it to the worker VM into the inbox, owned by the `openipdata` user:
-
-   ```bash
-   scp hosting-rtt.csv.gz vm:/tmp/hosting-rtt.csv.gz
-   ssh vm 'sudo install -d -o openipdata -g openipdata -m 0750 /var/lib/openipdata/ping/inbox &&
-           sudo install -o openipdata -g openipdata -m 0640 /tmp/hosting-rtt.csv.gz /var/lib/openipdata/ping/inbox/hosting-rtt-2026-12.csv.gz && rm /tmp/hosting-rtt.csv.gz'
-   ```
-
-3. Start `import-hosting-ping` in Hatchet (input `{}`), or run `sudo -u openipdata openipdata-worker run-ping` on the VM.
-4. Delete the test bucket (the command is printed at the end of `run.sh`). The next `build-geo-data` run uses the file for 45 days.
+Put the printed line in `/etc/openipdata/worker.env` as `GCP_PING_KEY=<line>` and restart the worker (`sudo systemctl restart openipdata-worker`).
 
 ### `sync-arin-whois` (`hatchet/arin/`, cron `*/30 * * * *` UTC)
 
@@ -670,7 +668,7 @@ the holdout build have no check. It prints `rtt-country: R rows, S skipped, N /2
 -0 lost probes (right country 97.34% -> 97.43%); 5,329 /24s change country.
 
 `mmdbbuilder geo -ping-country <hosting-rtt.csv.gz>` (needs `-geonames`) is a second speed-of-light check of the country, run right after `-rtt-country`
-and before the guesses, with ping times from 27 Google Cloud regions to the .1 of every /24 of the hosting networks (`import-hosting-ping`, R2 key
+and before the guesses, with ping times from 27 Google Cloud regions to the .1 of every /24 of the hosting networks (`sync-hosting-ping`, R2 key
 `internal/ping/hosting-rtt.csv.gz`). Each time r (ms) is a disk of `r * 100 + 100` km around its region; GeoNames places are grouped in quarter-degree
 cells per country, weighted by population. A /24 with at least 3 times whose country has no cell inside every disk takes the country that holds at least
 half of the weight of the possible cells (country only; the guesses then fill a city); otherwise it stays. `download` fetches the file into
@@ -1061,8 +1059,7 @@ openipdata-worker run-mlab             # run import-mlab once locally (newest fi
 openipdata-worker run-mlab -file export.csv -skip-upload # import a local CSV, write the layer, upload nothing
 openipdata-worker run-mlab -sites      # run import-mlab-sites once locally (newest file of the sites inbox)
 openipdata-worker run-mlab -sites -file replies.csv -skip-upload # make the site layer from a local CSV, upload nothing
-openipdata-worker run-ping             # run import-hosting-ping once locally (newest file of the ping inbox)
-openipdata-worker run-ping -file hosting-rtt.csv.gz -skip-upload # check a local hosting ping file, upload nothing
+openipdata-worker run-hosting-ping     # run sync-hosting-ping once locally (about an hour; needs GCP_PING_KEY)
 openipdata-worker run-arin             # run sync-arin-whois once locally (up to 24 minutes of lookups, then export and upload)
 openipdata-worker run-arin -skip-upload # same, without uploading the layer
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet

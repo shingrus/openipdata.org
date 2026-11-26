@@ -17,7 +17,7 @@ func Ping(ctx context.Context, pingURL string) error {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pingURL, nil)
 	if err != nil {
-		return fmt.Errorf("invalid HC_PING_ASN")
+		return fmt.Errorf("invalid health check URL")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
