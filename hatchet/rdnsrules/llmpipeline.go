@@ -61,6 +61,9 @@ type ProposeOutput struct {
 	Asked           int            `json:"asked"`
 	Requests        int            `json:"requests"`
 	Accepted        int            `json:"accepted"`
+	FallbackAsked   int            `json:"fallback_asked"`    // domains sent to the fallback model
+	FallbackReqs    int            `json:"fallback_requests"` // requests to the fallback model
+	FallbackOK      int            `json:"fallback_accepted"` // domains the fallback model got accepted
 	SmallAccepted   int            `json:"small_accepted"`
 	Rejected        map[string]int `json:"rejected,omitempty"`
 	NoCity          int            `json:"no_city"`
@@ -208,9 +211,10 @@ func noRuleVerdict(v string) bool {
 
 // llmRequest is one question to the model: a domain with 5+ hosts, or a pack of small ones.
 type llmRequest struct {
-	Kind    string
-	ID      string
-	Domains []*domainInfo
+	Kind     string
+	ID       string
+	Domains  []*domainInfo
+	Fallback bool // asked of the fallback model after the main model gave no rule
 }
 
 func (r llmRequest) biggest() int {
@@ -271,6 +275,7 @@ type proposeRun struct {
 	api      *openRouter
 	model    string
 	second   string
+	fallback string // "" = no fallback
 	loadGeo  func(context.Context) (*geoIndex, error)
 	now      func() time.Time
 	progress func(string)
@@ -536,6 +541,10 @@ func (r *proposeRun) handle(ctx context.Context, req llmRequest, retry bool) {
 	if !r.take() {
 		return
 	}
+	model := r.model
+	if req.Fallback {
+		model = r.fallback
+	}
 	var prompt string
 	if req.Kind == kindPropose {
 		d := req.Domains[0]
@@ -548,12 +557,22 @@ func (r *proposeRun) handle(ctx context.Context, req llmRequest, retry bool) {
 		}
 		prompt = packPrompt(doms, pats)
 	}
-	if !retry {
-		r.mu.Lock()
+	r.mu.Lock()
+	if req.Fallback {
+		r.out.FallbackReqs++
+		r.out.FallbackAsked += len(req.Domains)
+	} else if !retry {
 		r.out.Asked += len(req.Domains)
-		r.mu.Unlock()
 	}
-	res, aerr := r.api.chat(ctx, r.model, prompt)
+	r.mu.Unlock()
+	var need []*domainInfo // domains the main model left without a rule: asked of the fallback
+	defer func() {
+		if req.Fallback || r.fallback == "" || len(need) == 0 {
+			return
+		}
+		r.handle(ctx, llmRequest{Kind: req.Kind, ID: r.newID(), Domains: need, Fallback: true}, true)
+	}()
+	res, aerr := r.api.chat(ctx, model, prompt)
 	r.addCost(res.Cost)
 	if aerr != nil {
 		r.apiFailure(aerr)
@@ -572,8 +591,11 @@ func (r *proposeRun) handle(ctx context.Context, req llmRequest, retry bool) {
 		case apiStopCredit:
 			verdict, reason = verdictStopped, "stopped: "+reason
 		}
+		if aerr.Kind != apiStopCredit && aerr.Kind != apiAuth {
+			need = req.Domains
+		}
 		for _, d := range req.Domains {
-			r.save(ctx, answerRecord{Kind: req.Kind, Domain: d.Domain, RequestID: req.ID, Model: r.model, Hosts: d.Hosts,
+			r.save(ctx, answerRecord{Kind: req.Kind, Domain: d.Domain, RequestID: req.ID, Model: model, Hosts: d.Hosts,
 				Patterns: d.Patterns, Hash: d.Hash, Status: status, Verdict: verdict, Reason: reason})
 		}
 		return
@@ -594,7 +616,7 @@ func (r *proposeRun) handle(ctx context.Context, req llmRequest, retry bool) {
 		parsed = len(answers) > 0
 	}
 	for _, d := range req.Domains {
-		rec := answerRecord{Kind: req.Kind, Domain: d.Domain, RequestID: req.ID, Model: r.model, Hosts: d.Hosts, Patterns: d.Patterns, Hash: d.Hash}
+		rec := answerRecord{Kind: req.Kind, Domain: d.Domain, RequestID: req.ID, Model: model, Hosts: d.Hosts, Patterns: d.Patterns, Hash: d.Hash}
 		usage(&rec)
 		a, ok := answers[d.Domain]
 		if !ok {
@@ -607,9 +629,12 @@ func (r *proposeRun) handle(ctx context.Context, req llmRequest, retry bool) {
 				rec.Reason = "answer cut off"
 			}
 			r.save(ctx, rec)
+			need = append(need, d)
 			continue
 		}
-		r.finishDomain(ctx, d, a, &rec)
+		if r.finishDomain(ctx, d, a, &rec) {
+			need = append(need, d)
+		}
 	}
 	label := req.Domains[0].Domain
 	if len(req.Domains) > 1 {
@@ -621,12 +646,16 @@ func (r *proposeRun) handle(ctx context.Context, req llmRequest, retry bool) {
 	}
 	done, planned := r.done, r.planned
 	r.mu.Unlock()
+	if req.Fallback {
+		r.logf("propose-codes: fallback request of %q done (%s)", label, req.Kind)
+		return
+	}
 	r.logf("propose-codes: request of %q done %d/%d (%s)", label, done, planned, req.Kind)
 }
 
 // finishDomain checks one answer and, when it is accepted, stores the rank-4 rule, compares it
 // with the learned rules and asks the second model about the disagreements.
-func (r *proposeRun) finishDomain(ctx context.Context, d *domainInfo, a llmAnswer, rec *answerRecord) {
+func (r *proposeRun) finishDomain(ctx context.Context, d *domainInfo, a llmAnswer, rec *answerRecord) (needFallback bool) {
 	geo, err := r.geoDict(ctx)
 	if err != nil {
 		// No dictionary: the answer cannot be checked. Not the API's fault, not a database error.
@@ -637,7 +666,7 @@ func (r *proposeRun) finishDomain(ctx context.Context, d *domainInfo, a llmAnswe
 		}
 		r.mu.Unlock()
 		r.save(ctx, *rec)
-		return
+		return false
 	}
 	rule, reason := checkAnswer(d.Domain, a, d.Names, d.Small, geo)
 	rec.Answer = answerDoc{Raw: a, Dropped: nilIfEmpty(ruleDropped(rule))}
@@ -646,34 +675,37 @@ func (r *proposeRun) finishDomain(ctx context.Context, d *domainInfo, a llmAnswe
 	case reason == "no_city":
 		rec.Verdict = verdictNoCity
 		r.save(ctx, *rec)
-		return
+		return true
 	case reason != "":
 		rec.Verdict, rec.Reason = verdictRejected, reason
 		r.save(ctx, *rec)
-		return
+		return true
 	}
 	rejected, ok := storeCall(r, func() (string, error) {
 		return r.store.StoreLLMRule(ctx, d.Domain, llmRuleWrite{Regex: rule.Regex, Codes: rule.Codes, Places: rule.Places,
 			Names: rule.Names, Decoded: rule.Decoded, Distinct: rule.Distinct, CountryAgree: rule.CountryAgree})
 	})
 	if !ok {
-		return
+		return false
 	}
 	if rejected != "" {
 		rec.Verdict, rec.Reason = verdictRejected, rejected
 		r.save(ctx, *rec)
-		return
+		return true
 	}
 	rec.Verdict = verdictAccepted
 	r.mu.Lock()
 	r.out.Accepted++
+	if r.fallback != "" && rec.Model == r.fallback {
+		r.out.FallbackOK++
+	}
 	if d.Small {
 		r.out.SmallAccepted++
 	}
 	r.mu.Unlock()
 	rows, ok := storeCall(r, func() ([]llmRuleRow, error) { return r.store.Rules(ctx, d.Domain) })
 	if !ok {
-		return
+		return false
 	}
 	learned := compileLearned(d.Domain, rows)
 	// Every current learned version counts as checked, also a row whose regex cannot be compiled
@@ -709,6 +741,7 @@ func (r *proposeRun) finishDomain(ctx context.Context, d *domainInfo, a llmAnswe
 		}
 	}
 	r.save(ctx, *rec)
+	return false
 }
 
 // answerDoc is the stored form of a domain's answer.
@@ -921,6 +954,7 @@ func (p *Pipeline) ProposeCodes(ctx context.Context, opts ProposeOptions) (Propo
 	if model == "" {
 		model = DefaultModel
 	}
+	fallback := fallbackModel(p.OpenRouterFallbackModel, model)
 	if second == "" {
 		second = DefaultSecondModel
 	}
@@ -931,14 +965,14 @@ func (p *Pipeline) ProposeCodes(ctx context.Context, opts ProposeOptions) (Propo
 		return loadGeoIndex(ctx, filepath.Join(p.DataDir, "rdnsrules", "dictionaries"), p.client, p.clock().UTC())
 	}
 	run := &proposeRun{store: &pgProposeStore{conn: conn}, api: &openRouter{base: base, key: p.OpenRouterKey, http: httpClient, backoff: p.llmBackoff},
-		model: model, second: second, loadGeo: load, now: p.clock, progress: p.Progress, parallel: llmParallel}
+		model: model, second: second, fallback: fallback, loadGeo: load, now: p.clock, progress: p.Progress, parallel: llmParallel}
 	out, err := run.execute(ctx, infos, opts)
 	out.DurationSeconds = time.Since(started).Round(time.Second).Seconds()
 	if err != nil {
 		return out, err
 	}
-	p.log("propose-codes: %d eligible, %d asked in %d requests, %d accepted (%d small), %d no city, %d rejected, %d blocked, %d errors, %d incomplete, %d disagreements, %d overrides, %d disputed, $%.4f, stopped=%q",
-		out.Eligible, out.Asked, out.Requests, out.Accepted, out.SmallAccepted, out.NoCity, sumCounts(out.Rejected), out.Blocked, out.Errors, out.Incomplete, out.Disagreements, out.Overrides, out.Disputed, out.CostUSD, out.Stopped)
+	p.log("propose-codes: %d eligible, %d asked in %d requests, %d accepted (%d small, %d by the fallback), %d no city, %d rejected, %d blocked, %d errors, %d incomplete, %d disagreements, %d overrides, %d disputed, $%.4f, stopped=%q",
+		out.Eligible, out.Asked, out.Requests, out.Accepted, out.SmallAccepted, out.FallbackOK, out.NoCity, sumCounts(out.Rejected), out.Blocked, out.Errors, out.Incomplete, out.Disagreements, out.Overrides, out.Disputed, out.CostUSD, out.Stopped)
 	return out, nil
 }
 
@@ -950,8 +984,20 @@ func sumCounts(m map[string]int) int {
 	return n
 }
 
-// Default models (OPENROUTER_MODEL, OPENROUTER_SECOND_MODEL).
+// Default models (OPENROUTER_MODEL, OPENROUTER_SECOND_MODEL, OPENROUTER_FALLBACK_MODEL).
 const (
-	DefaultModel       = "openai/gpt-6.1-terra"
-	DefaultSecondModel = "openai/gpt-6-luna"
+	DefaultModel         = "openai/gpt-6.1-terra"
+	DefaultSecondModel   = "openai/gpt-6-luna"
+	DefaultFallbackModel = "anthropic/claude-haiku-5.5"
 )
+
+// fallbackModel resolves the fallback setting: empty = the default, "off" or the main model = none.
+func fallbackModel(setting, main string) string {
+	if setting == "" {
+		setting = DefaultFallbackModel
+	}
+	if setting == "off" || setting == main {
+		return ""
+	}
+	return setting
+}

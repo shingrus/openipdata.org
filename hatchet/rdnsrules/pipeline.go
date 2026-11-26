@@ -78,9 +78,10 @@ type Pipeline struct {
 	Progress func(string)
 	// propose-codes: OpenRouter key and models (env settings read in main.go). The key is
 	// never logged, returned or stored.
-	OpenRouterKey         string
-	OpenRouterModel       string
-	OpenRouterSecondModel string
+	OpenRouterKey           string
+	OpenRouterModel         string
+	OpenRouterSecondModel   string
+	OpenRouterFallbackModel string // "" = DefaultFallbackModel, "off" = none
 	// Tests may replace endpoints, transport, and the clock.
 	OpenRouterURL string
 	llmHTTP       *http.Client

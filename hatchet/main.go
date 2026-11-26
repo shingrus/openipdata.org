@@ -28,7 +28,8 @@
 // learn-rdns-rules reads the names of every traced IP (targets, candidates, hops) and ASNs, and writes public.rdns_city_rules
 // and public.rdns_llm_answers),
 // OPENROUTER_API_KEY (optional, a secret: without it propose-codes is skipped), OPENROUTER_MODEL (default
-// openai/gpt-6.1-terra) and OPENROUTER_SECOND_MODEL (default openai/gpt-6-luna),
+// openai/gpt-6.1-terra), OPENROUTER_SECOND_MODEL (default openai/gpt-6-luna) and OPENROUTER_FALLBACK_MODEL (default
+// anthropic/claude-haiku-5.5, asked when the main model gives no rule; "off" = none),
 // PDB_KEY (PeeringDB API key),
 // R2 (https://<key-id>:<secret>@<account-id>.r2.cloudflarestorage.com/<bucket>),
 // GITHUB_TOKEN (the release uploads; also read by sync-geofeeds, for the GitHub repository search only),
@@ -350,7 +351,8 @@ func newRDNSRulesPipeline(progress func(string)) *rdnsrules.Pipeline {
 		second = rdnsrules.DefaultSecondModel
 	}
 	return &rdnsrules.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress,
-		OpenRouterKey: env("OPENROUTER_API_KEY"), OpenRouterModel: model, OpenRouterSecondModel: second}
+		OpenRouterKey: env("OPENROUTER_API_KEY"), OpenRouterModel: model, OpenRouterSecondModel: second,
+		OpenRouterFallbackModel: env("OPENROUTER_FALLBACK_MODEL")} // empty = default, "off" = none
 }
 
 func pgsql() string { return env("PGSQL") }

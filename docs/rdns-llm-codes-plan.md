@@ -33,11 +33,20 @@ A second task `propose-codes` in `learn-rdns-rules`, after `learn` (same daily s
 | `OPENROUTER_API_KEY` | none | the key (with its own credit limit on OpenRouter) |
 | `OPENROUTER_MODEL` | `openai/gpt-6.1-terra` | the questions |
 | `OPENROUTER_SECOND_MODEL` | `openai/gpt-6-luna` | second opinion before an override |
+| `OPENROUTER_FALLBACK_MODEL` | `anthropic/claude-haiku-5.5` | asked once more when the main model gives no accepted rule (`off` = none) |
 
 Requests: OpenRouter chat completions over IPv4 only (the VM's IPv6 egress stalls: a connection can open
 and then hang, which Go's dual-stack fallback does not catch), JSON response format, temperature 0,
 reasoning effort low, max 16,000 output tokens, 180 s timeout, up to 4 requests at a time. The key never
 appears in logs, outputs or errors.
+
+Fallback (2026-11-26, owner): when the main model's answer for a domain is `no_city`, `rejected`,
+`blocked` or an error (also a failed request), the domain is asked once more with the fallback model and
+the same prompt (the domains of a pack that need it in one pack request; never after a credit stop, an
+invalid key, or a fallback answer). Both answers are recorded; the fallback's is the newest. In the
+2026-11-13 test Haiku 5.5 gave 21 usable answers of 50 (Terra 36) and the same city as Terra on 98.4% of
+the tokens both decoded, at a tenth of the price. Output: `fallback_asked`, `fallback_requests`,
+`fallback_accepted`.
 
 ## What is sent: name patterns, never IPs
 
