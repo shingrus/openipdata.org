@@ -280,7 +280,19 @@ func (s *server) watch(ctx context.Context) {
 	}
 }
 
+// Sent on every answer of the site (and so of the v4, v6 and r hosts, which
+// nginx proxies here). HSTS covers the subdomains: every host we serve has
+// HTTPS. The policy turns off browser features no page uses; the clipboard
+// is not listed, since the copy buttons need it.
+const (
+	hstsValue      = "max-age=31536000; includeSubDomains"
+	permissionsVal = "camera=(), microphone=(), geolocation=(), payment=(), usb=(), browsing-topics=()"
+)
+
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Strict-Transport-Security", hstsValue)
+	h.Set("Permissions-Policy", permissionsVal)
 	p, post := r.URL.Path, r.Method == http.MethodPost
 	isJSON := p == "/json" || strings.HasPrefix(p, "/json/")
 	switch {
