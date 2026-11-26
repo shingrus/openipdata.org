@@ -159,7 +159,7 @@ func TestBuildGeoCityNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "with.mmdb")
-	stats, err := buildGeoNames([]string{layer}, "", out, false, nil, nil, nil, index, folded, "", false, "", "", "")
+	stats, err := buildGeoNames([]string{layer}, "", out, false, nil, nil, nil, index, folded, "", false, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,14 +194,14 @@ func TestBuildGeoCityNames(t *testing.T) {
 	if _, err := buildGeoGuesses([]string{layer}, "", a, false, nil, nil, nil, plainIndex, "", false, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildGeoNames([]string{layer}, "", b, false, nil, nil, nil, plainIndex, nil, "", false, "", "", ""); err != nil {
+	if _, err := buildGeoNames([]string{layer}, "", b, false, nil, nil, nil, plainIndex, nil, "", false, "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	c, d := filepath.Join(dir, "c.mmdb"), filepath.Join(dir, "d.mmdb")
 	if _, err := buildGeo([]string{layer}, "", c, false, nil, nil, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildGeoNames([]string{layer}, "", d, false, nil, nil, nil, nil, folded, "", false, "", "", ""); err != nil {
+	if _, err := buildGeoNames([]string{layer}, "", d, false, nil, nil, nil, nil, folded, "", false, "", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	same := func(x, y string) bool {

@@ -24,11 +24,12 @@ The published data files are CC0 (see [`LICENSE-DATA`](LICENSE-DATA)); the code 
 | `iplistener/` | `iplistener`: runs on web servers, tails the nginx log into `public.visitor_ips` ([README](iplistener/README.md)) |
 | `mmdbbuilder/` | `mmdbbuilder`: standalone MMDB build tool |
 | `tools/llm-codes-test/` | scratch LLM comparison for rDNS city codes, with results ([README](tools/llm-codes-test/README.md)) |
+| `tools/hostingping/` | the monthly hosting ping run in Google Cloud Shell ([README](tools/hostingping/README.md)) |
 
 Shared code in `hatchet/`: `schema/` (Postgres tables), `publish/` (R2 and GitHub
 releases), `rirstats/` (RIR delegated-extended stats parsing, address range to
 prefixes), `download/` (conditional HTTP download) and `outputs/` (pruning old output
-directories, last log lines, file size). `sync-geofeeds`, `sync-bgp`, `import-mlab`, `import-mlab-sites`, `sync-arin-whois` and
+directories, last log lines, file size). `import-hosting-ping` (`hatchet/ping/`) checks and uploads the hosting ping file. `sync-geofeeds`, `sync-bgp`, `import-mlab`, `import-mlab-sites`, `sync-arin-whois` and
 `build-geo-data` share `rirstats` and `download` but keep their own downloaded files.
 
 `hatchet/` and `mmdbbuilder/` are separate Go modules and build separately.
@@ -508,6 +509,37 @@ HAVING client24 IS NOT NULL AND min_rtt <= 30
 3. Start `import-mlab-sites` in Hatchet (input `{}` takes the newest file of the sites inbox, or `{"file": "mlab-sites-2026-11.csv"}`), or run `sudo -u openipdata openipdata-worker run-mlab -sites` on the VM (it needs only the `R2` setting in the env file).
 4. The next `build-geo-data` run uses the layer. It is used for 45 days after the upload of a new export (running it again on the same file does not renew that date); export again about once a month, together with the hop export.
 
+### `import-hosting-ping` (`hatchet/ping/`, no cron, started by hand)
+
+Takes the hosting ping file `hosting-rtt.csv.gz` (made by hand in Google Cloud Shell, see "Hosting ping run" below), checks it and uploads it to
+the private R2 bucket, where `build-geo-data` reads it for the ping country check. It needs no database (only the `R2` setting). Own concurrency
+limit `hosting-ping`.
+
+| Task | Runs after | Does |
+|---|---|---|
+| `upload` | | Reads the newest `*.csv.gz` of the inbox `/var/lib/openipdata/ping/inbox/` (input `file`: a base name there, ending in `.csv.gz`; with no file the task succeeds with `skipped: no file`). The file is untrusted and streamed: at most 1 GB, at most 20M rows, header `prefix` then 3 to 64 distinct site columns `<CC>/<City>` (any header error is a permanent error), each row an IPv4 /24 in masked form, public, in strictly ascending order, each cell empty or a time above 0 and at most 2000 ms, at least 3 times. Bad rows are counted by reason and never echoed (`bad_columns`, `bad_prefix`, `not_public`, `not_sorted`, `bad_rtt`, `few_sites`). Fewer than 100,000 valid rows, or more than 1% bad rows, is a permanent error and nothing is uploaded. Otherwise the file is put AS IT IS at the fixed key `internal/ping/hosting-rtt.csv.gz` (sha256 in the object's metadata; an identical object is not sent again and keeps its date, so the 45 days of `build-geo-data` count from the last new run; `force_upload` always sends). |
+
+- `run-ping [-file <path>] [-skip-upload] [-force-upload]` runs the task once locally; `-file` is a local file, else the newest file of the inbox. Workflow input: `{"file": "hosting-rtt-2026-12.csv.gz", "force_upload": false}`.
+- The output has counts only (rows, valid, sites, bad rows by reason, upload status). No IP or secret is logged or returned.
+
+### Hosting ping run
+
+About once a month, ping the .1 of every /24 of the hosting networks once from 27 Google Cloud regions. The tool is `tools/hostingping/` (its
+README has the details, cost and the opt-out list `exclude.txt`): about 2.2M targets, about 60M pings, about $1.5-2 a run, about an hour (all 27 regions at once).
+
+1. In a Google Cloud project with billing, open Cloud Shell, put the folder `tools/hostingping/` there and run `bash run.sh`. It is safe to run again
+   after a disconnect (finished regions are skipped, a VM that is still pinging is waited for).
+2. Download `hosting-rtt.csv.gz` from Cloud Shell's menu and copy it to the worker VM into the inbox, owned by the `openipdata` user:
+
+   ```bash
+   scp hosting-rtt.csv.gz vm:/tmp/hosting-rtt.csv.gz
+   ssh vm 'sudo install -d -o openipdata -g openipdata -m 0750 /var/lib/openipdata/ping/inbox &&
+           sudo install -o openipdata -g openipdata -m 0640 /tmp/hosting-rtt.csv.gz /var/lib/openipdata/ping/inbox/hosting-rtt-2026-12.csv.gz && rm /tmp/hosting-rtt.csv.gz'
+   ```
+
+3. Start `import-hosting-ping` in Hatchet (input `{}`), or run `sudo -u openipdata openipdata-worker run-ping` on the VM.
+4. Delete the test bucket (the command is printed at the end of `run.sh`). The next `build-geo-data` run uses the file for 45 days.
+
 ### `sync-arin-whois` (`hatchet/arin/`, cron `*/30 * * * *` UTC)
 
 ARIN has no public whois dump. This workflow asks ARIN's RDAP service about one address of each IPv4 /24 where our
@@ -636,6 +668,16 @@ object, one older than 45 days or a fetch error only skips the check and shows a
 with the GeoNames copy and when the file can be read (`rtt_country` in the task output, `rtt_country_changed` = /24s changed); the retry without GeoNames and
 the holdout build have no check. It prints `rtt-country: R rows, S skipped, N /24s, C /24s changed, P parts changed`. Measured on RIPE Atlas: +12 right and
 -0 lost probes (right country 97.34% -> 97.43%); 5,329 /24s change country.
+
+`mmdbbuilder geo -ping-country <hosting-rtt.csv.gz>` (needs `-geonames`) is a second speed-of-light check of the country, run right after `-rtt-country`
+and before the guesses, with ping times from 27 Google Cloud regions to the .1 of every /24 of the hosting networks (`import-hosting-ping`, R2 key
+`internal/ping/hosting-rtt.csv.gz`). Each time r (ms) is a disk of `r * 100 + 100` km around its region; GeoNames places are grouped in quarter-degree
+cells per country, weighted by population. A /24 with at least 3 times whose country has no cell inside every disk takes the country that holds at least
+half of the weight of the possible cells (country only; the guesses then fill a city); otherwise it stays. `download` fetches the file into
+`/var/lib/openipdata/geo/` (missing, older than 45 days or a fetch error only skips it: `ping-country` in `skipped_layers`); `build-mmdb` passes it only
+with the GeoNames copy (`ping_country`, `ping_country_changed`); the retry without GeoNames and the holdout build have no check. It prints
+`ping-country: R rows, S skipped, N /24s, C /24s changed, P parts changed`. Measured with the real builder on the layers of 2026-11-25 and the answers of a
+Google Cloud test around the hosting Atlas probes: right country 97.40% -> 97.63% (+33 right, -1 lost probes), right city +21 net.
 
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
@@ -1019,6 +1061,8 @@ openipdata-worker run-mlab             # run import-mlab once locally (newest fi
 openipdata-worker run-mlab -file export.csv -skip-upload # import a local CSV, write the layer, upload nothing
 openipdata-worker run-mlab -sites      # run import-mlab-sites once locally (newest file of the sites inbox)
 openipdata-worker run-mlab -sites -file replies.csv -skip-upload # make the site layer from a local CSV, upload nothing
+openipdata-worker run-ping             # run import-hosting-ping once locally (newest file of the ping inbox)
+openipdata-worker run-ping -file hosting-rtt.csv.gz -skip-upload # check a local hosting ping file, upload nothing
 openipdata-worker run-arin             # run sync-arin-whois once locally (up to 24 minutes of lookups, then export and upload)
 openipdata-worker run-arin -skip-upload # same, without uploading the layer
 openipdata-worker run-geo              # run build-geo-data once locally, without Hatchet

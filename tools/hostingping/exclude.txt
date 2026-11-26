@@ -1,0 +1,2 @@
+# Networks that asked not to be pinged: one IPv4 prefix per line (a.b.c.d/len).
+# Blank lines and lines starting with # are ignored. Any /24 that overlaps a prefix here is left out.

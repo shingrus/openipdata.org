@@ -260,7 +260,7 @@ type Source struct {
 	// in the build this run: they had no rows or no object, or skip_layers
 	// named them. The holder blocks file of the 85-holder-city guess (not a layer) is listed
 	// by that name when it is missing, old or could not be fetched; so is the RTT file of the
-	// country check (RTTCountrySource).
+	// country check (RTTCountrySource) and the hosting ping file of the ping country check (PingCountrySource).
 	SkippedLayers []string `json:"skipped_layers,omitempty"`
 }
 
@@ -504,6 +504,11 @@ func (p *Pipeline) Download(ctx context.Context, now time.Time) (Source, error) 
 
 	// 14c. The M-Lab reply times (import-mlab-sites' second file), for the RTT country check.
 	if err := p.downloadRTTCountry(ctx, r2.DownloadIfChanged, downloads, now, &src); err != nil {
+		return src, err
+	}
+
+	// 14d. The hosting ping times (import-hosting-ping's file), for the ping country check.
+	if err := p.downloadPingCountry(ctx, r2.DownloadIfChanged, downloads, now, &src); err != nil {
 		return src, err
 	}
 
@@ -789,6 +794,13 @@ type BuildMMDBOutput struct {
 	// parts it gave another city (87-rtt-network plus 87-rtt-country).
 	RTTCity        string `json:"rtt_city"`
 	RTTCityChanged int    `json:"rtt_city_changed,omitempty"`
+	// PingCountry is the status of the speed-of-light country check with the hosting ping times
+	// (-ping-country, the same kind of check as RTTCountry): "on", "skipped: no GeoNames",
+	// "skipped: no ping times", "skipped: ping times unreadable" or "skipped: sites not placed" (the
+	// builder found fewer than 3 site columns GeoNames places). PingCountryChanged counts the
+	// /24s whose country it changed.
+	PingCountry        string `json:"ping_country"`
+	PingCountryChanged int    `json:"ping_country_changed,omitempty"`
 	// Fallback is "on": the build passes -fallback, so the addresses still without a city
 	// get the guesses 82-asn-likely, 84-asn-near, 88-asn-far, 89-asn-anywhere and 89-country-near (only with the ASN prefixes)
 	// and 86-country-main (always).
@@ -804,6 +816,13 @@ var coordinatesSummary = regexp.MustCompile(`(?m)^coordinates: (\d+) records pla
 
 // rttCitySummary matches mmdbbuilder's "rtt-city: R rows, S skipped, N /24s, I impossible parts, B 87-rtt-network, C 87-rtt-country, K kept".
 var rttCitySummary = regexp.MustCompile(`(?m)^rtt-city: \d+ rows, \d+ skipped, \d+ /24s, \d+ impossible parts, (\d+) 87-rtt-network, (\d+) 87-rtt-country, \d+ kept$`)
+
+// pingCountrySummary matches mmdbbuilder's "ping-country: R rows, S skipped, N /24s, C /24s changed, P parts changed".
+var pingCountrySummary = regexp.MustCompile(`(?m)^ping-country: \d+ rows, \d+ skipped, \d+ /24s, (\d+) /24s changed, \d+ parts changed$`)
+
+// pingCountrySkipped matches mmdbbuilder's line for a ping file whose sites GeoNames does not place
+// (the check is skipped, the build goes on).
+var pingCountrySkipped = regexp.MustCompile(`(?m)^ping-country: skipped: `)
 
 // rttCountrySummary matches mmdbbuilder's "rtt-country: R rows, S skipped, N /24s, C /24s changed, P parts changed".
 var rttCountrySummary = regexp.MustCompile(`(?m)^rtt-country: \d+ rows, \d+ skipped, \d+ /24s, (\d+) /24s changed, \d+ parts changed$`)
@@ -965,12 +984,15 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	var extra []string
 	var rttArgs []string
 	rttStatus := "skipped: no GeoNames"
+	var pingArgs []string
+	pingStatus := "skipped: no GeoNames"
 	if geonames != "" {
 		extra = []string{"-geonames", geonames}
 		rttArgs, rttStatus = p.rttCountryArgs(true)
 		if len(rttArgs) == 2 { // the city check takes the same file
 			rttArgs = append(rttArgs, rttCityFlag, rttArgs[1])
 		}
+		pingArgs, pingStatus = p.pingCountryArgs(true)
 		coordinates = "on"
 		if strings.HasPrefix(status, "stale: ") {
 			coordinates = "on (" + status + ")"
@@ -980,7 +1002,8 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	holderArgs, holderCity := p.holderArgs(asnMain == "on")
 	guesses := slices.Concat(asnMainArgs, holderArgs, []string{fallbackFlag}) // the flags of the guesses; the retry without GeoNames passes the same ones
 	extra = append(extra, guesses...)
-	extra = append(extra, rttArgs...) // -rtt-country and -rtt-city; not in guesses: the retry without GeoNames must not pass them
+	extra = append(extra, rttArgs...)  // -rtt-country and -rtt-city; not in guesses: the retry without GeoNames must not pass them
+	extra = append(extra, pingArgs...) // -ping-country, the same
 	args, err := p.geoArgs(final, nil, extra...)
 	if err != nil {
 		return BuildMMDBOutput{}, err
@@ -991,6 +1014,7 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 		p.log("mmdb: geonames unusable, building without coordinates: %v", err)
 		coordinates = "skipped: the builder could not read the GeoNames file"
 		rttStatus = "skipped: no GeoNames"
+		pingStatus = "skipped: no GeoNames"
 		if args, err = p.geoArgs(final, nil, guesses...); err == nil {
 			stdout, err = p.runBuilder(ctx, args)
 		}
@@ -1001,13 +1025,19 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
-	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, RTTCountry: rttStatus, RTTCity: rttStatus, Fallback: "on"}
+	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, RTTCountry: rttStatus, RTTCity: rttStatus, PingCountry: pingStatus, Fallback: "on"}
 	if m := coordinatesSummary.FindStringSubmatch(stdout); m != nil {
 		out.CoordinatesPlaced, _ = strconv.Atoi(m[1])
 		out.CoordinatesUnplaced, _ = strconv.Atoi(m[2])
 	}
 	if m := rttCountrySummary.FindStringSubmatch(stdout); m != nil {
 		out.RTTCountryChanged, _ = strconv.Atoi(m[1])
+	}
+	if m := pingCountrySummary.FindStringSubmatch(stdout); m != nil {
+		out.PingCountryChanged, _ = strconv.Atoi(m[1])
+	}
+	if pingCountrySkipped.MatchString(stdout) {
+		out.PingCountry = "skipped: sites not placed"
 	}
 	if m := rttCitySummary.FindStringSubmatch(stdout); m != nil {
 		b, _ := strconv.Atoi(m[1])

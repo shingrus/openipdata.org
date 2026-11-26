@@ -9,6 +9,7 @@
 //	openipdata-worker run-geofeeds [-skip-upload | -force-upload] [-rdap-budget N] [-domain-budget N] # sync-geofeeds
 //	openipdata-worker run-bgp [-skip-upload | -force-upload] [-mrt file] # sync-bgp (-mrt: read a local dump, no download, no upload)
 //	openipdata-worker run-mlab [-sites] [-file path] [-skip-upload | -force-upload] # import-mlab (-file: any local CSV instead of the newest in the inbox); -sites: import-mlab-sites instead (layer 35-speedtest-site, from the sites inbox or -file)
+//	openipdata-worker run-ping [-file path] [-skip-upload | -force-upload] # import-hosting-ping (check hosting-rtt.csv.gz from the inbox or -file, upload it to R2)
 //	openipdata-worker run-arin [-skip-upload] [-force-upload] [-force-export] # sync-arin-whois
 //	openipdata-worker run-geo [-skip-publish] [-force-publish] # build-geo-data
 //	openipdata-worker run-rdns [-force-replace]  # resolve-ips
@@ -64,6 +65,7 @@ import (
 	"openipdata.org/hatchet/geofeeds"
 	"openipdata.org/hatchet/mlab"
 	"openipdata.org/hatchet/pdb"
+	"openipdata.org/hatchet/ping"
 	"openipdata.org/hatchet/rdns"
 	"openipdata.org/hatchet/rdnsrules"
 )
@@ -124,6 +126,15 @@ type ImportMLabSitesInput struct {
 	// the task does nothing.
 	File string `json:"file"`
 	// ForceUpload sends the layer even when R2 already holds the same bytes.
+	ForceUpload bool `json:"force_upload"`
+}
+
+// ImportHostingPingInput is the import-hosting-ping input; there is no cron, the workflow is started by hand.
+type ImportHostingPingInput struct {
+	// File is the base name of a .csv.gz file in the inbox (/var/lib/openipdata/ping/inbox); empty
+	// means the newest one there, and with no file the task does nothing.
+	File string `json:"file"`
+	// ForceUpload sends the file even when R2 already holds the same bytes.
 	ForceUpload bool `json:"force_upload"`
 }
 
@@ -218,6 +229,8 @@ func main() {
 		err = runBGP(ctx, os.Args[2:])
 	case "run-mlab":
 		err = runMLab(ctx, os.Args[2:])
+	case "run-ping":
+		err = runPing(ctx, os.Args[2:])
 	case "run-arin":
 		err = runARIN(ctx, os.Args[2:])
 	case "run-geo":
@@ -227,7 +240,7 @@ func main() {
 	case "run-rdns-rules":
 		err = runRDNSRules(ctx, os.Args[2:])
 	default:
-		err = fmt.Errorf("unknown command %q (want serve, version, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-arin, run-geo, run-rdns, or run-rdns-rules)", command)
+		err = fmt.Errorf("unknown command %q (want serve, version, run-asn, run-pdb, run-domains, run-geofeeds, run-bgp, run-mlab, run-ping, run-arin, run-geo, run-rdns, or run-rdns-rules)", command)
 	}
 	if err != nil {
 		slog.Error("openipdata-worker failed", "err", err)
@@ -263,6 +276,11 @@ func newBGPPipeline(progress func(string)) *bgp.Pipeline {
 func newMLabPipeline(progress func(string)) *mlab.Pipeline {
 	builder, _ := mmdbBuilder()
 	return &mlab.Pipeline{DataDir: dataDir(), PGSQL: pgsql(), Progress: progress, MMDBBuilder: builder, R2: env("R2"), PTRResolver: env("PTR_RESOLVER")}
+}
+
+// newPingPipeline reads the environment; progress receives log lines.
+func newPingPipeline(progress func(string)) *ping.Pipeline {
+	return &ping.Pipeline{DataDir: dataDir(), Progress: progress, R2: env("R2")}
 }
 
 // newARINPipeline reads the environment; progress receives log lines. mmdbbuilder is the binary
@@ -388,6 +406,7 @@ func serve(ctx context.Context) error {
 			syncBGPWorkflow(client),
 			importMLabWorkflow(client),
 			importMLabSitesWorkflow(client),
+			importHostingPingWorkflow(client),
 			syncARINWhoisWorkflow(client),
 			buildGeoWorkflow(client),
 			resolveIPsWorkflow(client),
@@ -743,6 +762,30 @@ func importMLabSitesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 		out, err := p.SiteLayer(ctx, input.File, mlab.SiteLayerOptions{ForceUpload: input.ForceUpload})
 		// A file or setting problem is fixed by the owner, not by a retry.
 		if errors.Is(err, mlab.ErrPermanent) {
+			err = hatchet.NewNonRetryableError(err)
+		}
+		return out, err
+	}, taskRetry(hatchet.WithExecutionTimeout(30*time.Minute))...)
+	return wf
+}
+
+// importHostingPingWorkflow checks the hosting ping file the owner copied into the inbox (ping
+// times from Google Cloud regions to the .1 of every /24 of hosting networks) and uploads it as it
+// is to private R2, where build-geo-data reads it for the speed-of-light country check
+// (-ping-country). There is no cron and no database.
+func importHostingPingWorkflow(client *hatchet.Client) *hatchet.Workflow {
+	wf := client.NewWorkflow("import-hosting-ping",
+		hatchet.WithWorkflowDescription("hosting ping file (ping inbox) -> hosting-rtt.csv.gz in private R2; started by hand"),
+		hatchet.WithWorkflowConcurrency(oneRunLimit("hosting-ping")),
+	)
+	wf.NewTask("upload", func(ctx hatchet.Context, input ImportHostingPingInput) (ping.Output, error) {
+		p := newPingPipeline(taskLog(ctx))
+		if err := p.CheckUpload(); err != nil {
+			return ping.Output{}, hatchet.NewNonRetryableError(err)
+		}
+		out, err := p.Upload(ctx, input.File, ping.Options{ForceUpload: input.ForceUpload})
+		// A file or setting problem is fixed by the owner, not by a retry.
+		if errors.Is(err, ping.ErrPermanent) {
 			err = hatchet.NewNonRetryableError(err)
 		}
 		return out, err
@@ -1260,6 +1303,27 @@ func runMLabSites(ctx context.Context, p *mlab.Pipeline, file string, skipUpload
 		}
 	}
 	_, err := p.SiteLayer(ctx, "", mlab.SiteLayerOptions{Path: file, SkipUpload: skipUpload, ForceUpload: forceUpload})
+	return err
+}
+
+// runPing runs the upload task of import-hosting-ping once, without Hatchet and without a database.
+// -file names a local .csv.gz; without it the newest file of the inbox is used.
+func runPing(ctx context.Context, args []string) error {
+	flags := flag.NewFlagSet("run-ping", flag.ExitOnError)
+	file := flags.String("file", "", "check and upload this local .csv.gz instead of the newest file in the inbox")
+	skipUpload := flags.Bool("skip-upload", false, "check the file but do not upload it")
+	forceUpload := flags.Bool("force-upload", false, "send the file even if R2 already holds the same bytes")
+	flags.Parse(args)
+	if flags.NArg() > 0 {
+		return fmt.Errorf("run-ping: unexpected argument %q", flags.Arg(0))
+	}
+	p := newPingPipeline(cliLog)
+	if !*skipUpload {
+		if err := p.CheckUpload(); err != nil {
+			return err
+		}
+	}
+	_, err := p.Upload(ctx, "", ping.Options{Path: *file, SkipUpload: *skipUpload, ForceUpload: *forceUpload})
 	return err
 }
 

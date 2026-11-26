@@ -115,19 +115,22 @@ func buildGeo(layers []string, namesPath, outPath string, debugMode bool, sameCo
 // needs the GeoNames index) the speed-of-light country check runs after all layers and before
 // the guesses (rttcountry.go). Without them the output is exactly buildGeo's.
 func buildGeoGuesses(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, asnMain string, fallback bool, holders string, rttCountry string) ([]geoLayerStats, error) {
-	return buildGeoNames(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, nil, asnMain, fallback, holders, rttCountry, "")
+	return buildGeoNames(layers, namesPath, outPath, debugMode, sameCountry, withinFirst, firstCountry, index, nil, asnMain, fallback, holders, rttCountry, "", "")
 }
 
 // buildGeoNames is buildGeoGuesses with the folded GeoNames index (nil: none; it needs index):
 // a layer city the index does not place exactly is cleaned first (cityclean.go), and the number
 // of rows renamed is in the stats (geoLayerStats.renamed).
-func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, folded foldedNames, asnMain string, fallback bool, holders string, rttCountry string, rttCity string) ([]geoLayerStats, error) {
+func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, sameCountry, withinFirst, firstCountry map[string]bool, index geoNames, folded foldedNames, asnMain string, fallback bool, holders string, rttCountry string, rttCity string, pingCountry string) ([]geoLayerStats, error) {
 	var cleaner *cityCleaner
 	if index != nil && folded != nil {
 		cleaner = &cityCleaner{index: index, folded: folded}
 	}
 	if rttCountry != "" && index == nil {
 		return nil, errors.New("-rtt-country needs -geonames")
+	}
+	if pingCountry != "" && index == nil {
+		return nil, errors.New("-ping-country needs -geonames")
 	}
 	if rttCity != "" && index == nil {
 		return nil, errors.New("-rtt-city needs -geonames")
@@ -284,6 +287,22 @@ func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, s
 			return stats, fmt.Errorf("%s: %w", filepath.Base(rttCountry), err)
 		}
 		fmt.Println(counts)
+	}
+	if pingCountry != "" {
+		// Right after the RTT country check, before the guesses.
+		counts, err := applyPingCountry(writer, pingCountry, index, debugMode, recordFor, func(i int) mmdbtype.Map { return records[i] })
+		if err != nil {
+			return stats, fmt.Errorf("%s: %w", filepath.Base(pingCountry), err)
+		}
+		if counts.skippedFile {
+			// On stdout, so build-mmdb reports the check as skipped (it parses this line).
+			fmt.Printf("ping-country: skipped: fewer than %d site columns that GeoNames places\n", pingMinColumn)
+		} else {
+			fmt.Println(counts)
+			if counts.ignored > 0 {
+				fmt.Printf("ping-country: %d site columns ignored\n", counts.ignored)
+			}
+		}
 	}
 	var segs []asnSeg // the ASN segments fillGuesses read, shared with the RTT city check
 	if asnMain != "" || fallback || holders != "" {
