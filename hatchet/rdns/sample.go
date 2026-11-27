@@ -34,6 +34,11 @@ import (
 // One pass over the 2^24 indexes is a cycle; the next one starts 180 days after the last began, so
 // every /24 is sampled about every 180 days. The state file only holds the cursor and two times:
 // losing it restarts the cycle from 0, which is harmless (some /24s are sampled again early).
+//
+// Of the sampleNetworks /24s of a run up to nearNetworks come first from the near lane (near.go): the
+// /16 blocks around the /24s that already have a named row, where new rows are far more likely. The
+// walk takes the rest. The done file (sample-done.bits) records which /24s were sampled in this cycle,
+// so the lane and the walk never repeat one.
 const (
 	sampleNetworks = 2000 // gap /24s per run
 	sampleMaxSteps = 100000
@@ -69,18 +74,21 @@ type SampleOutput struct {
 	MMDBReason string `json:"mmdb_reason,omitempty"`
 	GapsBuilt  bool   `json:"gaps_built,omitempty"` // mmdbbuilder gaps ran (the MMDB's ETag had changed)
 
-	Gaps          int  `json:"gaps"`                 // /24s in the gap
-	Steps         int  `json:"steps"`                // indexes of the walk looked at
-	Picked        int  `json:"picked"`               // gap /24s the walk found
-	Queried       int  `json:"queried"`              // hosts looked up
-	OK            int  `json:"ok"`                   // got a name
-	NotFound      int  `json:"not_found"`            // no PTR record
-	Errors        int  `json:"errors"`               // failed lookups
-	DoH           int  `json:"doh"`                  // of the lookups, answered through the DoH fallback
-	Networks      int  `json:"networks"`             // /24s done (the cursor moved past them)
-	NamedNetworks int  `json:"named_networks"`       // of them, with at least one name: rows of customer_name_networks
-	Pruned        int  `json:"pruned"`               // rows older than 200 days deleted
-	CycleDone     bool `json:"cycle_done,omitempty"` // the walk reached the end of the 2^24 indexes
+	Gaps           int  `json:"gaps"`                 // /24s in the gap
+	Steps          int  `json:"steps"`                // indexes of the walk looked at
+	Picked         int  `json:"picked"`               // gap /24s the walk found
+	NearBlocks     int  `json:"near_blocks"`          // /16 blocks that hold a named row
+	NearCandidates int  `json:"near_candidates"`      // /24s the near lane could take, before the cut
+	NearPicked     int  `json:"near_picked"`          // /24s the near lane took
+	Queried        int  `json:"queried"`              // hosts looked up
+	OK             int  `json:"ok"`                   // got a name
+	NotFound       int  `json:"not_found"`            // no PTR record
+	Errors         int  `json:"errors"`               // failed lookups
+	DoH            int  `json:"doh"`                  // of the lookups, answered through the DoH fallback
+	Networks       int  `json:"networks"`             // /24s done: looked up and, with a name, recorded
+	NamedNetworks  int  `json:"named_networks"`       // of them, with at least one name: rows of customer_name_networks
+	Pruned         int  `json:"pruned"`               // rows older than 200 days deleted
+	CycleDone      bool `json:"cycle_done,omitempty"` // the walk reached the end of the 2^24 indexes
 
 	Stopped string `json:"stopped,omitempty"` // "time": the budget ran out before every picked /24 was done
 }
@@ -177,26 +185,29 @@ func (g gapList) contains(idx uint32) (string, bool) {
 	return strings.ToUpper(string(g.runs[r].country[:])), true
 }
 
-// sampled is a gap /24 found by the walk with its hosts and its position in the walk.
+// sampled is a /24 to look up with its hosts: a gap /24 found by the walk (with its position) or one
+// the near lane picked.
 type sampled struct {
 	Prefix  netip.Prefix
 	Country string
 	Hosts   [3]netip.Addr
-	Pos     int
+	Pos     int  // position in the walk; no meaning when Near
+	Near    bool // picked by the near lane, not the walk
 }
 
 // walkGap walks from position cursor, takes the /24s that are in the gap until it has want of them or
-// after maxSteps indexes, and returns them with the position after the last index looked at.
-func walkGap(g gapList, cursor, want, maxSteps int, intn func(int) int) (picked []sampled, end int) {
+// after maxSteps indexes, and returns them with the position after the last index looked at. An index
+// that is done is passed like one that is not in the gap.
+func walkGap(g gapList, done doneSet, cursor, want, maxSteps int, intn func(int) int) (picked []sampled, end int) {
 	i := cursor
 	for steps := 0; i < walkSize && steps < maxSteps && len(picked) < want; steps++ {
 		idx := walkAt(uint32(i))
-		if c, ok := g.contains(idx); ok {
+		if c, ok := g.contains(idx); ok && !done.has(idx) {
 			a := netip.AddrFrom4([4]byte{byte(idx >> 16), byte(idx >> 8), byte(idx), 0})
 			p := netip.PrefixFrom(a, 24)
 			hosts := sampleHosts(p, intn)
 			if ipdata.PublicV4(hosts[0]) { // a special range the RIR data lists: nothing to name
-				picked = append(picked, sampled{p, c, hosts, i})
+				picked = append(picked, sampled{Prefix: p, Country: c, Hosts: hosts, Pos: i})
 			}
 		}
 		i++
@@ -348,11 +359,25 @@ func (p *Pipeline) SampleNames(ctx context.Context) (SampleOutput, error) {
 		return out, nil
 	}
 
+	done := readDone(p.donePath(), state)
+	named, err := loadNamed(ctx, conn)
+	if err != nil {
+		return out, err
+	}
+	lane, cands, blocks := nearPick(gap, named, done, nearNetworks, p.randInt)
+	out.NearBlocks, out.NearCandidates, out.NearPicked = blocks, cands, len(lane)
+
 	steps := sampleMaxSteps
 	if p.walkSteps > 0 {
 		steps = p.walkSteps
 	}
-	picked, end := walkGap(gap, state.Cursor, sampleNetworks, steps, p.randInt)
+	// The walk must not pick what the lane took; the lane's /24s are marked done only once recorded.
+	walkDone := done.clone()
+	for _, s := range lane {
+		b := s.Prefix.Addr().As4()
+		walkDone.set(uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2]))
+	}
+	picked, end := walkGap(gap, walkDone, state.Cursor, sampleNetworks-len(lane), steps, p.randInt)
 	out.Picked, out.Steps = len(picked), end-state.Cursor
 	state.LastRun = now
 	save := func(cursor int) {
@@ -366,35 +391,44 @@ func (p *Pipeline) SampleNames(ctx context.Context) (SampleOutput, error) {
 	if resolver == nil {
 		resolver = newPTRResolver(p.PTRResolver)
 	}
-	p.log("sample-names: %d gap /24s to look up", len(picked))
+	p.log("sample-names: %d /24s to look up: %d from the near lane (%d candidates in %d /16 blocks), %d gap /24s from the walk",
+		len(lane)+len(picked), len(lane), cands, blocks, len(picked))
 	pace := outputs.Pace{Every: outputs.ProgressEvery}
 	rctx, cancel := context.WithTimeout(ctx, sampleBudget)
 	defer cancel()
-	done := true
-	for start := 0; start < len(picked); start += sampleBatch {
-		batch := picked[start:min(start+sampleBatch, len(picked))]
+	total := len(lane) + len(picked)
+	finished, err := sampleInBatches(lane, picked, func(batch []sampled) (bool, error) {
 		if rctx.Err() != nil {
-			done = false
-			break
+			return false, nil
 		}
-		ok, err := p.sampleBatch(ctx, rctx, conn, resolver, batch, &out)
-		if err != nil {
-			return out, err
+		return p.sampleBatch(ctx, rctx, conn, resolver, batch, &out)
+	}, func(batch []sampled, walk bool) {
+		for _, s := range batch {
+			b := s.Prefix.Addr().As4()
+			done.set(uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2]))
 		}
-		if !ok {
-			done = false
-			break
+		// The state first: the done file belongs to the cycle the state names, so a new cycle's
+		// start must be on disk before it (a lane batch saves it with the cursor unmoved).
+		if walk {
+			save(batch[len(batch)-1].Pos + 1) // moves only past /24s that are recorded
+		} else {
+			save(state.Cursor)
 		}
-		save(batch[len(batch)-1].Pos + 1) // moves only past /24s that are recorded
+		if err := done.write(p.donePath(), state.CycleStarted); err != nil {
+			p.log("sample-names: could not save %s: %v", doneFile, err)
+		}
 		if pace.Due() {
 			p.log("sample-names: %d of %d /24s done, %d with a name; %d hosts looked up: %d names, %d not found, %d errors, %d through DoH",
-				out.Networks, len(picked), out.NamedNetworks, out.Queried, out.OK, out.NotFound, out.Errors, out.DoH)
+				out.Networks, total, out.NamedNetworks, out.Queried, out.OK, out.NotFound, out.Errors, out.DoH)
 		}
+	})
+	if err != nil {
+		return out, err
 	}
 	if err := ctx.Err(); err != nil {
 		return out, err
 	}
-	if done {
+	if finished {
 		save(end)
 		out.CycleDone = end >= walkSize
 	} else {
@@ -406,9 +440,28 @@ func (p *Pipeline) SampleNames(ctx context.Context) (SampleOutput, error) {
 		return out, dbError("prune customer name networks", err)
 	}
 	out.Pruned = int(tag.RowsAffected())
-	p.log("sample-names: %d gap /24s, walked %d indexes, %d found; %d hosts looked up: %d names, %d not found, %d errors, %d through DoH; %d /24s done, %d recorded; %d old removed; cycle done=%v; stopped=%q",
-		out.Gaps, out.Steps, out.Picked, out.Queried, out.OK, out.NotFound, out.Errors, out.DoH, out.Networks, out.NamedNetworks, out.Pruned, out.CycleDone, out.Stopped)
+	p.log("sample-names: %d gap /24s, near lane %d of %d candidates in %d blocks, walked %d indexes, %d found; %d hosts looked up: %d names, %d not found, %d errors, %d through DoH; %d /24s done, %d recorded; %d old removed; cycle done=%v; stopped=%q",
+		out.Gaps, out.NearPicked, out.NearCandidates, out.NearBlocks, out.Steps, out.Picked, out.Queried, out.OK, out.NotFound, out.Errors, out.DoH, out.Networks, out.NamedNetworks, out.Pruned, out.CycleDone, out.Stopped)
 	return out, nil
+}
+
+// sampleInBatches looks up the lane's /24s and then the walk's, sampleBatch of them at a time. do looks
+// one batch up and records it (false: the budget ran out and the batch is not recorded); recorded is
+// called after each batch that was, with whether it is the walk's. The result is false when a batch was
+// not recorded: nothing after it is looked up, so a stop in the lane leaves every walk batch undone and
+// the cursor where it was.
+func sampleInBatches(lane, walk []sampled, do func([]sampled) (bool, error), recorded func(batch []sampled, walk bool)) (bool, error) {
+	for k, list := range [][]sampled{lane, walk} {
+		for start := 0; start < len(list); start += sampleBatch {
+			batch := list[start:min(start+sampleBatch, len(list))]
+			ok, err := do(batch)
+			if err != nil || !ok {
+				return false, err
+			}
+			recorded(batch, k == 1)
+		}
+	}
+	return true, nil
 }
 
 // sampleBatch looks up the hosts of batch with the resolver (no store: the answers are only used here)

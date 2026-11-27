@@ -67,7 +67,7 @@ func TestWalkIsABijection(t *testing.T) {
 func TestWalkGap(t *testing.T) {
 	g := parseGaps([]byte("20.0.0.0/24 1000 FR\n30.0.0.0/24 4 DE\n"))
 	intn := func(int) int { return 7 }
-	all, end := walkGap(g, 0, 1<<30, walkSize, intn)
+	all, end := walkGap(g, newDoneSet(), 0, 1<<30, walkSize, intn)
 	if len(all) != g.total || end != walkSize {
 		t.Fatalf("whole walk: %d of %d, end %d", len(all), g.total, end)
 	}
@@ -93,7 +93,7 @@ func TestWalkGap(t *testing.T) {
 	var got []sampled
 	cursor := 0
 	for cursor < walkSize {
-		part, next := walkGap(g, cursor, 100, walkSize, intn)
+		part, next := walkGap(g, newDoneSet(), cursor, 100, walkSize, intn)
 		if len(part) > 100 || next <= cursor {
 			t.Fatalf("part of %d, cursor %d -> %d", len(part), cursor, next)
 		}
@@ -112,12 +112,40 @@ func TestWalkGap(t *testing.T) {
 		}
 	}
 	// The step cap stops the walk early, without a /24 being skipped.
-	part, next := walkGap(g, 0, 1<<30, 1000, intn)
+	part, next := walkGap(g, newDoneSet(), 0, 1<<30, 1000, intn)
 	if next != 1000 || len(part) > 1000 {
 		t.Errorf("cap: %d found, end %d", len(part), next)
 	}
-	if p, n := walkGap(g, walkSize, 10, 10, intn); len(p) != 0 || n != walkSize {
+	if p, n := walkGap(g, newDoneSet(), walkSize, 10, 10, intn); len(p) != 0 || n != walkSize {
 		t.Errorf("past the end: %v %d", p, n)
+	}
+}
+
+// walkGap passes an index whose bit is done: the cursor moves past it, it is not picked.
+func TestWalkGapSkipsDone(t *testing.T) {
+	g := parseGaps([]byte("20.0.0.0/24 1000 FR\n"))
+	intn := func(int) int { return 7 }
+	all, _ := walkGap(g, newDoneSet(), 0, 1<<30, walkSize, intn)
+	done := newDoneSet()
+	skip := map[netip.Prefix]bool{}
+	for k := 0; k < len(all); k += 3 {
+		b := all[k].Prefix.Addr().As4()
+		done.set(uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2]))
+		skip[all[k].Prefix] = true
+	}
+	got, end := walkGap(g, done, 0, 1<<30, walkSize, intn)
+	if end != walkSize || len(got) != len(all)-len(skip) {
+		t.Fatalf("got %d, want %d, end %d", len(got), len(all)-len(skip), end)
+	}
+	for _, s := range got {
+		if skip[s.Prefix] {
+			t.Fatalf("%s is done but was picked", s.Prefix)
+		}
+	}
+	// The cursor still passes done indexes: one pick wanted, the end is after the skipped ones before it.
+	first, end := walkGap(g, done, 0, 1, walkSize, intn)
+	if len(first) != 1 || end != first[0].Pos+1 || first[0].Pos <= all[0].Pos {
+		t.Fatalf("first %v end %d", first, end)
 	}
 }
 

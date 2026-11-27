@@ -1000,7 +1000,9 @@ About 69% of IPv4 has a country but no city (the gap). The PTR names of customer
 the customer's own city (`...nycmny.fios.verizon.net`). The task `sample-names` (after `resolve-names`,
 before `locate`) takes the current published ip2geo MMDB the way `locate` does (R2, ETag, saved copy) and runs
 `mmdbbuilder gaps` on it when its ETag changed (`gaps.txt` and its ETag in the rdns dir). It walks a fixed shuffled
-order of all 2^24 /24 indexes from a saved cursor (`sample-state.json`), takes the next 2000 /24s that are in the gap,
+order of all 2^24 /24 indexes from a saved cursor (`sample-state.json`), takes the next /24s that are in the gap (up to 1500 of the 2000 of a run
+first come from the near lane: the /24s that already have a `named` row and the gap /24s of their /16 blocks, which
+`sample-done.bits` keeps from being sampled twice in a cycle),
 resolves the `.1` and two random hosts of each with the `resolve-names` resolver (nothing goes to `public.ip_ptr_names`)
 and records the /24s that have at least one name in `public.customer_name_networks` (`prefix`, `country`, `hosts` and
 `names` of the hosts with a name, `sampled_at`). A run less than 25 minutes after the last does nothing; after one
