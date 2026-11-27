@@ -2,7 +2,7 @@
 //
 //	mmdbbuilder version
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
-//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-ping-country <hosting-rtt.csv.gz>] [-ping-city <hosting-rtt.csv.gz>] [-debug] <layer.csv.gz>...
+//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt> [-geonames-all <allCountries.zip|txt>]] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-ping-country <hosting-rtt.csv.gz>] [-ping-city <hosting-rtt.csv.gz>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]
 //	mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>
@@ -112,7 +112,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder stamp -db <ip2geo.mmdb> -meta <meta.json> -out <stamped.mmdb>")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder convert -db <ip2geo.mmdb|ip2asn.mmdb> -out <file.mmdb> [-geonames <cities1000.txt>]")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder convert -db <ip2geo.mmdb|ip2asn.mmdb> -out <file.mmdb> [-geonames <cities1000.txt> [-geonames-all <allCountries.zip|txt>]]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder eval -db <ip2geo.mmdb> -rir <10-rir.csv.gz> [-dbip <file.mmdb>] [-maxmind <file.mmdb>] [-atlas <probes.csv> [-geonames <cities1000.txt>]] [-holdout-db <file.mmdb> -holdout-truth <rows.csv>]")
 	os.Exit(2)
 }
@@ -123,6 +123,7 @@ func runGeo(args []string) {
 	names := flags.String("names", "", "country names, one code<TAB>name per line (tzdata names fill the gaps)")
 	debugMode := flags.Bool("debug", false, "include the network in each record")
 	geonames := flags.String("geonames", "", "GeoNames cities1000.txt: records whose city it places get latitude and longitude (optional)")
+	geonamesAll := flags.String("geonames-all", "", "GeoNames allCountries (the zip or the txt; needs -geonames): a city the main list does not place is looked up in it (populated places and administrative divisions of level 2 to 5), unless the name is ambiguous (optional)")
 	sameCountry := flags.String("same-country", "", "layer file names (comma-separated) whose rows apply only where the country so far is the same or unknown")
 	withinFirst := flags.String("within-first", "", "layer file names (comma-separated) whose rows are used only if no broader than one prefix of the first layer")
 	asnMain := flags.String("asn-main", "", "asn-prefixes.csv.gz (asn,prefix; IPv4 rows used): after all layers, give the main city of an ASN to its addresses in a country that have no city (a guess, city_source 80-asn-main)")
@@ -140,6 +141,10 @@ func runGeo(args []string) {
 	}
 	if *holders != "" && *asnMain == "" {
 		fmt.Fprintln(os.Stderr, "error: -holders needs -asn-main")
+		os.Exit(2)
+	}
+	if *geonamesAll != "" && *geonames == "" {
+		fmt.Fprintln(os.Stderr, "error: -geonames-all needs -geonames")
 		os.Exit(2)
 	}
 	if *rttCountry != "" && *geonames == "" {
@@ -167,6 +172,16 @@ func runGeo(args []string) {
 			os.Exit(1)
 		}
 	}
+	var full fullStats
+	if *geonamesAll != "" {
+		// The names the main list does not place, from the same rows the build reads, then one
+		// pass over the full list; the places go into the index before the build starts.
+		var err error
+		if full, err = applyFullList(index, folded, flags.Args(), *holders, *geonamesAll); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	stats, err := buildGeoNames(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, folded, *asnMain, *fallback, *holders, *rttCountry, *rttCity, *pingCountry, *pingCity)
 	prefixes, placed, unplaced, renamed, regioned := 0, 0, 0, 0, 0
 	for _, s := range stats {
@@ -190,6 +205,9 @@ func runGeo(args []string) {
 	if index != nil {
 		fmt.Printf("city-names: %d rows renamed\n", renamed)
 		fmt.Printf("city-regions: %d rows placed by their region\n", regioned)
+		if *geonamesAll != "" {
+			fmt.Printf("city-fallback: %d rows placed from the full list, %d names placed, %d ambiguous, %d still unplaced\n", full.rows, full.placed, full.ambiguous, full.unplaced)
+		}
 		fmt.Printf("coordinates: %d records placed, %d cities not placed\n", placed, unplaced)
 	}
 	fmt.Printf("wrote %s (%d layers, %d prefixes)\n", *out, len(stats), prefixes)

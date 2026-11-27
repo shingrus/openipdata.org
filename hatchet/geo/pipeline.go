@@ -816,6 +816,12 @@ type BuildMMDBOutput struct {
 	// /24s of the ping file that gave at least one such time.
 	PingCity         string `json:"ping_city"`
 	PingCityNetworks int    `json:"ping_city_networks,omitempty"`
+	// GeoNamesAll is "on" when the build passed the full GeoNames list (-geonames-all; it needs
+	// GeoNames), so a city the main list does not place is looked up in it, or "skipped: no
+	// GeoNames" / "skipped: no full list" / "skipped: full list unreadable".
+	// GeoNamesAllPlaced counts the distinct (country, city) names it placed.
+	GeoNamesAll       string `json:"geonames_all"`
+	GeoNamesAllPlaced int    `json:"geonames_all_placed,omitempty"`
 	// Fallback is "on": the build passes -fallback, so the addresses still without a city
 	// get the guesses 82-asn-likely, 84-asn-near, 88-asn-far, 89-asn-anywhere and 89-country-near (only with the ASN prefixes)
 	// and 86-country-main (always).
@@ -847,6 +853,9 @@ var pingCitySkipped = regexp.MustCompile(`(?m)^ping-city: skipped: `)
 
 // rttCountrySummary matches mmdbbuilder's "rtt-country: R rows, S skipped, N /24s, C /24s changed, P parts changed".
 var rttCountrySummary = regexp.MustCompile(`(?m)^rtt-country: \d+ rows, \d+ skipped, \d+ /24s, (\d+) /24s changed, \d+ parts changed$`)
+
+// cityFallbackSummary matches mmdbbuilder's "city-fallback: R rows placed from the full list, N names placed, A ambiguous, U still unplaced".
+var cityFallbackSummary = regexp.MustCompile(`(?m)^city-fallback: \d+ rows placed from the full list, (\d+) names placed, \d+ ambiguous, \d+ still unplaced$`)
 
 // geoNamesWait bounds the GeoNames download of the build: a stalled server
 // only costs the coordinates, never the build.
@@ -1007,8 +1016,19 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	rttStatus := "skipped: no GeoNames"
 	var pingArgs []string
 	pingStatus := "skipped: no GeoNames"
+	allStatus := "skipped: no GeoNames"
+	var all string // the full GeoNames list, only with GeoNames
 	if geonames != "" {
 		extra = []string{"-geonames", geonames}
+		all, allStatus = p.prepareGeoNamesAll(ctx)
+		if all != "" {
+			extra = append(extra, geonamesAllFlag, all)
+			allStatus = "on"
+		} else if allStatus == geonamesAllRejected {
+			allStatus = "skipped: full list unreadable" // a copy was fetched and rejected
+		} else {
+			allStatus = "skipped: no full list" // no download and no copy, or no directory
+		}
 		rttArgs, rttStatus = p.rttCountryArgs(true)
 		if len(rttArgs) == 2 { // the city check takes the same file
 			rttArgs = append(rttArgs, rttCityFlag, rttArgs[1])
@@ -1033,12 +1053,22 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 		return BuildMMDBOutput{}, err
 	}
 	stdout, err := p.runBuilder(ctx, args)
+	if err != nil && all != "" && strings.Contains(err.Error(), all) {
+		// The builder named the full list in its error: build again without that list only.
+		p.log("mmdb: full GeoNames list unusable, building without it: %v", err)
+		allStatus = "skipped: full list unreadable"
+		extra = slices.DeleteFunc(extra, func(a string) bool { return a == geonamesAllFlag || a == all })
+		if args, err = p.geoArgs(final, nil, extra...); err == nil {
+			stdout, err = p.runBuilder(ctx, args)
+		}
+	}
 	if err != nil && geonames != "" && strings.Contains(err.Error(), geonames) {
 		// The builder named the GeoNames file in its error: build again without it.
 		p.log("mmdb: geonames unusable, building without coordinates: %v", err)
 		coordinates = "skipped: the builder could not read the GeoNames file"
 		rttStatus = "skipped: no GeoNames"
 		pingStatus = "skipped: no GeoNames"
+		allStatus = "skipped: no GeoNames"
 		if args, err = p.geoArgs(final, nil, guesses...); err == nil {
 			stdout, err = p.runBuilder(ctx, args)
 		}
@@ -1049,10 +1079,13 @@ func (p *Pipeline) BuildMMDB(ctx context.Context, src Source) (BuildMMDBOutput, 
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
 		p.log("mmdb: %s", line)
 	}
-	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, RTTCountry: rttStatus, RTTCity: rttStatus, PingCountry: pingStatus, PingCity: pingStatus, Fallback: "on"}
+	out := BuildMMDBOutput{Path: final, Prefixes: map[string]int{}, Skipped: map[string]int{}, SizeBytes: outputs.FileSize(final), Coordinates: coordinates, ASNMain: asnMain, HolderCity: holderCity, RTTCountry: rttStatus, RTTCity: rttStatus, PingCountry: pingStatus, PingCity: pingStatus, GeoNamesAll: allStatus, Fallback: "on"}
 	if m := coordinatesSummary.FindStringSubmatch(stdout); m != nil {
 		out.CoordinatesPlaced, _ = strconv.Atoi(m[1])
 		out.CoordinatesUnplaced, _ = strconv.Atoi(m[2])
+	}
+	if m := cityFallbackSummary.FindStringSubmatch(stdout); m != nil {
+		out.GeoNamesAllPlaced, _ = strconv.Atoi(m[1])
 	}
 	if m := rttCountrySummary.FindStringSubmatch(stdout); m != nil {
 		out.RTTCountryChanged, _ = strconv.Atoi(m[1])
@@ -1101,6 +1134,9 @@ type PublishOutput struct {
 	ReleaseUnchanged bool `json:"release_unchanged,omitempty"`
 	// GeoNames is "on" (geoname_id and time zone of placed cities) or "skipped: no GeoNames copy".
 	GeoNames string `json:"geonames,omitempty"`
+	// GeoNamesAll is "on" when the convert also got the full list (-geonames-all, set only when its
+	// copy is there), or "skipped: convert failed with the full list"; empty without the copy.
+	GeoNamesAll string `json:"geonames_all,omitempty"`
 	// ASNRun says whether the publish task started a build-asn-data scores-only run
 	// ("started" or "failed"); empty when it did not try. Set by the Hatchet task, never by Publish.
 	ASNRun string `json:"asn_run,omitempty"`
@@ -1123,7 +1159,20 @@ func (p *Pipeline) convertPublished(ctx context.Context, date time.Time, mmdbPat
 	var err error
 	if txt := filepath.Join(p.evalDir(), geonamesEntry); looksLikeGeoNames(txt) {
 		out.GeoNames = "on"
-		stdout, err = p.runBuilder(ctx, append(slices.Clone(args), "-geonames", txt))
+		withNames := append(slices.Clone(args), "-geonames", txt)
+		// The full list, when the build's copy is there: the cities the build placed from it get
+		// their id and time zone too. A failure only drops the list.
+		if zip := filepath.Join(p.evalDir(), geonamesAllFile); looksLikeGeoNamesAll(zip) {
+			out.GeoNamesAll = "on"
+			stdout, err = p.runBuilder(ctx, append(slices.Clone(withNames), geonamesAllFlag, zip))
+			if err != nil && ctx.Err() == nil {
+				p.log("publish: convert with the full GeoNames list failed, converting without it: %v", err)
+				out.GeoNamesAll = "skipped: convert failed with the full list"
+				stdout, err = p.runBuilder(ctx, withNames)
+			}
+		} else {
+			stdout, err = p.runBuilder(ctx, withNames)
+		}
 		if err != nil && ctx.Err() == nil {
 			p.log("publish: convert with GeoNames failed, converting without it: %v", err)
 			out.GeoNames = "skipped: convert failed with GeoNames"

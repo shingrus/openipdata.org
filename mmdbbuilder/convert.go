@@ -211,6 +211,16 @@ func (c *converter) build(k convertKey) mmdbtype.Map {
 // database_type, anything else is an error). geonamesPath may be empty and is an
 // error for an ip2asn input. The output is written to out+".tmp" and renamed.
 func convertMMDB(in, out, geonamesPath string) (stats convertStats, err error) {
+	return convertMMDBAll(in, out, geonamesPath, "")
+}
+
+// convertMMDBAll is convertMMDB with the full GeoNames list (fullPath, "" for none; it needs
+// geonamesPath): a record whose coordinates the main list does not give, because the build placed
+// its city from the full list, also gets geoname_id and time_zone (fullplaces.go).
+func convertMMDBAll(in, out, geonamesPath, fullPath string) (stats convertStats, err error) {
+	if fullPath != "" && geonamesPath == "" {
+		return stats, errors.New("-geonames-all needs -geonames")
+	}
 	reader, err := maxminddb.Open(in)
 	if err != nil {
 		return stats, err
@@ -218,9 +228,9 @@ func convertMMDB(in, out, geonamesPath string) (stats convertStats, err error) {
 	defer reader.Close()
 	switch t := reader.Metadata.DatabaseType; t {
 	case "ip2geo":
-		return convertGeo(reader, out, geonamesPath)
+		return convertGeo(reader, out, geonamesPath, fullPath)
 	case "ip2asn":
-		if geonamesPath != "" {
+		if geonamesPath != "" || fullPath != "" {
 			return stats, errors.New("-geonames means nothing for an ip2asn input")
 		}
 		return convertASN(reader, out)
@@ -229,7 +239,7 @@ func convertMMDB(in, out, geonamesPath string) (stats convertStats, err error) {
 	}
 }
 
-func convertGeo(reader *maxminddb.Reader, out, geonamesPath string) (convertStats, error) {
+func convertGeo(reader *maxminddb.Reader, out, geonamesPath, fullPath string) (convertStats, error) {
 	countries, err := parseCountries(countriesTSV)
 	if err != nil {
 		return convertStats{}, err
@@ -238,6 +248,11 @@ func convertGeo(reader *maxminddb.Reader, out, geonamesPath string) (convertStat
 	if geonamesPath != "" {
 		if index, _, err = loadGeoNamesOpts(geonamesPath, false, true); err != nil {
 			return convertStats{}, fmt.Errorf("geonames %s: %w", geonamesPath, err)
+		}
+	}
+	if fullPath != "" {
+		if err := addFlatFullPlaces(reader, index, fullPath); err != nil {
+			return convertStats{}, fmt.Errorf("%s: %w", fullPath, err)
 		}
 	}
 	conv := &converter{countries: countries, index: index, cache: map[convertKey]mmdbtype.Map{}}
@@ -387,11 +402,12 @@ func runConvert(args []string) {
 	db := flags.String("db", "", "input flat ip2geo or ip2asn MMDB")
 	out := flags.String("out", "", "output MMDB in the GeoLite2-City (ip2geo) or GeoLite2-ASN (ip2asn) layout")
 	geonames := flags.String("geonames", "", "GeoNames cities1000.txt (adds geoname_id and time_zone of placed cities)")
+	geonamesAll := flags.String("geonames-all", "", "GeoNames allCountries (zip or txt; needs -geonames): also for the cities the build placed from it")
 	flags.Parse(args)
 	if *db == "" || *out == "" || flags.NArg() > 0 {
 		usage()
 	}
-	s, err := convertMMDB(*db, *out, *geonames)
+	s, err := convertMMDBAll(*db, *out, *geonames, *geonamesAll)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

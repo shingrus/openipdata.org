@@ -47,13 +47,13 @@ const (
 )
 
 // evalURLs replaces the reference URLs in tests.
-type evalURLs struct{ dbip, maxmind, atlas, geonames string }
+type evalURLs struct{ dbip, maxmind, atlas, geonames, geonamesAll string }
 
 func (p *Pipeline) urls() evalURLs {
 	if p.refURLs != nil {
 		return *p.refURLs
 	}
-	return evalURLs{dbipURLFormat, maxmindURL, atlasURL, geonamesURL}
+	return evalURLs{dbipURLFormat, maxmindURL, atlasURL, geonamesURL, geonamesAllURL}
 }
 
 // useCopy is the fallback for a failed download: a copy kept from an earlier

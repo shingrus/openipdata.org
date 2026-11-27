@@ -174,6 +174,7 @@ Every external input, grouped by what it feeds. Third-party geo databases are us
 | RIPE RIS rrc00 routing table `latest-bview.gz` (public MRT dump) | `sync-bgp` | BGP community values per IPv4 prefix | daily, conditional, not within 6 hours |
 | RIR delegated-extended stats (5 RIRs) | `sync-geofeeds`, `build-geo-data` | RDAP block list; country layer | conditional |
 | ipverse/geo-ip-blocks (CC0) | `build-geo-data` | registration country (IPv4) | conditional |
+| GeoNames `allCountries.zip` (CC BY 4.0, own copy in the eval dir) | `build-geo-data` `build-mmdb` and `publish` | city names that `cities1000` does not place (`-geonames-all`): coordinates, and for the published file the id and time zone | 7-day age gate |
 | **Evaluation only:** DB-IP Lite city, MaxMind GeoLite2 City (`MAXMIND_LICENSE_KEY`), RIPE Atlas probe archive `meta-latest`, GeoNames `cities1000` (CC BY 4.0, 7-day gate) | `build-geo-data` `evaluate` | agreement and accuracy scores | monthly / daily |
 
 ## Postgres tables, R2 and outputs

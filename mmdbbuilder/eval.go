@@ -1115,13 +1115,14 @@ func regionalKey(country, admin1, city string) string {
 }
 
 // placeIn places a city by the row's region. It returns the default place (the one place
-// gives) unless the region gives an admin1, the index has a place of that name in that admin1
-// and that place is another one than the default (which must exist: the main index holds every
-// name): then it is the regional place and usedRegion
-// is the admin1. In every other case (no region, an unknown region, no place of that name in
-// that state, or the regional place is the default) usedRegion is "".
+// gives; for a name only the full list placed, the one placeFull gives) unless the region gives
+// an admin1, the index has a place of that name in that admin1 and that place is another one
+// than the default (which must exist: the main index holds every name of a regional place):
+// then it is the regional place and usedRegion is the admin1. In every other case (no region, an
+// unknown region, no place of that name in that state, or the regional place is the default)
+// usedRegion is "".
 func (g geoNames) placeIn(country, region, city string) (p gnPlace, usedRegion string, ok bool) {
-	def, defOK := g.place(country, city)
+	def, defOK := g.placeFull(country, city)
 	if admin1 := regionAdmin1(country, region); admin1 != "" {
 		if rp, found := g[regionalKey(normCountry(country), admin1, city)]; found && defOK && rp.id != def.id {
 			return rp, admin1, true
@@ -1131,14 +1132,15 @@ func (g geoNames) placeIn(country, region, city string) (p gnPlace, usedRegion s
 }
 
 // placeOf places the city of a record key: in the key's region when it has one (placeIn gave
-// it), else by name.
+// it), else by name (placeFull: a name only the full list placed counts too). It is for a
+// record's city; the cleaner and the site names of the RTT and ping checks use place.
 func (g geoNames) placeOf(k place) (gnPlace, bool) {
 	if k.region != "" {
 		if rp, ok := g[regionalKey(normCountry(k.code), k.region, k.city)]; ok {
 			return rp, true
 		}
 	}
-	return g.place(k.code, k.city)
+	return g.placeFull(k.code, k.city)
 }
 
 // loadGeoNames reads a GeoNames dump (cities1000.txt, tab-separated) and
