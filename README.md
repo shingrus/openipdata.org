@@ -677,6 +677,11 @@ with the GeoNames copy (`ping_country`, `ping_country_changed`); the retry witho
 `ping-country: R rows, S skipped, N /24s, C /24s changed, P parts changed`. Measured with the real builder on the layers of 2026-11-25 and the answers of a
 Google Cloud test around the hosting Atlas probes: right country 97.40% -> 97.63% (+33 right, -1 lost probes), right city +21 net.
 
+`mmdbbuilder geo -ping-city <hosting-rtt.csv.gz>` (needs `-geonames`) gives the same file to the city check of `-rtt-city`: its times of at most 30 ms
+(longer ones change nothing) are more disks for the same /24, with the same rules, so the check runs with either file. The builder prints
+`ping-city: R times, S skipped, N /24s`; `build-mmdb` passes the flag right after `-ping-country` (`ping_city`, `ping_city_networks`). Measured with the real builder on the layers of 2026-11-25 with the first
+ping file: +14 right, -2 lost probes, right city 61.49% -> 61.57%, right country unchanged.
+
 Every layer is one file in one format: gzipped CSV in the geofeed (RFC 8805) layout with the header
 `prefix,country,region,city,source` (`source` is free text: the feed URL, `whois:<registry>`, or empty).
 The file name carries the order: `10-rir.csv.gz`, `20-ipverse.csv.gz`, `25-bgp.csv.gz`, `30-pdb.csv.gz`,

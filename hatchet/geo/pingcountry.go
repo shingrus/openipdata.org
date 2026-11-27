@@ -13,10 +13,9 @@ import (
 	"openipdata.org/hatchet/ping"
 )
 
-// The ping country check (mmdbbuilder geo -ping-country). The owner makes hosting-rtt.csv.gz by
-// hand about monthly: ping times from about 27 Google Cloud regions to the .1 of every /24 of
-// hosting networks. import-hosting-ping checks the file and uploads it to the fixed R2 key
-// ping.RTTKey. mmdbbuilder uses it as a speed-of-light test of the country, with the same rules
+// The ping country check (mmdbbuilder geo -ping-country). sync-hosting-ping makes hosting-rtt.csv.gz
+// monthly: ping times from 27 Google Cloud regions to the .1 of every /24 of hosting networks.
+// It checks the file and uploads it to the fixed R2 key ping.RTTKey. mmdbbuilder uses it as a speed-of-light test of the country, with the same rules
 // of use as the RTT country check (rttcountry.go): it needs the GeoNames copy, runs after all
 // layers and before the guesses, and is not a layer (it is not in layerRules or optionalLayers
 // and is kept in the geo directory).
@@ -24,7 +23,8 @@ import (
 // A missing or older object (pingMaxAge, counted from the last new export) or any fetch error only
 // skips the check: its name is then listed in Source.SkippedLayers, and it never adds to
 // StaleLayers, so the health check ping is still sent. The holdout build and the retry without
-// GeoNames do not pass the flag.
+// GeoNames do not pass the flag. The same file also goes to the city check as -ping-city (pingCityFlag):
+// same status, same rules of use.
 const (
 	// PingCountrySource is the name listed in Source.SkippedLayers and R2Uploaded.
 	PingCountrySource = "ping-country"
@@ -32,9 +32,13 @@ const (
 	// pingCountryFlag is the "mmdbbuilder geo" flag that gives the builder the ping file.
 	pingCountryFlag = "-ping-country"
 
+	// pingCityFlag gives the builder the same file for the city check (rttcity.go in mmdbbuilder):
+	// its times of at most 30 ms are more disks next to the M-Lab reply times.
+	pingCityFlag = "-ping-city"
+
 	pingCountryFile = ping.RTTFile
 
-	// pingMaxAge: the export is made by hand about monthly.
+	// pingMaxAge: sync-hosting-ping runs monthly.
 	pingMaxAge = 45 * 24 * time.Hour
 
 	// pingMinSiteColumns is the number of site columns a usable file has besides "prefix".
@@ -50,7 +54,7 @@ func (p *Pipeline) downloadPingCountry(ctx context.Context, fetch r2Fetch, downl
 		return err
 	}
 	saved := filepath.Join(downloads, pingCountryFile)
-	if ok, err := p.fetchOptionalLayer(ctx, fetch, saved, ping.RTTKey, PingCountrySource, "import-hosting-ping", pingMaxAge, now, src); err != nil || !ok {
+	if ok, err := p.fetchOptionalLayer(ctx, fetch, saved, ping.RTTKey, PingCountrySource, "sync-hosting-ping", pingMaxAge, now, src); err != nil || !ok {
 		return err
 	}
 	if err := copyFile(saved, dst); err != nil {

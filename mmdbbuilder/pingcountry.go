@@ -216,19 +216,21 @@ func gridBucket(lat, lon float64) int {
 	return gridRow(lat)*pingCols + col
 }
 
-// pingDisk is one usable time: a site and the angle of the disk.
+// pingDisk is one usable time: a site and the angle of the disk (the time is kept for the
+// ping city check).
 type pingDisk struct {
 	site  int32
 	theta float64 // radians, at most pi
 	cosT  float64 // cos(theta); -2 when the disk is the whole earth
+	rtt   float64 // ms
 }
 
 func newDisk(site int32, rtt float64) pingDisk {
 	theta := (rtt*pingKmPerMs + pingMarginKm) / pingEarthKm
 	if theta >= math.Pi {
-		return pingDisk{site, math.Pi, -2}
+		return pingDisk{site, math.Pi, -2, rtt}
 	}
-	return pingDisk{site, theta, math.Cos(theta)}
+	return pingDisk{site, theta, math.Cos(theta), rtt}
 }
 
 // inside says whether the cell's point lies in every disk.

@@ -20,11 +20,19 @@ package main
 // before the write; evidence comes from one snapshot of the tree taken before it changes
 // anything, and a guessed city never counts as evidence for B. It needs -geonames; without
 // -asn-main only C is tried. IPv4 only; the output without the flag is unchanged.
+//
+// -ping-city adds a second source of disks: the ping times of the hosting ping file of
+// -ping-country (pingcountry.go), only those of at most 30 ms. They join the reply-time rows of
+// their /24, so the pass, the rules and both sources are the same; the check runs when either file
+// is given.
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/netip"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -41,10 +49,14 @@ const (
 	rttCityKmPerMs  = 100.0 // km one way per ms of round-trip time
 	rttCityMarginKm = 100.0 // added to every disk
 	rttCityKeep     = "70-geofeeds"
+
+	// Ping times (-ping-city) above this are not used: longer ones were measured to change nothing.
+	pingCityMaxMs = rttMaxMs
 )
 
 type rttCityCounts struct {
 	rows, skipped, clients, impossible, byNet, byCountry, kept int
+	ping                                                       pingCityCounts // empty without -ping-city
 }
 
 func (c rttCityCounts) String() string {
@@ -193,15 +205,83 @@ func segASN(segs []asnSeg, x uint32) (uint32, bool) {
 	return 0, false
 }
 
-// applyRTTCity runs the check on the tree. segs are the ASN segments fillGuesses read (nil
+// pingCityCounts is what reading the ping file (-ping-city) gave.
+type pingCityCounts struct {
+	times       int  // ping times of at most pingCityMaxMs used
+	skipped     int  // rows the reader skipped
+	clients     int  // /24s that gave at least one time
+	ignored     int  // site columns that were not used
+	skippedFile bool // fewer than pingMinColumn usable site columns: the file gave nothing
+}
+
+// addPingRows streams the ping file (-ping-city) and adds its times of at most pingCityMaxMs to
+// the rows as extra disks; the file's sites are appended to the site table. The rows are sorted
+// again, so the loop of applyRTTCity needs no change. A /24 on two lines only adds disks (and is
+// counted twice in clients).
+func addPingRows(path string, index geoNames, rows []rttRow, sites []rttSite, c *pingCityCounts) ([]rttRow, []rttSite, error) {
+	p, err := openPing(path, index)
+	if errors.Is(err, errFewPingSites) {
+		c.skippedFile = true
+		return rows, sites, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	defer p.Close()
+	c.ignored = p.ignored
+	base := uint32(len(sites))
+	for _, s := range p.sites {
+		sites = append(sites, rttSite{place: gnPlace{lat: s.lat, lon: s.lon}})
+	}
+	for {
+		client, disks, ok, err := p.next()
+		c.skipped = p.skipped
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			break
+		}
+		n := 0
+		for _, d := range disks {
+			if d.rtt <= pingCityMaxMs {
+				rows = append(rows, rttRow{client, base + uint32(d.site), float32(d.rtt)})
+				n++
+			}
+		}
+		c.times += n
+		if n > 0 {
+			c.clients++
+		}
+	}
+	slices.SortFunc(rows, cmpRTTRow)
+	return rows, sites, nil
+}
+
+// applyRTTCity runs the check on the tree with the M-Lab reply times of path ("" for none) and
+// the ping times of pingPath ("" for none). segs are the ASN segments fillGuesses read (nil
 // without -asn-main). It returns the counts and the stats of the two sources.
-func applyRTTCity(tree *mmdbwriter.Tree, path string, segs []asnSeg, index geoNames, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) (rttCityCounts, []geoLayerStats, error) {
+func applyRTTCity(tree *mmdbwriter.Tree, path, pingPath string, segs []asnSeg, index geoNames, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) (rttCityCounts, []geoLayerStats, error) {
 	var counts rttCityCounts
 	stNet, stCountry := geoLayerStats{name: rttNetworkSource}, geoLayerStats{name: rttCountrySource}
-	rows, sites, skipped, err := readRTT(path, index)
-	counts.rows, counts.skipped = len(rows), skipped
-	if err != nil {
-		return counts, nil, err
+	var rows []rttRow
+	var sites []rttSite
+	if path != "" {
+		var err error
+		rows, sites, counts.skipped, err = readRTT(path, index)
+		counts.rows = len(rows)
+		if err != nil {
+			return counts, nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+		}
+	}
+	if pingPath != "" {
+		var err error
+		if rows, sites, err = addPingRows(pingPath, index, rows, sites, &counts.ping); err != nil {
+			return counts, nil, fmt.Errorf("%s: %w", filepath.Base(pingPath), err)
+		}
+	}
+	if len(rows) == 0 {
+		return counts, []geoLayerStats{stNet, stCountry}, nil
 	}
 	leaves, recs := snapshotCities(tree)
 	ev := buildCityEvidence(leaves, recs, segs, index)

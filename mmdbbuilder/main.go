@@ -2,7 +2,7 @@
 //
 //	mmdbbuilder version
 //	mmdbbuilder asn -in <asn-ip/as> -out <ip2asn.mmdb> [-debug]
-//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-ping-country <hosting-rtt.csv.gz>] [-debug] <layer.csv.gz>...
+//	mmdbbuilder geo -out <ip2geo.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-ping-country <hosting-rtt.csv.gz>] [-ping-city <hosting-rtt.csv.gz>] [-debug] <layer.csv.gz>...
 //	mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]
 //	mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]
 //	mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>
@@ -32,6 +32,8 @@
 // -ping-country (a gzipped CSV: prefix, then one column <CC>/<City> per measuring site with the ping
 // time in ms; needs -geonames) runs right after it: a /24 whose country has no GeoNames cell inside
 // every ping-time disk takes the country that holds at least half of the possible weight. See pingcountry.go.
+// -ping-city (the same file; needs -geonames) gives the city check of -rtt-city its ping times of at most
+// 30 ms as more disks; the check runs with either flag, last. See rttcity.go.
 // A layer named in -same-country applies only where the country so
 // far is the same or unknown. A layer named in -within-first is used only for
 // rows no broader than one prefix of the first layer; others are skipped. A
@@ -105,7 +107,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mmdbbuilder version")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder asn -in <asn-ip/as> -out <file.mmdb> [-debug]")
-	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-ping-country <hosting-rtt.csv.gz>] [-debug] <layer.csv.gz>...")
+	fmt.Fprintln(os.Stderr, "       mmdbbuilder geo -out <file.mmdb> [-names <file.tsv>] [-geonames <cities1000.txt>] [-same-country <layer,...>] [-within-first <layer,...>] [-first-country <layer,...>] [-asn-main <asn-prefixes.csv.gz>] [-fallback] [-holders <holder-cities.csv.gz>] [-rtt-country <speedtest-rtt.csv.gz>] [-rtt-city <speedtest-rtt.csv.gz>] [-ping-country <hosting-rtt.csv.gz>] [-ping-city <hosting-rtt.csv.gz>] [-debug] <layer.csv.gz>...")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <file.mmdb> [-ip <ip>] [-ips <file>]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder lookup -db <ip2geo.mmdb> -in <ips.txt> -out <cities.tsv> [-with-source [-countries]]")
 	fmt.Fprintln(os.Stderr, "       mmdbbuilder gaps -db <ip2geo.mmdb> -out <gaps.txt>")
@@ -129,6 +131,7 @@ func runGeo(args []string) {
 	rttCountry := flags.String("rtt-country", "", "speedtest-rtt.csv.gz (prefix,country,city,rtt_ms; needs -geonames): after all layers and before the guesses, a /24 whose country is too far from the M-Lab server that answered it in r ms gets the country of its fastest server")
 	rttCity := flags.String("rtt-city", "", "speedtest-rtt.csv.gz (the file of -rtt-country; needs -geonames): after the guesses, a city outside a reply-time disk of its /24 (not from 70-geofeeds) is replaced by a network city that fits (87-rtt-network) or the most populous city of the country that fits (87-rtt-country)")
 	pingCountry := flags.String("ping-country", "", "hosting-rtt.csv.gz (prefix, then one column <CC>/<City> per measuring site with the ping time in ms; needs -geonames): right after -rtt-country and before the guesses, a /24 whose country has no place inside every ping-time disk takes the country that holds at least half of the possible places")
+	pingCity := flags.String("ping-city", "", "hosting-rtt.csv.gz (the file of -ping-country; needs -geonames): its times of at most 30 ms are more disks for the city check of -rtt-city, which then runs with either file")
 	firstCountry := flags.String("first-country", "", "layer file names (comma-separated) whose rows apply only to the addresses where the first layer gives the row's country")
 	flags.Parse(args)
 
@@ -147,6 +150,10 @@ func runGeo(args []string) {
 		fmt.Fprintln(os.Stderr, "error: -ping-country needs -geonames")
 		os.Exit(2)
 	}
+	if *pingCity != "" && *geonames == "" {
+		fmt.Fprintln(os.Stderr, "error: -ping-city needs -geonames")
+		os.Exit(2)
+	}
 	if *rttCity != "" && *geonames == "" {
 		fmt.Fprintln(os.Stderr, "error: -rtt-city needs -geonames")
 		os.Exit(2)
@@ -160,7 +167,7 @@ func runGeo(args []string) {
 			os.Exit(1)
 		}
 	}
-	stats, err := buildGeoNames(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, folded, *asnMain, *fallback, *holders, *rttCountry, *rttCity, *pingCountry)
+	stats, err := buildGeoNames(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, folded, *asnMain, *fallback, *holders, *rttCountry, *rttCity, *pingCountry, *pingCity)
 	prefixes, placed, unplaced, renamed := 0, 0, 0, 0
 	for _, s := range stats {
 		fmt.Printf("layer %s: %d rows, %d prefixes, %d skipped\n", s.name, s.rows, s.prefixes, s.skipped)

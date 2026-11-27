@@ -142,28 +142,31 @@ func readRTT(path string, index geoNames) (rows []rttRow, sites []rttSite, skipp
 		}
 		rows = append(rows, rttRow{addrNumber(p.Addr()), id, float32(rtt)})
 	}
-	slices.SortFunc(rows, func(a, b rttRow) int {
-		if a.client != b.client {
-			if a.client < b.client {
-				return -1
-			}
-			return 1
-		}
-		if a.site != b.site {
-			if a.site < b.site {
-				return -1
-			}
-			return 1
-		}
-		switch {
-		case a.rtt < b.rtt:
-			return -1
-		case a.rtt > b.rtt:
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(rows, cmpRTTRow)
 	return rows, sites, skipped, nil
+}
+
+// cmpRTTRow orders rows by client, then site, then time.
+func cmpRTTRow(a, b rttRow) int {
+	if a.client != b.client {
+		if a.client < b.client {
+			return -1
+		}
+		return 1
+	}
+	if a.site != b.site {
+		if a.site < b.site {
+			return -1
+		}
+		return 1
+	}
+	switch {
+	case a.rtt < b.rtt:
+		return -1
+	case a.rtt > b.rtt:
+		return 1
+	}
+	return 0
 }
 
 // rttChecker answers "is this country impossible for this server and time".

@@ -45,7 +45,7 @@ func pingBuild(t *testing.T, dir, layerRows, ping string, debug bool) (string, e
 		pingPath = writeFile(t, filepath.Join(dir, "hosting-rtt.csv.gz"), ping)
 	}
 	out := filepath.Join(dir, "out.mmdb")
-	_, err := buildGeoNames([]string{layer}, "", out, debug, nil, nil, nil, pingIndex(t, dir), nil, "", false, "", "", "", pingPath)
+	_, err := buildGeoNames([]string{layer}, "", out, debug, nil, nil, nil, pingIndex(t, dir), nil, "", false, "", "", "", pingPath, "")
 	return out, err
 }
 
@@ -115,11 +115,11 @@ func TestPingCountryNeedsGeoNames(t *testing.T) {
 	dir := t.TempDir()
 	layer := writeFile(t, filepath.Join(dir, "layer.csv.gz"), holderHeader+"10.2.1.0/24,US,,Dallas,x\n")
 	ping := writeFile(t, filepath.Join(dir, "p.csv.gz"), pingHeader+"10.2.1.0/24,1,4,7\n")
-	_, err := buildGeoNames([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, nil, nil, "", false, "", "", "", ping)
+	_, err := buildGeoNames([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, nil, nil, "", false, "", "", "", ping, "")
 	if err == nil || !strings.Contains(err.Error(), "-ping-country needs -geonames") {
 		t.Errorf("err = %v", err)
 	}
-	_, err = buildGeoNames([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, pingIndex(t, dir), nil, "", false, "", "", "", filepath.Join(dir, "none.csv.gz"))
+	_, err = buildGeoNames([]string{layer}, "", filepath.Join(dir, "o.mmdb"), false, nil, nil, nil, pingIndex(t, dir), nil, "", false, "", "", "", filepath.Join(dir, "none.csv.gz"), "")
 	if err == nil {
 		t.Error("a missing file was accepted")
 	}
@@ -131,7 +131,7 @@ func TestPingCountryGuessesFollow(t *testing.T) {
 	layer := writeFile(t, filepath.Join(dir, "layer.csv.gz"), holderHeader+rows24(2, 0, 10, "GB", "London")+"10.2.50.0/24,US,,,x\n")
 	ping := writeFile(t, filepath.Join(dir, "p.csv.gz"), pingHeader+"10.2.50.0/24,1,4,7\n")
 	out := filepath.Join(dir, "out.mmdb")
-	if _, err := buildGeoNames([]string{layer}, "", out, false, nil, nil, nil, pingIndex(t, dir), nil, "", true, "", "", "", ping); err != nil {
+	if _, err := buildGeoNames([]string{layer}, "", out, false, nil, nil, nil, pingIndex(t, dir), nil, "", true, "", "", "", ping, ""); err != nil {
 		t.Fatal(err)
 	}
 	checkCities(t, out, map[string]string{"10.2.50.9": "GB/London/86-country-main"})

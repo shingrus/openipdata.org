@@ -134,7 +134,20 @@ func TestPingCountrySummary(t *testing.T) {
 	}
 }
 
-// The flag is passed with the file only together with -geonames, after the RTT flags; the retry
+func TestPingCitySummary(t *testing.T) {
+	m := pingCitySummary.FindStringSubmatch("x\nping-city: 120 times, 2 skipped, 31 /24s\n")
+	if m == nil || m[1] != "31" {
+		t.Errorf("%v", m)
+	}
+	if pingCitySummary.MatchString("ping-country: 100 rows, 2 skipped, 40 /24s, 9 /24s changed, 12 parts changed") || pingCitySummary.MatchString("ping-city: 4 site columns ignored") {
+		t.Error("matches another line")
+	}
+	if !pingCitySkipped.MatchString("ping-city: skipped: fewer than 3 site columns that GeoNames places\n") || pingCitySkipped.MatchString("ping-city: 120 times, 2 skipped, 31 /24s") {
+		t.Error("skipped line")
+	}
+}
+
+// The flags are passed with the file only together with -geonames, after the RTT flags; the retry
 // without GeoNames drops it; the output says what happened.
 func TestBuildMMDBPingCountry(t *testing.T) {
 	dir := t.TempDir()
@@ -144,6 +157,7 @@ func TestBuildMMDBPingCountry(t *testing.T) {
 		"for a in \"$@\"; do if [ -f \"$a\" ] && grep -q BAD \"$a\" 2>/dev/null; then echo \"error: $a: bad\" >&2; exit 1; fi; done\n"+
 		"echo 'rtt-country: 100 rows, 2 skipped, 40 /24s, 7 /24s changed, 7 parts changed'\n"+
 		"case \" $* \" in *' -ping-country '*) if [ -n \"$PING_SKIP\" ]; then echo 'ping-country: skipped: fewer than 3 site columns that GeoNames places'; else echo 'ping-country: 90 rows, 1 skipped, 30 /24s, 5 /24s changed, 6 parts changed'; fi;; esac\n"+
+		"case \" $* \" in *' -ping-city '*) if [ -n \"$PING_SKIP\" ]; then echo 'ping-city: skipped: fewer than 3 site columns that GeoNames places'; else echo 'ping-city: 120 times, 2 skipped, 31 /24s'; echo 'ping-city: 4 site columns ignored'; fi;; esac\n"+
 		"echo 'layer 10-rir.csv.gz: 10 rows, 9 prefixes, 0 skipped'\n"+
 		"echo 'wrote x (1 layers, 9 prefixes)'\n"), 0o755)
 	archive := zipBytes(t, geoNamesSample)
@@ -166,34 +180,34 @@ func TestBuildMMDBPingCountry(t *testing.T) {
 
 	// No file: not passed.
 	out, args := build()
-	if strings.Contains(args, "-ping-country") || out.PingCountry != "skipped: no ping times" || out.PingCountryChanged != 0 {
+	if strings.Contains(args, "-ping-country") || strings.Contains(args, "-ping-city") || out.PingCountry != "skipped: no ping times" || out.PingCity != out.PingCountry || out.PingCountryChanged != 0 || out.PingCityNetworks != 0 {
 		t.Errorf("no file: %s, %+v", args, out)
 	}
 	// A good file: passed after the RTT flags.
 	writeGzip(t, rtt, rttFileHeader+"10.0.0.0/24,GB,London,8\n")
 	writeGzip(t, pingPath, pingFileHeader+pingFileRow)
 	out, args = build()
-	if !strings.Contains(args, " -rtt-country "+rtt+" -rtt-city "+rtt+" -ping-country "+pingPath) || out.PingCountry != "on" || out.PingCountryChanged != 5 || out.RTTCountry != "on" {
+	if !strings.Contains(args, " -rtt-country "+rtt+" -rtt-city "+rtt+" -ping-country "+pingPath+" -ping-city "+pingPath) || out.PingCountry != "on" || out.PingCity != "on" || out.PingCountryChanged != 5 || out.PingCityNetworks != 31 || out.RTTCountry != "on" {
 		t.Errorf("args %s\nout %+v", args, out)
 	}
 	// Without the RTT file the ping flag is still passed.
 	os.Remove(rtt)
 	out, args = build()
-	if !strings.Contains(args, "-ping-country "+pingPath) || strings.Contains(args, "-rtt-country") || out.PingCountry != "on" {
+	if !strings.Contains(args, "-ping-country "+pingPath+" -ping-city "+pingPath) || strings.Contains(args, "-rtt-country") || out.PingCountry != "on" || out.PingCity != "on" {
 		t.Errorf("ping only: %s, %+v", args, out)
 	}
 	writeGzip(t, rtt, rttFileHeader+"10.0.0.0/24,GB,London,8\n")
 	// The builder skipped the check (sites not placed): the output says so.
 	t.Setenv("PING_SKIP", "1")
 	out, args = build()
-	if !strings.Contains(args, "-ping-country") || out.PingCountry != "skipped: sites not placed" || out.PingCountryChanged != 0 {
+	if !strings.Contains(args, "-ping-country") || out.PingCountry != "skipped: sites not placed" || out.PingCity != "skipped: sites not placed" || out.PingCountryChanged != 0 || out.PingCityNetworks != 0 {
 		t.Errorf("builder skip: %s, %+v", args, out)
 	}
 	t.Setenv("PING_SKIP", "")
 	// A bad file: not passed, the build succeeds.
 	os.WriteFile(pingPath, []byte("not gzip"), 0o640)
 	out, args = build()
-	if strings.Contains(args, "-ping-country") || out.PingCountry != "skipped: ping times unreadable" || out.RTTCountry != "on" {
+	if strings.Contains(args, "-ping-country") || strings.Contains(args, "-ping-city") || out.PingCountry != "skipped: ping times unreadable" || out.PingCity != out.PingCountry || out.RTTCountry != "on" {
 		t.Errorf("bad file: %s, %+v", args, out)
 	}
 	// The retry without GeoNames does not pass it.
@@ -201,7 +215,7 @@ func TestBuildMMDBPingCountry(t *testing.T) {
 	os.WriteFile(geonames, []byte("BAD\n"), 0o640)
 	out, args = build()
 	lines := strings.Split(strings.TrimSpace(args), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], "-ping-country") || strings.Contains(lines[1], "-ping-country") || strings.Contains(lines[1], "-geonames") || out.PingCountry != "skipped: no GeoNames" {
+	if len(lines) != 2 || !strings.Contains(lines[0], "-ping-country") || strings.Contains(lines[1], "-ping-country") || strings.Contains(lines[1], "-ping-city") || strings.Contains(lines[1], "-geonames") || out.PingCountry != "skipped: no GeoNames" || out.PingCity != "skipped: no GeoNames" {
 		t.Errorf("retry: %s, %+v", args, out)
 	}
 }

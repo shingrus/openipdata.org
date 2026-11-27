@@ -38,7 +38,7 @@ func TestRTTCity(t *testing.T) {
 	}
 	rttPath := writeFile(t, filepath.Join(dir, "rtt.csv.gz"), rtt.String())
 	out := filepath.Join(dir, "out.mmdb")
-	stats, err := buildGeoNames([]string{main, feeds}, "", out, false, nil, nil, nil, index, nil, asn, false, "", "", rttPath, "")
+	stats, err := buildGeoNames([]string{main, feeds}, "", out, false, nil, nil, nil, index, nil, asn, false, "", "", rttPath, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,13 +63,13 @@ func TestRTTCity(t *testing.T) {
 	rtt2 := writeFile(t, filepath.Join(dir, "rtt2.csv.gz"), rttHeader+"10.1.1.0/24,GB,London,0.5\n")
 	out2 := filepath.Join(dir, "out2.mmdb")
 	onlyEdi := writeFile(t, filepath.Join(dir, "20-edi.csv.gz"), "prefix,country,region,city,source\n10.1.1.0/24,GB,,Edinburgh,x\n")
-	if _, err := buildGeoNames([]string{onlyEdi}, "", out2, false, nil, nil, nil, index, nil, "", false, "", "", rtt2, ""); err != nil {
+	if _, err := buildGeoNames([]string{onlyEdi}, "", out2, false, nil, nil, nil, index, nil, "", false, "", "", rtt2, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	checkCities(t, out2, map[string]string{"10.1.1.9": "GB/Edinburgh/20-edi"})
 
 	// Needs GeoNames.
-	if _, err := buildGeoNames([]string{main}, "", out2, false, nil, nil, nil, nil, nil, "", false, "", "", rttPath, ""); err == nil {
+	if _, err := buildGeoNames([]string{main}, "", out2, false, nil, nil, nil, nil, nil, "", false, "", "", rttPath, "", ""); err == nil {
 		t.Error("-rtt-city without GeoNames was accepted")
 	}
 }
