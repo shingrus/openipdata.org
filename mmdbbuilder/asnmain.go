@@ -303,7 +303,12 @@ type leaf struct {
 	rec    uint32 // index into the list of (country, city) pairs
 }
 
-type cityPair struct{ code, city string }
+// cityPair is the country, city and city_region of a record ("" when the city is placed by
+// name alone, see geoNames.placeIn).
+type cityPair struct{ code, city, region string }
+
+// spelled is the city of the pair as a fill writes it.
+func (p cityPair) spelled() spelled { return spelled{p.city, p.region} }
 
 // treeLeaves lists, in address order, the IPv4 networks of the tree that have a
 // country, with their (country, city): what the tree would hold if written now.
@@ -319,8 +324,9 @@ func treeLeaves(tree *mmdbwriter.Tree) ([]leaf, []cityPair) {
 		if m, ok := value.(mmdbtype.Map); ok {
 			code, _ := m["country_code"].(mmdbtype.String)
 			city, _ := m["city_name"].(mmdbtype.String)
+			region, _ := m["city_region"].(mmdbtype.String)
 			if code != "" {
-				pair := cityPair{string(code), strings.TrimSpace(string(city))}
+				pair := cityPair{string(code), strings.TrimSpace(string(city)), string(region)}
 				id, ok := index[pair]
 				if !ok {
 					id = uint32(len(pairs))
@@ -346,21 +352,31 @@ type asnGroup struct {
 	total  uint64
 	cities map[string]*cityCount // by city key: the normalised name, or with GeoNames the place (placeKey)
 	// set by choose when the group qualifies
-	main string // 80-asn-main: the city to write
+	main spelled // 80-asn-main: the city to write
 	ok   bool
 	// 82-asn-likely: the same, at a lower share and with no minimum of addresses
-	likely   string
+	likely   spelled
 	likelyOK bool
+}
+
+// spelled is how a record writes a counted city: the name and the region that placed it
+// ("" or the GeoNames admin1 code, city_region). Two spellings of one place may differ in
+// whether they need a region, so the region is kept per spelling.
+type spelled struct{ city, region string }
+
+// less orders spellings by city, then region.
+func (a spelled) less(b spelled) bool {
+	return a.city < b.city || a.city == b.city && a.region < b.region
 }
 
 // add counts n addresses of a city: key says which city it is (the normalised name norm, or
 // with GeoNames the place, so that every spelling and name of one place counts together), and
 // spell is how the record writes it.
-func (g *asnGroup) add(key, norm, spell string, n uint64) {
+func (g *asnGroup) add(key, norm string, spell spelled, n uint64) {
 	g.total += n
 	c := g.cities[key]
 	if c == nil {
-		c = &cityCount{name: norm, spells: map[string]uint64{}}
+		c = &cityCount{name: norm, spells: map[spelled]uint64{}}
 		g.cities[key] = c
 	}
 	if norm < c.name {
@@ -373,7 +389,7 @@ func (g *asnGroup) add(key, norm, spell string, n uint64) {
 type cityCount struct {
 	n      uint64
 	name   string // the smallest normalised name counted here: the tie-break between cities
-	spells map[string]uint64
+	spells map[spelled]uint64
 }
 
 // placeKey is the city key of a place GeoNames gave: its coordinates. Two names that the index
@@ -391,7 +407,7 @@ type groupKey struct {
 // least minAddrs addresses with a city and its main city at least minShare of them. Ties
 // are broken by name, so the result does not depend on the order of the addresses. The
 // city is the spelling with most addresses (ties: the smallest spelling).
-func (g *asnGroup) choose(minShare float64, minAddrs uint64) (main string, ok bool) {
+func (g *asnGroup) choose(minShare float64, minAddrs uint64) (main spelled, ok bool) {
 	var best *cityCount
 	var bestKey string
 	for key, c := range g.cities {
@@ -400,17 +416,17 @@ func (g *asnGroup) choose(minShare float64, minAddrs uint64) (main string, ok bo
 		}
 	}
 	if best == nil || g.total < minAddrs || float64(best.n)/float64(g.total) < minShare {
-		return "", false
+		return spelled{}, false
 	}
 	return best.spelling(), true
 }
 
 // spelling is the most common spelling of the city, ties by the smallest spelling.
-func (c *cityCount) spelling() string {
-	var spell string
+func (c *cityCount) spelling() spelled {
+	var spell spelled
 	var spellN uint64
 	for s, n := range c.spells {
-		if n > spellN || n == spellN && s < spell {
+		if n > spellN || n == spellN && s.less(spell) {
 			spell, spellN = s, n
 		}
 	}

@@ -84,7 +84,7 @@ const (
 type fill struct {
 	lo, hi uint32
 	code   string
-	city   string
+	city   spelled // the city and its region (city_region)
 }
 
 // rung collects the fills of one guess, in address order.
@@ -96,7 +96,7 @@ type rung struct {
 
 // add appends the range, merging it into the one before when that ends right before it
 // with the same country and city.
-func (r *rung) add(lo, hi uint32, code, city string) {
+func (r *rung) add(lo, hi uint32, code string, city spelled) {
 	r.addrs += uint64(hi) - uint64(lo) + 1
 	if k := len(r.fills); k > 0 && r.fills[k-1].code == code && r.fills[k-1].city == city && uint64(r.fills[k-1].hi)+1 == uint64(lo) {
 		r.fills[k-1].hi = hi
@@ -195,7 +195,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 		}
 		if placedState[rec] == 0 {
 			placedState[rec] = 2
-			if pl, ok := index.place(pairs[rec].code, pairs[rec].city); ok {
+			if pl, ok := index.placeOf(place{code: pairs[rec].code, city: pairs[rec].city, region: pairs[rec].region}); ok {
 				placedState[rec] = 1
 				placeKeys[rec] = placeKey(pl)
 			}
@@ -233,7 +233,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 				g = newGroup()
 				countries[p.code] = g
 			}
-			g.add(city, norm, p.city, uint64(l.hi)-uint64(l.lo)+1)
+			g.add(city, norm, spelled{p.city, p.region}, uint64(l.hi)-uint64(l.lo)+1)
 			if useASN {
 				countryPieces[p.code] = append(countryPieces[p.code], piece{l.lo, l.hi, l.rec})
 			}
@@ -248,7 +248,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 				g = newGroup()
 				groups[key] = g
 			}
-			g.add(city, norm, p.city, uint64(b)-uint64(a)+1)
+			g.add(city, norm, spelled{p.city, p.region}, uint64(b)-uint64(a)+1)
 			if fallback {
 				pieces[key] = append(pieces[key], piece{a, b, l.rec})
 			}
@@ -300,7 +300,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 			for c := a; ; {
 				e := min(b, c|0xff)
 				if rec, ok := nearPiece(ps, c+(e-c)/2, asnAnywhereBlock); ok {
-					r89c.add(c, e, p.code, pairs[rec].city)
+					r89c.add(c, e, p.code, pairs[rec].spelled())
 				}
 				if e == b {
 					break
@@ -317,7 +317,15 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 				// Nobody announces the part, or two ASNs do: only the unannounced
 				// addresses can get the holder city.
 				splitRange(announced, a, b, country, func(c, d uint32) {
-					holderParts(holders, c, d, p.code, func(e, f uint32, city string) { r85.add(e, f, p.code, city) }, country)
+					holderParts(holders, c, d, p.code, func(e, f uint32, city, region string) {
+						// The holder's region is the state the exporter placed the city in: the
+						// city is placed in that state by the same rule as a layer row's.
+						sp := spelled{city: city}
+						if index != nil {
+							_, sp.region, _ = index.placeIn(p.code, region, city)
+						}
+						r85.add(e, f, p.code, sp)
+					}, country)
 				})
 				return
 			}
@@ -344,13 +352,13 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 				e := min(b, c|0xff)
 				x := c + (e-c)/2
 				if rec, ok := nearPiece(ps, x, asnNearSameBlock); ok {
-					r84.add(c, e, p.code, pairs[rec].city)
+					r84.add(c, e, p.code, pairs[rec].spelled())
 				} else if g := countries[p.code]; g != nil && g.ok {
 					r86.add(c, e, p.code, g.main)
 				} else if rec, ok := nearPiece(ps, x, asnFarSameBlock); ok {
-					r88.add(c, e, p.code, pairs[rec].city)
+					r88.add(c, e, p.code, pairs[rec].spelled())
 				} else if rec, ok := nearPiece(ps, x, asnAnywhereBlock); ok {
-					r89.add(c, e, p.code, pairs[rec].city)
+					r89.add(c, e, p.code, pairs[rec].spelled())
 				}
 				if e == b {
 					break
@@ -412,7 +420,7 @@ func fillGuesses(tree *mmdbwriter.Tree, asnPath string, fallback bool, index geo
 func (r *rung) insert(tree *mmdbwriter.Tree, debug bool, recordFor func(place, *geoLayerStats) int, records func(int) mmdbtype.Map) error {
 	source := r.stats.name
 	for _, f := range r.fills {
-		record := records(recordFor(place{f.code, f.city, source}, &r.stats))
+		record := records(recordFor(place{code: f.code, city: f.city.city, source: source, region: f.city.region}, &r.stats))
 		for _, cidr := range rangePrefixes(f.lo, f.hi) {
 			rec := record
 			if debug {

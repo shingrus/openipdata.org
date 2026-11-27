@@ -190,7 +190,7 @@ func (c *rttChecker) places(country string) []gnPlace {
 		c.built = true
 		seen := map[uint32]bool{}
 		for key, p := range c.index {
-			cc, _, ok := strings.Cut(key, "|")
+			cc, ok := plainKeyCountry(key)
 			if !ok || seen[p.id] {
 				continue
 			}

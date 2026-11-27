@@ -611,9 +611,18 @@ Builds the ip2geo MMDB (country and city per prefix) in layers; each layer repla
 layers before it put under its prefixes. This is the flat build output (internal; `publish` converts it, see below). A flat record has `country_code`, `country_name`, `city_name` and,
 when it has a city, `city_source`: the name of the layer file without `.csv.gz` (e.g. `70-geofeeds`) that wrote
 the city (a record without a city has none). When the build has GeoNames, a record whose city GeoNames
-places (country + name, the most populous place on a clash: the same rule `eval` uses) also has `latitude` and
+places (country + name, the most populous place on a clash) also has `latitude` and
 `longitude`, doubles rounded to 4 decimals; a city that is not placed and a record without a city have neither.
-`eval` scores our cities per `city_source` and does not read the coordinates.
+A US row whose `region` column is `US-XX` (or a bare `XX`) is placed in that state when GeoNames has a place of
+that name in it and it is not the place the name alone gives (`Portland` with `US-ME` is Portland, Maine, not
+Oregon); such a record also has `city_region`, the GeoNames admin1 code, and no other record has that key. The
+guesses and the RTT city check carry the region with the city, and `convert` finds the id and time zone of the
+regional place; the published layout has no new key. A region of any other country is not used (its ISO 3166-2 code
+is not the GeoNames admin1 code). On the build of 2026-11-25 this placed 245,342 layer rows by their region and gave
++59 right and 0 lost RIPE Atlas probes (right city 61.57% -> 62.00%). `geo` prints
+`city-regions: R rows placed by their region`.
+`eval` scores our cities per `city_source`; it places a city by the record's own `latitude` and `longitude` when it
+has them, else by name.
 
 After all layers, `mmdbbuilder geo -asn-main` adds one guessed fill, `80-asn-main` (it is not a layer file: it needs the
 merged result). For each ASN and country, the addresses that already have a city are counted per city. When one city has at
@@ -908,7 +917,7 @@ Metrics (percentages with 2 decimals; address-weighted unless said otherwise):
 | `maxmind_country_agree_pct`, `maxmind_city_agree_pct` | the same for MaxMind GeoLite2 City |
 | `vendor_consensus_country_agree_pct` | over addresses where at least two of the references given have a country and a strict majority of them agree, how often we have that country |
 | `atlas_probes`, `atlas_country_pct` | per probe: probes in the file; share whose country we have right (no answer counts as wrong) |
-| `atlas_city_probes`, `atlas_city_pct`, `atlas_city_unresolved` | per probe with coordinates: probes scored; share where we name a city whose GeoNames place (country + name, the most populous on a clash; name, ascii name and alternate names) is within 50 km of the probe (no answer, no city or an unplaced city is a miss); probes where we named a city GeoNames could not place. Left out without `-geonames` |
+| `atlas_city_probes`, `atlas_city_pct`, `atlas_city_unresolved` | per probe with coordinates: probes scored; share where we name a city whose place is within 50 km of the probe (the place is the record's own `latitude` and `longitude` when it has valid ones, else the GeoNames place of the name: country + name, the most populous on a clash; name, ascii name and alternate names; no answer, no city or an unplaced city is a miss); probes where we named a city that has no coordinates and GeoNames could not place. Left out without `-geonames` |
 | `holdout_prefixes`, `holdout_country_pct`, `holdout_city_pct` | per held-out prefix: prefixes scored; share with the right country; share with the right city among those that name one |
 
 Rating scores: every reference `X` (`dbip`, `maxmind`) is scored like ours, against the

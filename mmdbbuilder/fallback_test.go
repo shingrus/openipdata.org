@@ -475,17 +475,17 @@ func TestGuessesCountAPlaceOnce(t *testing.T) {
 		g := &asnGroup{cities: map[string]*cityCount{}}
 		for _, city := range []string{"Salvador", "Curitiba"} {
 			pl, _ := index.place("BR", city)
-			g.add(placeKey(pl), normCity(city), city, 256)
+			g.add(placeKey(pl), normCity(city), spelled{city: city}, 256)
 		}
-		if main, ok := g.choose(0.5, 0); !ok || main != "Curitiba" {
+		if main, ok := g.choose(0.5, 0); !ok || main.city != "Curitiba" {
 			t.Errorf("tie between places: %q %v", main, ok)
 		}
 		g = &asnGroup{cities: map[string]*cityCount{}}
 		for _, city := range []string{"São Paulo", "Sao Paulo"} {
 			pl, _ := index.place("BR", city)
-			g.add(placeKey(pl), normCity(city), city, 256)
+			g.add(placeKey(pl), normCity(city), spelled{city: city}, 256)
 		}
-		if main, ok := g.choose(0.9, 0); !ok || main != "Sao Paulo" {
+		if main, ok := g.choose(0.9, 0); !ok || main.city != "Sao Paulo" {
 			t.Errorf("tie between spellings: %q %v", main, ok)
 		}
 	})

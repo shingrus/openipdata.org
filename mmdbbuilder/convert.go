@@ -92,6 +92,7 @@ type flatRecord struct {
 	CountryName string   `maxminddb:"country_name"`
 	CityName    string   `maxminddb:"city_name"`
 	CitySource  string   `maxminddb:"city_source"`
+	CityRegion  string   `maxminddb:"city_region"` // the GeoNames admin1 code that placed the city, when a row's region did
 	Latitude    *float64 `maxminddb:"latitude"`
 	Longitude   *float64 `maxminddb:"longitude"`
 }
@@ -104,9 +105,9 @@ type convertStats struct {
 }
 
 type convertKey struct {
-	code, name, city, source string
-	lat, lon                 float64
-	hasLoc                   bool
+	code, name, city, source, region string
+	lat, lon                         float64
+	hasLoc                           bool
 }
 
 // converter makes the new records; the same flat record gives the same map.
@@ -123,7 +124,7 @@ func enNames(en string) mmdbtype.Map {
 
 // record converts one flat record; it returns nil for a record with nothing to write.
 func (c *converter) record(r flatRecord) mmdbtype.Map {
-	key := convertKey{r.CountryCode, r.CountryName, r.CityName, r.CitySource, 0, 0, false}
+	key := convertKey{r.CountryCode, r.CountryName, r.CityName, r.CitySource, r.CityRegion, 0, 0, false}
 	if r.Latitude != nil && r.Longitude != nil {
 		key.lat, key.lon, key.hasLoc = *r.Latitude, *r.Longitude, true
 	}
@@ -182,7 +183,7 @@ func (c *converter) build(k convertKey) mmdbtype.Map {
 		// The place's id and time zone are used only when its coordinates, rounded
 		// as the builder rounds them, are the record's.
 		if k.hasLoc && c.index != nil {
-			if p, ok := c.index.place(code, k.city); ok && round4(p.lat) == k.lat && round4(p.lon) == k.lon {
+			if p, ok := c.index.placeOf(place{code: code, city: k.city, region: k.region}); ok && round4(p.lat) == k.lat && round4(p.lon) == k.lon {
 				city["geoname_id"] = mmdbtype.Uint32(p.id)
 				tz = p.tz
 			}
@@ -235,7 +236,7 @@ func convertGeo(reader *maxminddb.Reader, out, geonamesPath string) (convertStat
 	}
 	var index geoNames
 	if geonamesPath != "" {
-		if index, err = loadGeoNames(geonamesPath); err != nil {
+		if index, _, err = loadGeoNamesOpts(geonamesPath, false, true); err != nil {
 			return convertStats{}, fmt.Errorf("geonames %s: %w", geonamesPath, err)
 		}
 	}

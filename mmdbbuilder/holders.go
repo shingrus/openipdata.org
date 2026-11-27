@@ -22,8 +22,8 @@ const holderMinBits = 8
 // holderSeg is a range of IPv4 addresses (inclusive) with the country and city of the
 // most specific holder block that contains it.
 type holderSeg struct {
-	lo, hi        uint32
-	country, city string
+	lo, hi                uint32
+	country, city, region string
 }
 
 // readHolders reads a holders file. It returns the segments (sorted, not overlapping:
@@ -33,9 +33,9 @@ type holderSeg struct {
 // letters A-Z and its city is not empty after cleanCity. A file that cannot be read or
 // has no usable header is an error; no usable row is not.
 func readHolders(path string) (segs []holderSeg, usable, skipped int, err error) {
-	type block struct{ country, city string }
+	type block struct{ country, city, region string }
 	blocks := map[netip.Prefix]block{}
-	err = readLayer(path, func(_ int, prefix, code, city string) {
+	err = readLayerRegions(path, func(_ int, prefix, code, region, city string) {
 		p, perr := parseGeoPrefix(prefix)
 		code = strings.ToUpper(strings.TrimSpace(code))
 		city = cleanCity(city)
@@ -45,7 +45,7 @@ func readHolders(path string) (segs []holderSeg, usable, skipped int, err error)
 			return
 		}
 		usable++
-		blocks[p] = block{code, city}
+		blocks[p] = block{code, city, strings.TrimSpace(region)}
 	})
 	if err != nil {
 		return nil, 0, 0, err
@@ -73,7 +73,7 @@ func readHolders(path string) (segs []holderSeg, usable, skipped int, err error)
 		if lo > hi {
 			return
 		}
-		segs = append(segs, holderSeg{uint32(lo), uint32(hi), b.country, b.city})
+		segs = append(segs, holderSeg{uint32(lo), uint32(hi), b.country, b.city, b.region})
 	}
 	pop := func() {
 		t := stack[len(stack)-1]
@@ -117,7 +117,7 @@ func splitRange(rs []addrRange, lo, hi uint32, in func(a, b uint32), out func(a,
 
 // holderParts splits [lo, hi] of a leaf in country code by the holder segments: fill gets
 // each part that a segment of the same country covers, rest every other part.
-func holderParts(segs []holderSeg, lo, hi uint32, code string, fill func(a, b uint32, city string), rest func(a, b uint32)) {
+func holderParts(segs []holderSeg, lo, hi uint32, code string, fill func(a, b uint32, city, region string), rest func(a, b uint32)) {
 	i := sort.Search(len(segs), func(i int) bool { return segs[i].hi >= lo })
 	pos := uint64(lo)
 	for ; i < len(segs) && segs[i].lo <= hi; i++ {
@@ -127,7 +127,7 @@ func holderParts(segs []holderSeg, lo, hi uint32, code string, fill func(a, b ui
 			rest(uint32(pos), a-1)
 		}
 		if s.country == code {
-			fill(a, b, s.city)
+			fill(a, b, s.city, s.region)
 		} else {
 			rest(a, b)
 		}

@@ -70,7 +70,7 @@ type cityLeaf struct {
 	rec    uint32
 }
 
-type cityRec struct{ code, city, source string }
+type cityRec struct{ code, city, source, region string }
 
 // snapshotCities lists the IPv4 networks of the tree that have a country, in address order
 // (like treeLeaves, but with the city_source). The tree is only read.
@@ -86,8 +86,9 @@ func snapshotCities(tree *mmdbwriter.Tree) ([]cityLeaf, []cityRec) {
 			code, _ := m["country_code"].(mmdbtype.String)
 			city, _ := m["city_name"].(mmdbtype.String)
 			src, _ := m["city_source"].(mmdbtype.String)
+			region, _ := m["city_region"].(mmdbtype.String)
 			if code != "" {
-				r := cityRec{string(code), strings.TrimSpace(string(city)), string(src)}
+				r := cityRec{string(code), strings.TrimSpace(string(city)), string(src), string(region)}
 				id, ok := index[r]
 				if !ok {
 					id = uint32(len(recs))
@@ -127,7 +128,7 @@ func buildCityEvidence(leaves []cityLeaf, recs []cityRec, segs []asnSeg, index g
 		}
 		if state[l.rec] == 0 {
 			state[l.rec] = 2
-			if pl, ok := index.place(r.code, r.city); ok {
+			if pl, ok := index.placeOf(place{code: r.code, city: r.city, region: r.region}); ok {
 				state[l.rec] = 1
 				keys[l.rec] = placeKey(pl)
 			}
@@ -140,7 +141,7 @@ func buildCityEvidence(leaves []cityLeaf, recs []cityRec, segs []asnSeg, index g
 			g = newGroup()
 			ev.countries[r.code] = g
 		}
-		g.add(keys[l.rec], norm, r.city, uint64(l.hi)-uint64(l.lo)+1)
+		g.add(keys[l.rec], norm, spelled{r.city, r.region}, uint64(l.hi)-uint64(l.lo)+1)
 		if isGuessSource(r.source) {
 			continue
 		}
@@ -151,7 +152,7 @@ func buildCityEvidence(leaves []cityLeaf, recs []cityRec, segs []asnSeg, index g
 				g = newGroup()
 				ev.groups[key] = g
 			}
-			g.add(keys[l.rec], norm, r.city, uint64(b)-uint64(a)+1)
+			g.add(keys[l.rec], norm, spelled{r.city, r.region}, uint64(b)-uint64(a)+1)
 		})
 	}
 	return ev
@@ -169,15 +170,17 @@ func insideAll(disks []disk, lat, lon float64) bool {
 }
 
 // pickCity chooses the replacement among the cities of g that lie inside every disk: with
-// byCount the one with most addresses (B), else the most populous (C). Ties: smaller name.
-// It returns the written spelling.
-func pickCity(g *asnGroup, code string, index geoNames, disks []disk, byCount bool) (string, bool) {
+// byCount the one with most addresses (B), else the most populous (C). Ties: smaller name, then the
+// smaller place key (two places of one name, such as the Portlands, are two entries).
+// It returns the written spelling (the city and its region).
+func pickCity(g *asnGroup, code string, index geoNames, disks []disk, byCount bool) (spelled, bool) {
 	var best *cityCount
 	var bestPop int64
-	var bestSpell string
-	for _, c := range g.cities {
+	var bestSpell spelled
+	var bestKey string
+	for key, c := range g.cities {
 		spell := c.spelling()
-		pl, ok := index.place(code, spell)
+		pl, ok := index.placeOf(place{code: code, city: spell.city, region: spell.region})
 		if !ok || !insideAll(disks, pl.lat, pl.lon) {
 			continue
 		}
@@ -186,12 +189,12 @@ func pickCity(g *asnGroup, code string, index geoNames, disks []disk, byCount bo
 		case best == nil:
 			better = true
 		case byCount:
-			better = c.n > best.n || c.n == best.n && c.name < best.name
+			better = c.n > best.n || c.n == best.n && (c.name < best.name || c.name == best.name && key < bestKey)
 		default:
-			better = pl.pop > bestPop || pl.pop == bestPop && c.name < best.name
+			better = pl.pop > bestPop || pl.pop == bestPop && (c.name < best.name || c.name == best.name && key < bestKey)
 		}
 		if better {
-			best, bestPop, bestSpell = c, pl.pop, spell
+			best, bestPop, bestSpell, bestKey = c, pl.pop, spell, key
 		}
 	}
 	return bestSpell, best != nil
@@ -286,7 +289,7 @@ func applyRTTCity(tree *mmdbwriter.Tree, path, pingPath string, segs []asnSeg, i
 	leaves, recs := snapshotCities(tree)
 	ev := buildCityEvidence(leaves, recs, segs, index)
 	type decision struct {
-		city string // "" keeps the record
+		city spelled // an empty city keeps the record
 		net  bool
 	}
 	for lo := 0; lo < len(rows); {
@@ -313,6 +316,7 @@ func applyRTTCity(tree *mmdbwriter.Tree, path, pingPath string, segs []asnSeg, i
 			code, _ := m["country_code"].(mmdbtype.String)
 			city, _ := m["city_name"].(mmdbtype.String)
 			src, _ := m["city_source"].(mmdbtype.String)
+			region, _ := m["city_region"].(mmdbtype.String)
 			lat, ok1 := m["latitude"].(mmdbtype.Float64)
 			lon, ok2 := m["longitude"].(mmdbtype.Float64)
 			if code == "" || city == "" || !ok1 || !ok2 || string(src) == rttCityKeep ||
@@ -320,7 +324,7 @@ func applyRTTCity(tree *mmdbwriter.Tree, path, pingPath string, segs []asnSeg, i
 				return existing, nil
 			}
 			counts.impossible++
-			key := cityRec{string(code), string(city), string(src)}
+			key := cityRec{string(code), string(city), string(src), string(region)}
 			d, done := decided[key]
 			if !done {
 				if hasASN {
@@ -330,7 +334,7 @@ func applyRTTCity(tree *mmdbwriter.Tree, path, pingPath string, segs []asnSeg, i
 						}
 					}
 				}
-				if d.city == "" {
+				if d.city.city == "" {
 					if g := ev.countries[key.code]; g != nil {
 						if c, ok := pickCity(g, key.code, index, disks, false); ok {
 							d = decision{city: c}
@@ -339,7 +343,7 @@ func applyRTTCity(tree *mmdbwriter.Tree, path, pingPath string, segs []asnSeg, i
 				}
 				decided[key] = d
 			}
-			if d.city == "" {
+			if d.city.city == "" {
 				counts.kept++
 				return existing, nil
 			}
@@ -352,7 +356,7 @@ func applyRTTCity(tree *mmdbwriter.Tree, path, pingPath string, segs []asnSeg, i
 			}
 			st.rows++
 			st.prefixes++
-			record := records(recordFor(place{code: key.code, city: d.city, source: source}, st))
+			record := records(recordFor(place{code: key.code, city: d.city.city, source: source, region: d.city.region}, st))
 			if debug {
 				withNet := mmdbtype.Map{"network": mmdbtype.String(prefix.String())}
 				for k, v := range record {

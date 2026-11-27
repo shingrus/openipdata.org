@@ -119,7 +119,9 @@ func newPingWorld(index geoNames, sites []pingSite) *pingWorld {
 	cells := map[ckey]*acc{}
 	seen := map[uint32]bool{}
 	for key, p := range index {
-		cc, _, ok := strings.Cut(key, "|")
+		// The cells are made from the plain keys only, so they are the same with or without
+		// the regional places.
+		cc, ok := plainKeyCountry(key)
 		if !ok || seen[p.id] {
 			continue
 		}

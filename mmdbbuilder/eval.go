@@ -1067,18 +1067,79 @@ type gnPlace struct {
 	tz       string // the time zone (field 17), empty when the line has none
 }
 
-// geoNames maps country code + normalized name to the most populous place of that name.
+// geoNames maps country code + normalized name to the most populous place of that name. With
+// regions (loadGeoNamesOpts) it also holds the places of the countries of regionAdmin1 under
+// the key "<country>:<admin1>|<name>", which no country code can equal. EVERY loop over the map
+// must take the country of a key with plainKeyCountry and skip the keys it refuses, or map
+// order decides which key a place is filed under.
 type geoNames map[string]gnPlace
 
-// place finds a city: the most populous place of that country and name (a
-// primary name beats an alternate). This is the one placing rule, used by the
-// Atlas city score and by "mmdbbuilder geo -geonames".
+// plainKeyCountry returns the country of a plain key ("US|portland") and false for a regional
+// key ("US:ME|portland") or a malformed one.
+func plainKeyCountry(key string) (string, bool) {
+	cc, _, ok := strings.Cut(key, "|")
+	return cc, ok && len(cc) == 2
+}
+
+// place finds a city by name: the most populous place of that country and name (a
+// primary name beats an alternate). It is the placing rule when a row has no region that
+// changes the place (see placeIn), and the rule for the sites of the RTT and ping checks.
 func (g geoNames) place(country, city string) (gnPlace, bool) {
 	p, ok := g[geoNamesKey(normCountry(country), city)]
 	return p, ok
 }
 
 func geoNamesKey(country, city string) string { return country + "|" + normCity(city) }
+
+// regionAdmin1 turns the region column of a layer row into the GeoNames admin1 code that may
+// change where the city is placed: for the US the row's region is "US-XX" or a bare "XX" (two
+// ASCII letters, any case) and the code is XX in upper case. Every other country gives "": the
+// ISO 3166-2 code of a region differs from the GeoNames admin1 code elsewhere (IT-25 against
+// 09), so it must not be guessed. A country is added here, and nowhere else, when its codes
+// are known to match.
+func regionAdmin1(country, region string) string {
+	if normCountry(country) != "US" {
+		return ""
+	}
+	r := strings.ToUpper(strings.TrimSpace(region))
+	r = strings.TrimPrefix(r, "US-")
+	if len(r) != 2 || r[0] < 'A' || r[0] > 'Z' || r[1] < 'A' || r[1] > 'Z' {
+		return ""
+	}
+	return r
+}
+
+// regionalKey is the key of a place in the regional part of the index.
+func regionalKey(country, admin1, city string) string {
+	return geoNamesKey(country+":"+admin1, city)
+}
+
+// placeIn places a city by the row's region. It returns the default place (the one place
+// gives) unless the region gives an admin1, the index has a place of that name in that admin1
+// and that place is another one than the default (which must exist: the main index holds every
+// name): then it is the regional place and usedRegion
+// is the admin1. In every other case (no region, an unknown region, no place of that name in
+// that state, or the regional place is the default) usedRegion is "".
+func (g geoNames) placeIn(country, region, city string) (p gnPlace, usedRegion string, ok bool) {
+	def, defOK := g.place(country, city)
+	if admin1 := regionAdmin1(country, region); admin1 != "" {
+		if rp, found := g[regionalKey(normCountry(country), admin1, city)]; found && defOK && rp.id != def.id {
+			return rp, admin1, true
+		}
+	}
+	return def, "", defOK
+}
+
+// placeOf places the city of a record key: in the key's region when it has one (placeIn gave
+// it), else by name.
+func (g geoNames) placeOf(k place) (gnPlace, bool) {
+	if k.region != "" {
+		if rp, ok := g[regionalKey(normCountry(k.code), k.region, k.city)]; ok {
+			return rp, true
+		}
+	}
+	return g.place(k.code, k.city)
+}
 
 // loadGeoNames reads a GeoNames dump (cities1000.txt, tab-separated) and
 // indexes every place by country and by its name, ascii name and each
@@ -1088,9 +1149,17 @@ func loadGeoNames(path string) (geoNames, error) {
 	return index, err
 }
 
-// loadGeoNamesFolded is loadGeoNames that, with withFold, also returns the folded name index of
-// the same names (cityclean.go; only "geo" needs it, the rest pay nothing for it).
+// loadGeoNamesFolded is loadGeoNamesOpts without the regional places.
 func loadGeoNamesFolded(path string, withFold bool) (geoNames, foldedNames, error) {
+	return loadGeoNamesOpts(path, withFold, false)
+}
+
+// loadGeoNamesOpts is loadGeoNames that, with withFold, also returns the folded name index of
+// the same names (cityclean.go; only "geo" needs it, the rest pay nothing for it), and with
+// withRegions also indexes the places of the countries of regionAdmin1 by their admin1 code
+// (GeoNames field 10) in the same pass, with the same names and the same collision rule
+// (only "geo" and "convert" ask for it).
+func loadGeoNamesOpts(path string, withFold, withRegions bool) (geoNames, foldedNames, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, err
@@ -1121,13 +1190,25 @@ func loadGeoNamesFolded(path string, withFold bool) (geoNames, foldedNames, erro
 			continue
 		}
 		pop, _ := strconv.ParseInt(fields[14], 10, 64)
+		admin1 := ""
+		if withRegions {
+			// The same function maps a row's region, because the US admin1 code of GeoNames is
+			// the bare state code; a country whose row format differs from its admin1 code
+			// needs its own mapping here.
+			admin1 = regionAdmin1(country, fields[10])
+		}
 		clear(seen)
-		set := func(name string, primary bool) {
-			key := geoNamesKey(country, name)
+		put := func(key string, primary bool) {
 			old, ok := index[key]
 			// A primary name beats any alternate; otherwise the more populous place wins.
 			if !ok || (primary && !old.primary) || (primary == old.primary && pop > old.pop) {
 				index[key] = gnPlace{lat, lon, pop, primary, uint32(id64), tz}
+			}
+		}
+		set := func(name string, primary bool) {
+			put(geoNamesKey(country, name), primary)
+			if admin1 != "" {
+				put(regionalKey(country, admin1, name), primary)
 			}
 			if folded != nil {
 				if fk := foldName(name); fk != "" {
@@ -1170,8 +1251,10 @@ func loadGeoNamesFolded(path string, withFold bool) (geoNames, foldedNames, erro
 	return index, folded, nil
 }
 
-// geoNamesPlacer looks addresses up in our MMDB (country_code, city_name) and
-// places the city with GeoNames.
+// geoNamesPlacer looks addresses up in our MMDB (country_code, city_name). A record with
+// latitude and longitude (the production build placed it, by a row's region too) is used as it
+// is; a record without them (the holdout build, a build without -geonames) has its city placed
+// by name with GeoNames.
 func geoNamesPlacer(reader *maxminddb.Reader, index geoNames) cityPlacer {
 	return func(addr netip.Addr) (float64, float64, cityAnswer, string, error) {
 		res := reader.Lookup(addr)
@@ -1179,9 +1262,11 @@ func geoNamesPlacer(reader *maxminddb.Reader, index geoNames) cityPlacer {
 			return 0, 0, noCity, "", res.Err()
 		}
 		var r struct {
-			Country string `maxminddb:"country_code"`
-			City    string `maxminddb:"city_name"`
-			Source  string `maxminddb:"city_source"`
+			Country string   `maxminddb:"country_code"`
+			City    string   `maxminddb:"city_name"`
+			Source  string   `maxminddb:"city_source"`
+			Lat     *float64 `maxminddb:"latitude"`
+			Lon     *float64 `maxminddb:"longitude"`
 		}
 		if err := res.Decode(&r); err != nil {
 			return 0, 0, noCity, "", err
@@ -1190,12 +1275,20 @@ func geoNamesPlacer(reader *maxminddb.Reader, index geoNames) cityPlacer {
 		if city == "" {
 			return 0, 0, noCity, "", nil
 		}
+		if r.Lat != nil && r.Lon != nil && validCoords(*r.Lat, *r.Lon) {
+			return *r.Lat, *r.Lon, placedCity, r.Source, nil
+		}
 		p, ok := index.place(country, city)
 		if !ok {
 			return 0, 0, unplaced, r.Source, nil
 		}
 		return p.lat, p.lon, placedCity, r.Source, nil
 	}
+}
+
+// validCoords tells whether a latitude and longitude are finite and in range.
+func validCoords(lat, lon float64) bool {
+	return !math.IsNaN(lat) && !math.IsNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180
 }
 
 // referencePlacer looks addresses up in a DB-IP or GeoLite2 City MMDB and uses

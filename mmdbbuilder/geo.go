@@ -41,6 +41,7 @@ type geoLayerStats struct {
 	placed   int    // new records that got coordinates (only with GeoNames)
 	unplaced int    // new records with a city that GeoNames could not place
 	renamed  int    // rows whose city the name cleanup replaced (cityclean.go)
+	regioned int    // rows whose region changed where the city is placed (geoNames.placeIn)
 	note     string // one more line to print after the layer line (the ASN main city fill)
 }
 
@@ -52,8 +53,10 @@ type geoEntry struct {
 
 // place is the value written for a prefix. source is the layer that wrote the
 // city (empty when there is no city), so records are shared per (country,
-// city, source).
-type place struct{ code, city, source string }
+// city, source, region). region is "" or the GeoNames admin1 code that changed where the
+// city is placed (geoNames.placeIn): it is written as city_region, so a city of that name in
+// another state is another record.
+type place struct{ code, city, source, region string }
 
 // buildGeo builds the ip2geo MMDB from the layer files, in order, and writes
 // it to outPath atomically.
@@ -93,10 +96,12 @@ type place struct{ code, city, source string }
 // debug the record also has network.
 //
 // With a GeoNames index (nil: none), a record whose city the index places
-// (the placing rule of the evaluation, geoNames.place) also has latitude and
+// (by name, geoNames.place, or in the row's region, geoNames.placeIn) also has latitude and
 // longitude, doubles rounded to 4 decimals. A city that is not placed, and a
-// record without a city, have neither. A record is made once per (country,
-// city, source), so every prefix of a place shares the values; the counts in
+// record without a city, have neither. A city that a row's region placed in another place
+// than its name alone would (Portland with US-ME) also has city_region, the GeoNames admin1
+// code; otherwise there is no such key. A record is made once per (country,
+// city, source, region), so every prefix of a place shares the values; the counts in
 // the layer stats are per new record, in the layer that first made it.
 //
 // With asnMain (the path of an asn-prefixes file, "" for none), after all
@@ -161,9 +166,10 @@ func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, s
 		setString(record, "city_name", key.city)
 		setString(record, "city_source", key.source)
 		if index != nil && key.city != "" {
-			if p, ok := index.place(key.code, key.city); ok {
+			if p, ok := index.placeOf(key); ok {
 				record["latitude"] = mmdbtype.Float64(round4(p.lat))
 				record["longitude"] = mmdbtype.Float64(round4(p.lon))
+				setString(record, "city_region", key.region)
 				s.placed++
 			} else {
 				s.unplaced++
@@ -186,7 +192,7 @@ func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, s
 		limited := n > 0 && withinFirst[s.name] && s.name != stats[0].name
 		matching := n > 0 && firstCountry[s.name] && s.name != stats[0].name
 		var entries []geoEntry
-		err := readLayer(path, func(line int, prefix, code, city string) {
+		err := readLayerRegions(path, func(line int, prefix, code, region, city string) {
 			p, err := parseGeoPrefix(prefix)
 			if err != nil {
 				warnf(&s, "%s:%d: invalid prefix %q", s.name, line, prefix)
@@ -223,6 +229,12 @@ func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, s
 			key := place{code: code, city: cleanCity(city)}
 			if key.city != "" {
 				key.source = layerSource(s.name)
+				if index != nil {
+					// The row's region may place the city in its state (a namesake elsewhere).
+					if _, key.region, _ = index.placeIn(code, region, key.city); key.region != "" {
+						s.regioned++
+					}
+				}
 			}
 			if key.city == "" && strings.TrimSpace(city) != "" {
 				s.noCity++
@@ -400,8 +412,9 @@ func whereCountry(record mmdbtype.Map, code mmdbtype.DataType) inserter.Func {
 // insert does. So a row that only names the country cannot erase a city of the same country
 // (measured: such rows of the geofeed layer erased the city of 419 RIPE Atlas probes, and the
 // guesses that filled in were right less often). A city that a broader row of the same layer
-// wrote is replaced: within one layer the more specific row is the layer's own statement. The
-// builder does not see a row's region, so a row with a region and no city is treated the same.
+// wrote is replaced: within one layer the more specific row is the layer's own statement. A
+// row's region only places a city (geoNames.placeIn), so a row with a region and no city is
+// treated the same.
 func keepCity(insert inserter.Func, code mmdbtype.DataType, source string) inserter.Func {
 	return func(existing mmdbtype.DataType) (mmdbtype.DataType, error) {
 		if m, ok := existing.(mmdbtype.Map); ok {
@@ -523,8 +536,15 @@ func parseGeoPrefix(s string) (netip.Prefix, error) {
 
 // readLayer calls fn for each data row of a layer file: a gzipped CSV in the
 // geofeed (RFC 8805) layout with a header line, prefix,country,region,city,source.
-// The columns are found by name; region and source are not used.
+// The columns are found by name; source is not used. readLayer ignores the region too;
+// readLayerRegions passes it (an optional column: "" when the header or the row lacks it).
 func readLayer(path string, fn func(line int, prefix, code, city string)) error {
+	return readLayerRegions(path, func(line int, prefix, code, _, city string) { fn(line, prefix, code, city) })
+}
+
+// readLayerRegions is readLayer that also gives the row's region column. The value is
+// untrusted: it is used only after regionAdmin1.
+func readLayerRegions(path string, fn func(line int, prefix, code, region, city string)) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -552,6 +572,7 @@ func readLayer(path string, fn func(line int, prefix, code, city string)) error 
 	if !ok1 || !ok2 || !ok3 {
 		return fmt.Errorf("header %q lacks prefix, country, or city", strings.Join(header, ","))
 	}
+	regionCol, hasRegion := col["region"]
 	for {
 		rec, err := r.Read()
 		if err == io.EOF {
@@ -568,15 +589,18 @@ func readLayer(path string, fn func(line int, prefix, code, city string)) error 
 		}
 		line, _ := r.FieldPos(0)
 		if len(rec) <= max(prefixCol, countryCol) {
-			fn(line, "", "", "")
+			fn(line, "", "", "", "")
 			continue
 		}
 		// RFC 8805 allows leaving out trailing fields: a row may end before the city.
-		city := ""
+		city, region := "", ""
 		if len(rec) > cityCol {
 			city = rec[cityCol]
 		}
-		fn(line, rec[prefixCol], rec[countryCol], city)
+		if hasRegion && len(rec) > regionCol {
+			region = rec[regionCol]
+		}
+		fn(line, rec[prefixCol], rec[countryCol], region, city)
 	}
 }
 
