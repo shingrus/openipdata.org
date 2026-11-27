@@ -144,7 +144,8 @@ func (p *Pipeline) cloudOperatorRows(ctx context.Context, client *http.Client, o
 	}
 	src.CloudRegions += stats.Qualified
 	src.CloudRegionsSeen += stats.Seen
-	p.log("download: cloud regions: %s %s: %d of %d regions got a city, %d entries (%d bad), %d rows", op.name, status, stats.Qualified, stats.Seen, stats.Parse.Entries, stats.Parse.Bad, len(rows))
+	src.CloudRegionsStates += stats.States
+	p.log("download: cloud regions: %s %s: %d of %d regions got a city (%d with a state), %d entries (%d bad), %d rows", op.name, status, stats.Qualified, stats.Seen, stats.States, stats.Parse.Entries, stats.Parse.Bad, len(rows))
 	if len(rows) == 0 {
 		return nil, op.none, nil
 	}

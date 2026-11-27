@@ -221,7 +221,7 @@ func oracleRegionRows(data []byte) ([]cloudRow, cloudStats, error) {
 		}
 		source := oracleRegionsSource + regions[s.region]
 		for _, p := range rirstats.RangeToPrefixes(addrFrom32(s.start), addrFrom32(s.end)) {
-			rows = append(rows, cloudRow{p, place.country, place.city, source})
+			rows = append(rows, cloudRow{p, place.country, "", place.city, source})
 		}
 	}
 	st.Rows = len(rows)

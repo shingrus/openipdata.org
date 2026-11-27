@@ -222,6 +222,7 @@ type bgpFeedRow struct {
 	bits    uint8
 	country [2]byte
 	key     uint32
+	state   [2]byte // the US state of the row's region (feedState), or zero; only cloudRegionRows reads it
 }
 
 // bgpCities gives each (country, normalised city) one key and remembers the spellings.
@@ -290,6 +291,7 @@ func readBGPFeeds(path string) ([]bgpFeedRow, *bgpCities, error) {
 	if err := errors.Join(err1, err2, err3); err != nil {
 		return nil, nil, err
 	}
+	regionCol := slices.Index(header, "region") // optional: without it no row has a state
 	var rows []bgpFeedRow
 	cities := newBGPCities()
 	for {
@@ -321,6 +323,9 @@ func readBGPFeeds(path string) ([]bgpFeedRow, *bgpCities, error) {
 			row.country = [2]byte{country[0], country[1]}
 			if city := strings.TrimSpace(field(cityCol)); city != "" {
 				row.key = cities.key(country, city)
+				if regionCol >= 0 {
+					row.state = stateBytes(feedState(country, field(regionCol)))
+				}
 			}
 		}
 		rows = append(rows, row)

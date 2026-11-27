@@ -34,7 +34,7 @@ func runASNFeed(t *testing.T, feeds string, announced ...[]asnPrefix) (string, i
 	var asns, n int
 	out := layerRows(t, func(w *csv.Writer) error {
 		var err error
-		asns, n, err = asnFeedRows(path, all, w)
+		asns, n, _, err = asnFeedRows(path, all, w)
 		return err
 	})
 	return strings.TrimPrefix(out, feedHeader), asns, n
@@ -194,10 +194,10 @@ func TestASNFeedSpelling(t *testing.T) {
 func TestASNFeedBadFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "feeds.csv.gz")
 	writeGzip(t, path, "prefix,country\n10.0.0.0/24,DE\n")
-	if _, _, err := asnFeedRows(path, nil, csv.NewWriter(&strings.Builder{})); err == nil {
+	if _, _, _, err := asnFeedRows(path, nil, csv.NewWriter(&strings.Builder{})); err == nil {
 		t.Error("no error for a file without city")
 	}
-	if _, _, err := asnFeedRows(path+".none", nil, csv.NewWriter(&strings.Builder{})); err == nil {
+	if _, _, _, err := asnFeedRows(path+".none", nil, csv.NewWriter(&strings.Builder{})); err == nil {
 		t.Error("no error for a missing file")
 	}
 }

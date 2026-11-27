@@ -346,7 +346,7 @@ func (p *Pipeline) holdoutASNFeed(kept, out string, replace map[string]string) (
 		return "", fmt.Errorf("holdout ASN prefixes: %w", err)
 	}
 	rows, err := writeLayer(out, func(w *csv.Writer) error {
-		_, _, err := asnFeedRows(kept, announced, w)
+		_, _, _, err := asnFeedRows(kept, announced, w)
 		return err
 	})
 	if err != nil {

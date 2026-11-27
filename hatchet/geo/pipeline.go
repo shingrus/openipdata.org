@@ -44,7 +44,8 @@
 //	38-asn-geofeed  the dominant geofeed city of an ASN (Postgres announced prefixes, the
 //	              geofeed layer): every announced prefix of an ASN whose own geofeed rows
 //	              put 80% of their addresses in one city; applied only where the earlier
-//	              layers give the same country; skipped while there are no such ASNs
+//	              layers give the same country; skipped while there are no such ASNs; the region
+//	              column is US-XX when the city's rows name that state
 //	39-github-geofeeds  sync-geofeeds (private R2): the rows of geofeed files in public GitHub
 //	              repositories whose name contains "geofeed" that no whois record links; applied
 //	              only where the earlier layers give the same country; skipped while the object is
@@ -71,7 +72,8 @@
 //	              turned into cities: a region or zone (its network_border_group, else its
 //	              region) whose geofeed addresses (the geofeed layer) have one main city (at
 //	              least 80%, from at least 4,096 addresses) gives that city and country to all
-//	              its ranges; may change a country (-within-first); skipped while none qualifies
+//	              its ranges (the region column is US-XX when its geofeed rows name that state);
+//	              may change a country (-within-first); skipped while none qualifies
 //	70-geofeeds   geofeed rows from sync-geofeeds (private R2); a row broader than one
 //	              RIR block is skipped
 //
@@ -234,10 +236,15 @@ type Source struct {
 	PDBASNs     int               `json:"pdb_asns"`
 	// ASNFeedASNs is the number of ASNs in the 38-asn-geofeed layer.
 	ASNFeedASNs int `json:"asn_feed_asns"`
+	// ASNFeedStates is the number of its decisions (an ASN and an address family) whose rows carry a
+	// US state in the region column.
+	ASNFeedStates int `json:"asn_feed_states"`
 	// CloudRegions is the number of regions that got a city for the 68-cloud-regions layer and
 	// CloudRegionsSeen the labels (regions and zones, the pseudo label global left out) in the region file.
 	CloudRegions     int `json:"cloud_regions"`
 	CloudRegionsSeen int `json:"cloud_regions_seen"`
+	// CloudRegionsStates is how many of those regions carry a US state in the region column.
+	CloudRegionsStates int `json:"cloud_regions_states"`
 	// Both are summed over the operators of the layer (aws, oracle) whose file could be read.
 	// CloudRegionsLeftOut names the operators that gave no rows.
 	CloudRegionsLeftOut []string `json:"cloud_regions_left_out,omitempty"`
@@ -555,11 +562,11 @@ func (p *Pipeline) downloadASNFeed(ctx context.Context, layers string, src *Sour
 	if err := writeAnnouncedFile(prefixesPath, announced); err != nil {
 		return fmt.Errorf("save ASN announced prefixes: %w", err)
 	}
-	asns := 0
+	asns, states := 0, 0
 	rows, err := writeLayer(filepath.Join(layers, ASNFeedLayer), func(w *csv.Writer) error {
 		var n int
 		var err error
-		asns, n, err = asnFeedRows(feeds, announced, w)
+		asns, n, states, err = asnFeedRows(feeds, announced, w)
 		if err == nil && n == 0 {
 			err = ErrNoRows
 		}
@@ -574,8 +581,9 @@ func (p *Pipeline) downloadASNFeed(ctx context.Context, layers string, src *Sour
 		return fmt.Errorf("ASN geofeed rows: %w", err)
 	}
 	src.ASNFeedASNs = asns
+	src.ASNFeedStates = states
 	src.Rows[ASNFeedLayer] = rows
-	p.log("download: ASN geofeed city for %d ASNs, %d prefixes", asns, rows)
+	p.log("download: ASN geofeed city for %d ASNs, %d prefixes (%d decisions with a state)", asns, rows, states)
 	return nil
 }
 

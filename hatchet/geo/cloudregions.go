@@ -41,7 +41,10 @@ import (
 //     cloudRegionsMinShare of them (a small zone simply gets no row).
 //  4. Rows: every range of a qualifying label, split into prefixes, in address order, with the
 //     main city (the most common form that has a lower-case letter) and its country and the
-//     source cloud-regions:aws:<label>. The layer rule -within-first drops a row broader than
+//     source cloud-regions:aws:<label>. The region column is US-XX when at least regionMinShare of
+//     the main city's addresses in the label come from geofeed rows that name that state (rows
+//     without a state count against it), else empty, so the builder places the city in that state
+//     (Boardman in Oregon, not in Ohio). The layer rule -within-first drops a row broader than
 //     one prefix of the first layer; the builder counts it as skipped.
 //
 // The layer file also holds the rows of a second operator, Oracle (oracleregions.go), whose
@@ -263,13 +266,15 @@ type cloudStats struct {
 	Parse     cloudParse
 	Seen      int // labels in the file (regions and zones; the pseudo label left out)
 	Qualified int // regions that got a city
+	States    int // of those, regions whose rows carry a US state
 	Rows      int
 }
 
-// cloudRow is one row of the layer.
+// cloudRow is one row of the layer. region is "US-XX" for a city that its geofeed rows put in
+// that state (see regionMinShare), else empty (always for Oracle, whose cities come from a table).
 type cloudRow struct {
-	prefix                netip.Prefix
-	country, city, source string
+	prefix                        netip.Prefix
+	country, region, city, source string
 }
 
 // writeCloudRows writes the rows of all operators to w sorted by prefix (address, then the broader
@@ -284,7 +289,7 @@ func writeCloudRows(w *csv.Writer, operators ...[]cloudRow) {
 		return a.prefix.Bits() - b.prefix.Bits()
 	})
 	for _, r := range all {
-		w.Write([]string{r.prefix.String(), r.country, "", r.city, r.source})
+		w.Write([]string{r.prefix.String(), r.country, r.region, r.city, r.source})
 	}
 }
 
@@ -308,8 +313,15 @@ func cloudRegionRows(data []byte, feedsPath string) ([]cloudRow, cloudStats, err
 	// Learn: the owned addresses of the geofeed rows with a city, inside each region.
 	tallies := make([]map[uint32]uint64, len(regions))
 	totals := make([]uint64, len(regions))
+	// The addresses of the rows that name a US state, per region and (city, state).
+	type cityState struct {
+		key   uint32
+		state [2]byte
+	}
+	stateTallies := make([]map[cityState]uint64, len(regions))
 	for i := range tallies {
 		tallies[i] = map[uint32]uint64{}
+		stateTallies[i] = map[cityState]uint64{}
 	}
 	j := 0
 	sweepOwned(len(feeds), func(i int) (uint32, uint32) {
@@ -327,11 +339,15 @@ func cloudRegionRows(data []byte, feedsPath string) ([]cloudRow, cloudStats, err
 			n := uint64(hi) - uint64(lo) + 1
 			tallies[segs[k].region][key] += n
 			totals[segs[k].region] += n
+			if st := feeds[i].state; st != ([2]byte{}) {
+				stateTallies[segs[k].region][cityState{key, st}] += n
+			}
 		}
 	})
 
 	// The main city of each region. Ties: the smaller country, then the smaller (normalised) name.
-	main := make([]uint32, len(regions)) // city key, 0 none
+	main := make([]uint32, len(regions))      // city key, 0 none
+	mainState := make([]string, len(regions)) // US state of the main city, "" none
 	for r, tally := range tallies {
 		if totals[r] < cloudRegionsMinAddrs {
 			continue
@@ -346,6 +362,17 @@ func cloudRegionRows(data []byte, feedsPath string) ([]cloudRow, cloudStats, err
 		if top*100 >= totals[r]*cloudRegionsMinShare {
 			main[r] = topKey
 			st.Qualified++
+			// The state: the one most of the main city's addresses in this region name (the
+			// whole weight of the city counts, rows without a state included).
+			states := map[[2]byte]uint64{}
+			for cs, n := range stateTallies[r] {
+				if cs.key == topKey {
+					states[cs.state] = n
+				}
+			}
+			if mainState[r] = topState(states, top); mainState[r] != "" {
+				st.States++
+			}
 		}
 	}
 
@@ -364,8 +391,9 @@ func cloudRegionRows(data []byte, feedsPath string) ([]cloudRow, cloudStats, err
 		}
 		country := cities.keys[key-1].country
 		source := cloudRegionsSource + regions[s.region]
+		region := regionColumn(mainState[s.region])
 		for _, p := range rirstats.RangeToPrefixes(addrFrom32(s.start), addrFrom32(s.end)) {
-			rows = append(rows, cloudRow{p, country, name, source})
+			rows = append(rows, cloudRow{p, country, region, name, source})
 		}
 	}
 	st.Rows = len(rows)

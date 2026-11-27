@@ -287,6 +287,7 @@ type attributed struct {
 	asn     int64
 	city    uint32
 	country [2]byte
+	state   [2]byte // the US state of the row's region (feedState), or zero
 }
 
 // cityTable gives each distinct city spelling one id (ids start at 1).
@@ -328,6 +329,61 @@ func validCountry(s string) bool {
 	return len(s) == 2 && s[0] >= 'A' && s[0] <= 'Z' && s[1] >= 'A' && s[1] <= 'Z'
 }
 
+// regionMinShare is the share of a city's weight that one state needs for a derived layer
+// (38-asn-geofeed, 68-cloud-regions) to write that state in the region column: the city is the
+// layer's decision, the state only says which place of that name the geofeed rows meant.
+const regionMinShare = 0.8
+
+// feedState turns the region column of a geofeed row into the US state that tells which place of
+// the city's name is meant: for the country US a region "US-XX" or a bare "XX" (two ASCII letters,
+// any case, white space around it ignored) gives XX in upper case; every other country, and any
+// other text, gives "". It is the rule of regionAdmin1 in mmdbbuilder, which places a layer row's
+// city in that state, and the two must stay equal (hatchet does not import mmdbbuilder). The
+// region is untrusted row data: nothing but this result is ever used.
+func feedState(country, region string) string {
+	if strings.ToUpper(strings.TrimSpace(country)) != "US" {
+		return ""
+	}
+	r := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(region)), "US-")
+	if len(r) != 2 || r[0] < 'A' || r[0] > 'Z' || r[1] < 'A' || r[1] > 'Z' {
+		return ""
+	}
+	return r
+}
+
+// stateBytes packs a state of feedState (or "") into the two bytes the row structs keep.
+func stateBytes(state string) [2]byte {
+	if len(state) != 2 {
+		return [2]byte{}
+	}
+	return [2]byte{state[0], state[1]}
+}
+
+// topState is the state a derived layer writes for a city: the state with the most weight when
+// it holds at least regionMinShare of whole, the city's weight in that decision (rows without a
+// state are part of it, so they count against every state); else "". Ties: the smaller code.
+func topState[N uint64 | float64](states map[[2]byte]N, whole N) string {
+	var best [2]byte
+	var top N
+	for st, n := range states {
+		if n > top || (n == top && string(st[:]) < string(best[:])) {
+			best, top = st, n
+		}
+	}
+	if top <= 0 || whole <= 0 || float64(top)/float64(whole) < regionMinShare {
+		return ""
+	}
+	return string(best[:])
+}
+
+// regionColumn is the text of the region column for a state of topState: "US-XX", or "".
+func regionColumn(state string) string {
+	if state == "" {
+		return ""
+	}
+	return "US-" + state
+}
+
 // normCity makes the spelling of a city comparable: case and spacing only.
 func normCity(s string) string {
 	return strings.ToLower(strings.Join(strings.Fields(s), " "))
@@ -338,7 +394,8 @@ type cityKey struct{ country, city string }
 type cityTally struct {
 	weight float64
 	rows   int
-	forms  map[string]int // spellings as written
+	forms  map[string]int      // spellings as written
+	states map[[2]byte]float64 // weight of the rows that name a US state
 }
 
 type familyTally struct {
@@ -356,16 +413,18 @@ type asnFamily struct {
 // row with a 2-letter country to the ASN of the longest announced
 // prefix that contains it, finds each ASN's dominant city per address family
 // (see domMinShare and domMinRows; rows without a city count in the total weight) and writes one row per announced prefix of
-// that ASN in that family (source asn:<number>). It returns the number of
-// ASNs and rows written. A prefix announced by more than one ASN is ignored
+// that ASN in that family (source asn:<number>; region column US-XX when the rows of
+// the city name that state, see regionMinShare, else empty). It returns the number of
+// ASNs and rows written and the number of decisions (an ASN and a family) that got a
+// state. A prefix announced by more than one ASN is ignored
 // entirely. Exact duplicate feed prefixes count once, the last row wins (as in
 // the build); rows that overlap otherwise are counted as they are. Pure: no
 // database, the announced prefixes are an argument.
-func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, rows int, err error) {
+func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, rows, states int, err error) {
 	idx := newAnnouncedIndex(announced)
 	feeds, cities, err := readAttributed(feedsPath, idx)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 
 	tallies := map[asnFamily]*familyTally{}
@@ -391,6 +450,12 @@ func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, 
 		ct.weight += weight
 		ct.rows++
 		ct.forms[city]++
+		if a.state != ([2]byte{}) {
+			if ct.states == nil {
+				ct.states = map[[2]byte]float64{}
+			}
+			ct.states[a.state] += weight
+		}
 	}
 
 	// The announced weight of each (ASN, family): the union of its non-ambiguous prefixes
@@ -402,7 +467,7 @@ func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, 
 		}
 	}
 
-	type verdict struct{ country, city string }
+	type verdict struct{ country, city, state string }
 	dominant := map[asnFamily]verdict{}
 	for key, t := range tallies {
 		var best cityKey
@@ -426,10 +491,14 @@ func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, 
 				form = f
 			}
 		}
-		dominant[key] = verdict{best.country, form}
+		state := topState(bestTally.states, bestTally.weight)
+		if state != "" {
+			states++
+		}
+		dominant[key] = verdict{best.country, form, state}
 	}
 	if len(dominant) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 
 	// One row per non-ambiguous announced prefix of each dominant (ASN, family).
@@ -454,14 +523,14 @@ func asnFeedRows(feedsPath string, announced []asnPrefix, w *csv.Writer) (asns, 
 	var last int64 = -1
 	for _, a := range out {
 		v := dominant[asnFamily{a.ASN, a.Prefix.Addr().Is6()}]
-		w.Write([]string{a.Prefix.String(), v.country, "", v.city, "asn:" + strconv.FormatInt(a.ASN, 10)})
+		w.Write([]string{a.Prefix.String(), v.country, regionColumn(v.state), v.city, "asn:" + strconv.FormatInt(a.ASN, 10)})
 		if a.ASN != last {
 			asns++
 			last = a.ASN
 		}
 		rows++
 	}
-	return asns, rows, nil
+	return asns, rows, states, nil
 }
 
 // readAttributed reads the feed file and returns the rows that belong to an
@@ -496,6 +565,7 @@ func readAttributed(feedsPath string, idx *announcedIndex) (map[netip.Prefix]att
 	if err := errors.Join(err1, err2, err3); err != nil {
 		return nil, nil, err
 	}
+	regionCol := slices.Index(header, "region") // optional: without it no row has a state
 	feeds := map[netip.Prefix]attributed{}
 	cities := &cityTable{ids: map[string]uint32{}}
 	for {
@@ -535,6 +605,10 @@ func readAttributed(feedsPath string, idx *announcedIndex) (map[netip.Prefix]att
 		if city != "" {
 			id = cities.id(city)
 		}
-		feeds[p] = attributed{e.asn, id, [2]byte{country[0], country[1]}}
+		var state [2]byte
+		if id != 0 && regionCol >= 0 {
+			state = stateBytes(feedState(country, field(regionCol)))
+		}
+		feeds[p] = attributed{e.asn, id, [2]byte{country[0], country[1]}, state}
 	}
 }

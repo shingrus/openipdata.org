@@ -141,6 +141,8 @@ func regionRows24(second, from, count int, country, region, city string) string 
 	return b.String()
 }
 
+// The case table is the one of TestFeedState in hatchet/geo/derivedstate_test.go (feedState there
+// must equal regionAdmin1): the two tables must stay identical.
 func TestRegionAdmin1(t *testing.T) {
 	for _, tc := range []struct{ country, region, want string }{
 		{"US", "US-ME", "ME"},
@@ -157,6 +159,22 @@ func TestRegionAdmin1(t *testing.T) {
 		{"IT", "IT-25", ""}, // another country: never guessed
 		{"IT", "MI", ""},
 		{"GB", "GB-ENG", ""},
+		{"US", "US-CT", "CT"},
+		{"US", "CT", "CT"},
+		{"US", " us-ct ", "CT"},
+		{"us", "ct", "CT"},
+		{"US", "US-US", "US"},
+		{"US", "US-C", ""},
+		{"US", "US-CTX", ""},
+		{"US", "US-C1", ""},
+		{"US", "1T", ""},
+		{"US", "US-CÉ", ""},
+		{"US", "CA-ON", ""},
+		{"US", "US-US-CT", ""},
+		{"CA", "CA-ON", ""},
+		{"CA", "ON", ""},
+		{"DE", "US-CT", ""},
+		{"", "CT", ""},
 	} {
 		if got := regionAdmin1(tc.country, tc.region); got != tc.want {
 			t.Errorf("regionAdmin1(%q, %q) = %q, want %q", tc.country, tc.region, got, tc.want)
