@@ -250,9 +250,11 @@ func convertGeo(reader *maxminddb.Reader, out, geonamesPath, fullPath string) (c
 			return convertStats{}, fmt.Errorf("geonames %s: %w", geonamesPath, err)
 		}
 	}
-	if fullPath != "" {
-		if err := addFlatFullPlaces(reader, index, fullPath); err != nil {
-			return convertStats{}, fmt.Errorf("%s: %w", fullPath, err)
+	if index != nil {
+		// The places of records whose city a row's region placed outside the US (no learned mapping
+		// here: the record carries the admin1), and, with the full list, the names it placed.
+		if err := addFlatPlaces(reader, index, geonamesPath, fullPath); err != nil {
+			return convertStats{}, err
 		}
 	}
 	conv := &converter{countries: countries, index: index, cache: map[convertKey]mmdbtype.Map{}}

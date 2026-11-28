@@ -173,11 +173,14 @@ func runGeo(args []string) {
 		}
 	}
 	var full fullStats
-	if *geonamesAll != "" {
-		// The names the main list does not place, from the same rows the build reads, then one
-		// pass over the full list; the places go into the index before the build starts.
+	var regions regionStats
+	if index != nil {
+		// One pass over the rows the build reads: the region codes of other countries are learned
+		// (and their places added), and with -geonames-all the names the main list does not
+		// place are looked up in one pass over the full list; all of it goes into the index
+		// before the build starts.
 		var err error
-		if full, err = applyFullList(index, folded, flags.Args(), *holders, *geonamesAll); err != nil {
+		if regions, full, err = applyCityPlacing(index, folded, *geonames, flags.Args(), *holders, *geonamesAll); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -209,8 +212,10 @@ func runGeo(args []string) {
 	if index != nil {
 		fmt.Printf("city-names: %d rows renamed\n", renamed)
 		fmt.Printf("city-regions: %d rows placed by their region\n", regioned)
+		fmt.Printf("region-codes: %d mappings learned of %d region codes seen\n", regions.learned, regions.seen)
 		if *geonamesAll != "" {
 			fmt.Printf("city-fallback: %d rows placed from the full list, %d names placed, %d ambiguous, %d still unplaced\n", full.rows, full.placed, full.ambiguous, full.unplaced)
+			fmt.Printf("city-fallback-regions: %d names settled by their region\n", full.settled)
 		}
 		fmt.Printf("coordinates: %d records placed, %d cities not placed\n", placed, unplaced)
 	}

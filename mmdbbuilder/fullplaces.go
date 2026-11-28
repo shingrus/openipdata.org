@@ -69,9 +69,28 @@ type fullWanted map[string]int
 // (broader than the first layer, no part of the first layer's country) still counts here, which
 // only means a name too many in the file pass.
 func wantedFromLayers(layers []string, holders string, index geoNames, cleaner *cityCleaner) (fullWanted, error) {
-	wanted := fullWanted{}
+	scan, err := scanLayers(layers, holders, index, cleaner, true, false)
+	return scan.full, err
+}
+
+// layerScan is what the one pre-pass over the layers collects: the names the main index does not
+// place (for the full list) and the region codes of the rows (regioncodes.go).
+type layerScan struct {
+	full    fullWanted
+	regions *regionScan
+}
+
+// scanLayers is the pre-pass over the layer files and the holders file: the same reader and the
+// same per-row steps as the build, once for both uses (wantFull: the unplaced names; wantRegions:
+// the city names under the region codes of the rows of other countries than the US).
+func scanLayers(layers []string, holders string, index geoNames, cleaner *cityCleaner, wantFull, wantRegions bool) (layerScan, error) {
+	scan := layerScan{full: fullWanted{}}
+	if wantRegions {
+		scan.regions = newRegionScan()
+	}
+	wanted := scan.full
 	for _, layer := range layers {
-		err := readLayerRegions(layer, func(_ int, prefix, code, _, city string) {
+		err := readLayerRegions(layer, func(_ int, prefix, code, region, city string) {
 			code = strings.ToUpper(strings.TrimSpace(code))
 			code, _ = territoryOf(code, city)
 			if !validCountries[code] {
@@ -86,15 +105,22 @@ func wantedFromLayers(layers []string, holders string, index geoNames, cleaner *
 			if city = cleanCity(city); city == "" {
 				return
 			}
-			if _, ok := index.place(code, city); !ok {
-				wanted[geoNamesKey(code, city)]++
+			if wantRegions {
+				if r := isoRegionCode(code, region); r != "" {
+					scan.regions.add(code, r, geoNamesKey(code, city))
+				}
+			}
+			if wantFull {
+				if _, ok := index.place(code, city); !ok {
+					wanted[geoNamesKey(code, city)]++
+				}
 			}
 		})
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", layer, err)
+			return scan, fmt.Errorf("%s: %w", layer, err)
 		}
 	}
-	if holders != "" {
+	if holders != "" && wantFull {
 		err := readLayerRegions(holders, func(_ int, _, code, _, city string) {
 			code = strings.ToUpper(strings.TrimSpace(code))
 			if len(code) != 2 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z' {
@@ -108,10 +134,10 @@ func wantedFromLayers(layers []string, holders string, index geoNames, cleaner *
 			}
 		})
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", holders, err)
+			return scan, fmt.Errorf("%s: %w", holders, err)
 		}
 	}
-	return wanted, nil
+	return scan, nil
 }
 
 // fullStats are the counts of one lookup in the full list. names = placed + ambiguous + unplaced.
@@ -120,6 +146,7 @@ type fullStats struct {
 	placed    int // distinct names placed
 	ambiguous int // names with two same-rank candidates over fullAmbiguousKm apart
 	unplaced  int // names with no candidate at all
+	settled   int // names with no country-wide place that a row's region settles in some admin1
 }
 
 // fullCand is a candidate place of a wanted name.
@@ -130,6 +157,41 @@ type fullCand struct {
 	area     bool // class A (an administrative division) instead of P (a populated place)
 	primary  bool // the key is the place's own name or ascii name
 	tz       string
+	admin1   string // field 10, upper case
+}
+
+// applyCityPlacing is what `geo -geonames` does before the build, after the index is loaded: one
+// pre-pass over the layers (and the holders file), then the learning of the region codes
+// (regioncodes.go, reads citiesPath once more for the names of rows that have a region), then,
+// with fullPath, the full list (applyFullList's second half, which also looks at the learned
+// admin1 values). The cleaning is the build's (folded is the folded index, nil for none).
+func applyCityPlacing(index geoNames, folded foldedNames, citiesPath string, layers []string, holders, fullPath string) (regionStats, fullStats, error) {
+	if index == nil {
+		if fullPath != "" {
+			return regionStats{}, fullStats{}, errors.New("-geonames-all needs -geonames")
+		}
+		return regionStats{}, fullStats{}, nil
+	}
+	var cleaner *cityCleaner
+	if folded != nil {
+		cleaner = &cityCleaner{index: index, folded: folded}
+	}
+	scan, err := scanLayers(layers, holders, index, cleaner, fullPath != "", true)
+	if err != nil {
+		return regionStats{}, fullStats{}, err
+	}
+	rs, err := applyRegionCodes(index, citiesPath, scan.regions)
+	if err != nil {
+		return rs, fullStats{}, fmt.Errorf("%s: %w", citiesPath, err)
+	}
+	if fullPath == "" {
+		return rs, fullStats{}, nil
+	}
+	fs, err := addFullPlaces(index, scan.full, fullPath)
+	if err != nil {
+		err = fmt.Errorf("%s: %w", fullPath, err)
+	}
+	return rs, fs, err
 }
 
 // applyFullList is what `geo -geonames-all` does before the build: it collects the unplaced names
@@ -178,7 +240,37 @@ func addFullPlaces(index geoNames, wanted fullWanted, path string) (fullStats, e
 	}
 	st.placed, st.ambiguous = len(places), ambiguous
 	st.unplaced = len(wanted) - st.placed - st.ambiguous
+	st.settled = addFullRegionalPlaces(index, cands, places)
 	return st, nil
+}
+
+// addFullRegionalPlaces gives every wanted name, inside each admin1 a row's region can name
+// (geoNames.regionUsable: a US state, or an admin1 learned for the country), the place of the
+// candidates of that admin1 alone, by the same rank and the same ambiguity test, under the key
+// fullKeyOf(regionalKey) ("US+:ME|name"). It returns the number of names that have no
+// country-wide place (places) and got a place in some admin1.
+func addFullRegionalPlaces(index geoNames, cands map[string][]fullCand, places map[string]gnPlace) int {
+	settled := 0
+	for key, list := range cands {
+		cc := key[:2]
+		byAdmin := map[string][]fullCand{}
+		for _, c := range list {
+			if index.regionUsable(cc, c.admin1) {
+				byAdmin[c.admin1] = append(byAdmin[c.admin1], c)
+			}
+		}
+		n := 0
+		for a1, sub := range byAdmin {
+			if p, ok := chooseFull(sub); ok {
+				index[fullKeyOf(cc+":"+a1+key[2:])] = p
+				n++
+			}
+		}
+		if _, wide := places[key]; !wide && n > 0 {
+			settled++
+		}
+	}
+	return settled
 }
 
 type multiCloser struct {
@@ -435,63 +527,72 @@ func parseFullCand(l *fullLine) (fullCand, bool) {
 		return fullCand{}, false
 	}
 	pop, _ := strconv.ParseInt(string(l.field(14)), 10, 64)
-	c := fullCand{lat: lat, lon: lon, pop: pop, id: uint32(id), area: l.field(6)[0] == 'A'}
+	c := fullCand{lat: lat, lon: lon, pop: pop, id: uint32(id), area: l.field(6)[0] == 'A',
+		admin1: strings.ToUpper(strings.TrimSpace(string(l.field(10))))}
 	if l.n > 17 {
 		c.tz = strings.TrimSpace(string(l.field(17)))
 	}
 	return c, true
 }
 
-// resolveFull picks the place of every key and counts the ambiguous names. The order of the
-// candidates: a populated place before an administrative division, a primary name before an
-// alternate, more people, the smaller id. A name is ambiguous, and left out, when another
-// candidate of the winner's class and kind of name lies over fullAmbiguousKm from the winner.
-// The result does not depend on the order of the file's lines.
+// chooseFull picks the place of one name from its candidates (not empty), or says the name is
+// ambiguous. The order of the candidates: a populated place before an administrative division, a
+// primary name before an alternate, more people, the smaller id. A name is ambiguous when another
+// candidate of the winner's class and kind of name lies over fullAmbiguousKm from the winner. The
+// result does not depend on the order of the list (it is sorted in place).
+func chooseFull(list []fullCand) (gnPlace, bool) {
+	slices.SortFunc(list, func(a, b fullCand) int {
+		switch {
+		case a.area != b.area:
+			if !a.area {
+				return -1
+			}
+			return 1
+		case a.primary != b.primary:
+			if a.primary {
+				return -1
+			}
+			return 1
+		case a.pop != b.pop:
+			if a.pop > b.pop {
+				return -1
+			}
+			return 1
+		}
+		return cmpU32(a.id, b.id)
+	})
+	w := list[0]
+	for _, c := range list[1:] {
+		if c.area == w.area && c.primary == w.primary && haversineKm(w.lat, w.lon, c.lat, c.lon) > fullAmbiguousKm {
+			return gnPlace{}, false
+		}
+	}
+	return gnPlace{w.lat, w.lon, w.pop, w.primary, w.id, w.tz}, true
+}
+
+// resolveFull picks the place of every key (chooseFull) and counts the ambiguous names.
 func resolveFull(cands map[string][]fullCand) (places map[string]gnPlace, ambiguous int) {
 	places = map[string]gnPlace{}
 	for key, list := range cands {
-		slices.SortFunc(list, func(a, b fullCand) int {
-			switch {
-			case a.area != b.area:
-				if !a.area {
-					return -1
-				}
-				return 1
-			case a.primary != b.primary:
-				if a.primary {
-					return -1
-				}
-				return 1
-			case a.pop != b.pop:
-				if a.pop > b.pop {
-					return -1
-				}
-				return 1
-			}
-			return cmpU32(a.id, b.id)
-		})
-		w := list[0]
-		far := false
-		for _, c := range list[1:] {
-			if c.area == w.area && c.primary == w.primary && haversineKm(w.lat, w.lon, c.lat, c.lon) > fullAmbiguousKm {
-				far = true
-				break
-			}
-		}
-		if far {
+		if p, ok := chooseFull(list); ok {
+			places[key] = p
+		} else {
 			ambiguous++
-			continue
 		}
-		places[key] = gnPlace{w.lat, w.lon, w.pop, w.primary, w.id, w.tz}
 	}
 	return places, ambiguous
 }
 
-// addFlatFullPlaces is addFullPlaces for convert: the wanted names are those of the flat file's
-// records that have a city and coordinates and whose name the main index lacks (the build placed
-// them from the full list).
-func addFlatFullPlaces(reader *maxminddb.Reader, index geoNames, path string) error {
+// addFlatPlaces prepares the index for convert from the flat file's records, in one walk:
+// (1) a record with a city_region outside the US marks that admin1 as usable, and its name, when
+// the main list has it, gets its regional place (cities1000.txt is read once more for those
+// names; convert has no layer rows, so no learned mapping: the record carries the admin1 itself);
+// (2) with fullPath, a record with a city and coordinates whose name the main index lacks is
+// wanted from the full list (the build placed it from there; addFullPlaces also gives it the
+// places of the admin1 values marked in (1) and of the US states).
+func addFlatPlaces(reader *maxminddb.Reader, index geoNames, citiesPath, fullPath string) error {
 	wanted := fullWanted{}
+	regional := map[string]struct{}{}
 	for res := range reader.Networks() {
 		if err := res.Err(); err != nil {
 			return err
@@ -501,13 +602,31 @@ func addFlatFullPlaces(reader *maxminddb.Reader, index geoNames, path string) er
 			return err
 		}
 		code := normCountry(r.CountryCode)
-		if len(code) != 2 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z' || normCity(r.CityName) == "" || r.Latitude == nil || r.Longitude == nil {
+		if len(code) != 2 || code[0] < 'A' || code[0] > 'Z' || code[1] < 'A' || code[1] > 'Z' || normCity(r.CityName) == "" {
 			continue
 		}
-		if _, ok := index.place(code, r.CityName); !ok {
+		_, inMain := index.place(code, r.CityName)
+		if a1 := strings.ToUpper(strings.TrimSpace(r.CityRegion)); a1 != "" && code != "US" {
+			index[admin1SetKey(code, a1)] = gnPlace{}
+			if inMain {
+				regional[geoNamesKey(code, r.CityName)] = struct{}{}
+			}
+		}
+		if fullPath != "" && !inMain && r.Latitude != nil && r.Longitude != nil {
 			wanted[geoNamesKey(code, r.CityName)]++
 		}
 	}
-	_, err := addFullPlaces(index, wanted, path)
-	return err
+	if len(regional) > 0 {
+		cands, err := readRegionCands(citiesPath, func(key string) bool { _, ok := regional[key]; return ok })
+		if err != nil {
+			return fmt.Errorf("%s: %w", citiesPath, err)
+		}
+		addRegionalPlaces(index, cands)
+	}
+	if fullPath != "" {
+		if _, err := addFullPlaces(index, wanted, fullPath); err != nil {
+			return fmt.Errorf("%s: %w", fullPath, err)
+		}
+	}
+	return nil
 }

@@ -1069,7 +1069,9 @@ type gnPlace struct {
 
 // geoNames maps country code + normalized name to the most populous place of that name. With
 // regions (loadGeoNamesOpts) it also holds the places of the countries of regionAdmin1 under
-// the key "<country>:<admin1>|<name>", which no country code can equal. EVERY loop over the map
+// the key "<country>:<admin1>|<name>", which no country code can equal. The learned region codes
+// of other countries (regioncodes.go) live in it too, under keys with no "|" ("DE#SN", "DE=13").
+// EVERY loop over the map
 // must take the country of a key with plainKeyCountry and skip the keys it refuses, or map
 // order decides which key a place is filed under.
 type geoNames map[string]gnPlace
@@ -1115,17 +1117,25 @@ func regionalKey(country, admin1, city string) string {
 }
 
 // placeIn places a city by the row's region. It returns the default place (the one place
-// gives; for a name only the full list placed, the one placeFull gives) unless the region gives
-// an admin1, the index has a place of that name in that admin1 and that place is another one
-// than the default (which must exist: the main index holds every name of a regional place):
-// then it is the regional place and usedRegion is the admin1. In every other case (no region, an
-// unknown region, no place of that name in that state, or the regional place is the default)
-// usedRegion is "".
+// gives; for a name only the full list placed, the one placeFull gives) unless the row's region
+// gives an admin1 (admin1Of: the US state, or the admin1 learned for another country's region
+// code, regioncodes.go), the index has a place of that name in that admin1 and that place is
+// another one than the default: then it is the regional place and usedRegion is the admin1. Two
+// kinds of regional place exist. One of the main list (the default exists then: the main index
+// holds every name of a regional place). One of the full list, for a name the main list lacks
+// (fullplaces.go): a usable region that gives a place in its admin1 wins over the country-wide
+// full-list place, and settles a name that is ambiguous country-wide. In every other case (no
+// region, an unknown region, no place of that name in that admin1, or the regional place is
+// the default) usedRegion is "".
 func (g geoNames) placeIn(country, region, city string) (p gnPlace, usedRegion string, ok bool) {
 	def, defOK := g.placeFull(country, city)
-	if admin1 := regionAdmin1(country, region); admin1 != "" {
-		if rp, found := g[regionalKey(normCountry(country), admin1, city)]; found && defOK && rp.id != def.id {
+	if admin1 := g.admin1Of(country, region); admin1 != "" {
+		rk := regionalKey(normCountry(country), admin1, city)
+		if rp, found := g[rk]; found && defOK && rp.id != def.id {
 			return rp, admin1, true
+		}
+		if fp, found := g[fullKeyOf(rk)]; found && (!defOK || fp.id != def.id) {
+			return fp, admin1, true
 		}
 	}
 	return def, "", defOK
@@ -1136,8 +1146,12 @@ func (g geoNames) placeIn(country, region, city string) (p gnPlace, usedRegion s
 // record's city; the cleaner and the site names of the RTT and ping checks use place.
 func (g geoNames) placeOf(k place) (gnPlace, bool) {
 	if k.region != "" {
-		if rp, ok := g[regionalKey(normCountry(k.code), k.region, k.city)]; ok {
+		rk := regionalKey(normCountry(k.code), k.region, k.city)
+		if rp, ok := g[rk]; ok {
 			return rp, true
+		}
+		if fp, ok := g[fullKeyOf(rk)]; ok {
+			return fp, true
 		}
 	}
 	return g.placeFull(k.code, k.city)
