@@ -59,12 +59,12 @@ Each Postgres table has exactly one writer; the other workflows only read it:
 | `public.mlab_hop_names` | `import-mlab` |
 
 The three ASN workflows share one concurrency limit, so only one runs at a time. Every morning (UTC):
-`sync-peeringdb` (03:00) → `update-asn-domains` (04:00) → `build-asn-data` (06:00).
-ipverse/asn-ip publishes its daily update at about 02:30 UTC, so the 06:00 build has fresh
+`sync-peeringdb` (03:23) → `update-asn-domains` (04:11) → `build-asn-data` (06:03).
+ipverse/asn-ip publishes its daily update at about 02:30 UTC, so the 06:03 build has fresh
 asn-ip data plus the latest PeeringDB data and domains. `update-asn-domains` and
-`build-asn-data` run again 12 hours later (16:00, 18:00). Tasks retry twice.
+`build-asn-data` run again 12 hours later (16:11, 18:03). Tasks retry twice.
 
-### `build-asn-data` (`hatchet/asn/`, cron `0 6,18 * * *` UTC)
+### `build-asn-data` (`hatchet/asn/`, cron `3 6,18 * * *` UTC)
 
 | Task | Runs after | Does |
 |---|---|---|
@@ -87,7 +87,7 @@ asn-ip data plus the latest PeeringDB data and domains. `update-asn-domains` and
   prefix wins, and an identical prefix announced by several ASNs goes to the lowest ASN.
   `mmdbbuilder` writes through a temporary file, so an existing MMDB is never left half written.
 
-### `sync-peeringdb` (`hatchet/pdb/`, cron `0 3 * * *` UTC)
+### `sync-peeringdb` (`hatchet/pdb/`, cron `23 3 * * *` UTC)
 
 | Task | Runs after | Does |
 |---|---|---|
@@ -119,7 +119,7 @@ nothing changes) if it would shrink the table by more than 10% or leave it empty
 would shrink by more than 10% or be empty, it keeps its old rows instead: `asn_geo_pdb` is still replaced,
 the task output has `ix_kept` with the reason, and the log has a warning. Needs `PDB_KEY`.
 
-### `update-asn-domains` (`hatchet/domains/`, cron `0 4,16 * * *` UTC)
+### `update-asn-domains` (`hatchet/domains/`, cron `11 4,16 * * *` UTC)
 
 | Task | Runs after | Does |
 |---|---|---|
@@ -135,7 +135,7 @@ the task output has `ix_kept` with the reason, and the log has a warning. Needs 
   older rows, then RDAP results past their re-check (found: 180 days, not found: 30 days).
 - `checked_at` records the last check; "not found" is stored as `domain = NULL`.
 
-### `sync-geofeeds` (`hatchet/geofeeds/`, cron `0 0 * * *` UTC)
+### `sync-geofeeds` (`hatchet/geofeeds/`, cron `13 0 * * *` UTC)
 
 Finds every geofeed (RFC 8805) URL it can, checks each feed, and hands the checked rows to the
 geo database build through the private R2 bucket. It also turns the `geoloc:` points of whois
@@ -369,7 +369,7 @@ found it has finished; a GitHub feed after the `search-github` run that found it
   peaked at 240–360 MB, took about 5–10 minutes, kept about 240 MB of checked feeds on disk,
   and exported about 6.4 million rows (36 MB gzipped).
 
-### `sync-bgp` (`hatchet/bgp/`, cron `40 3 * * *` UTC)
+### `sync-bgp` (`hatchet/bgp/`, cron `41 3 * * *` UTC)
 
 Reads the BGP community values of every IPv4 prefix in a public routing table and hands them to the geo
 database build through the private R2 bucket. Some networks tag the routes they learn with a community value
@@ -397,7 +397,7 @@ the optional layer `25-bgp`. This workflow reads no database and publishes nothi
 - `run-bgp` runs the three tasks once locally; `-skip-upload` writes the file only, `-force-upload` always sends the
   bytes, and `-mrt <file>` reads a local dump instead of downloading one and uploads nothing (no `R2` needed).
   Task input: `{"skip_upload": true}`, `{"force_upload": true}`.
-- It runs at 03:40, well before `build-geo-data` (07:00 and 19:00), which skips the layer when the object is older than 3 days.
+- It runs at 03:41, well before `build-geo-data` (07:09 and 19:09), which skips the layer when the object is older than 3 days.
 
 ### `import-mlab` (`hatchet/mlab/`, no cron, started by hand)
 
@@ -508,7 +508,7 @@ HAVING client24 IS NOT NULL AND min_rtt <= 30
 3. Start `import-mlab-sites` in Hatchet (input `{}` takes the newest file of the sites inbox, or `{"file": "mlab-sites-2026-11.csv"}`), or run `sudo -u openipdata openipdata-worker run-mlab -sites` on the VM (it needs only the `R2` setting in the env file).
 4. The next `build-geo-data` run uses the layer. It is used for 45 days after the upload of a new export (running it again on the same file does not renew that date); export again about once a month, together with the hop export.
 
-### `sync-hosting-ping` (`hatchet/ping/`, cron `0 2 1 * *` UTC: 02:00 on the 1st of each month)
+### `sync-hosting-ping` (`hatchet/ping/`, cron `26 2 1 * *` UTC: 02:26 on the 1st of each month)
 
 Pings the .1 of every /24 of the hosting networks once from 27 Google Cloud regions (one small VM per region) and puts the lowest
 times in the private R2 bucket, where `build-geo-data` reads them for the ping country check. About 2.2M targets, about 60M pings,
@@ -538,7 +538,7 @@ base64 -w0 key.json; echo; rm key.json
 
 Put the printed line in `/etc/openipdata/worker.env` as `GCP_PING_KEY=<line>` and restart the worker (`sudo systemctl restart openipdata-worker`).
 
-### `sync-arin-whois` (`hatchet/arin/`, cron `*/30 * * * *` UTC)
+### `sync-arin-whois` (`hatchet/arin/`, cron `19,49 * * * *` UTC)
 
 ARIN has no public whois dump. This workflow asks ARIN's RDAP service about one address of each IPv4 /24 where our
 own published ip2geo database has a country but only a weak city or none (the gap), keeps the network record it gets
@@ -605,7 +605,7 @@ with a city) are kept with their class in `holders.csv`. From them and from the 
 - `build-geo-data` puts the layer in as `37-whois-arin` (see its section). `mmdbbuilder gaps` counts a /24 whose city comes
   from this layer as no city, so the walk keeps these /24s in the gap list and `sample-names` keeps sampling customer names there.
 
-### `build-geo-data` (`hatchet/geo/`, cron `0 7,19 * * *` UTC)
+### `build-geo-data` (`hatchet/geo/`, cron `9 7,19 * * *` UTC)
 
 Builds the ip2geo MMDB (country and city per prefix) in layers; each layer replaces what the
 layers before it put under its prefixes. This is the flat build output (internal; `publish` converts it, see below). A flat record has `country_code`, `country_name`, `city_name` and,
@@ -950,7 +950,7 @@ present in both rows), `publish` fails without retries (`geo.ErrGate`). With no 
 no baseline and it publishes. A manual run with `{"force_publish": true}` (or `run-geo -force-publish`)
 skips the gate, after checking that the drop is real; the forced row becomes the new baseline.
 
-### `learn-rdns-rules` (`hatchet/rdnsrules/`, daily 05:00 UTC)
+### `learn-rdns-rules` (`hatchet/rdnsrules/`, daily 05:17 UTC)
 
 Learns extraction rules per registered router domain from the last 180 days of traces: the PTR names
 of every traced IP (the target, the candidates and every public answering hop, `network_traces.hop_ips`;

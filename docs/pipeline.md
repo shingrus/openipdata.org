@@ -8,20 +8,20 @@ Eight Hatchet workflows on one VM turn public registry, routing, operator and vi
 
 ```mermaid
 flowchart LR
-  pdbapi[PeeringDB API] --> pdb[sync-peeringdb<br/>03:00]
+  pdbapi[PeeringDB API] --> pdb[sync-peeringdb<br/>03:23]
   pdb --> t_pdb[(asn_geo_pdb<br/>geo_ix_pdb)]
-  rdapasn[PeeringDB websites<br/>RDAP for ASNs] --> dom[update-asn-domains<br/>04:00, 16:00]
+  rdapasn[PeeringDB websites<br/>RDAP for ASNs] --> dom[update-asn-domains<br/>04:11, 16:11]
   dom --> t_dom[(asn_domain)]
-  asnip[ipverse/asn-ip] --> asn[build-asn-data<br/>06:00, 18:00]
+  asnip[ipverse/asn-ip] --> asn[build-asn-data<br/>06:03, 18:03]
   t_pdb --> asn
   t_dom --> asn
   asn --> t_asn[(asn)]
   asn --> pub_asn[/ip2asn MMDB<br/>asn.sqlite3/]
-  whois[whois + IRR dumps, RDAP, CAIDA<br/>feeds.txt, ASN websites, GitHub repos, geofeeds<br/>GeoNames] --> gf[sync-geofeeds<br/>00:00]
+  whois[whois + IRR dumps, RDAP, CAIDA<br/>feeds.txt, ASN websites, GitHub repos, geofeeds<br/>GeoNames] --> gf[sync-geofeeds<br/>00:13]
   t_dom --> gf
   gf --> t_gf[(geofeed_urls)]
   gf --> r2[(R2: 37-whois-text, 39-github-geofeeds<br/>60-whois, 70-geofeeds)]
-  ris[RIPE RIS routing table] --> bgp[sync-bgp<br/>03:40]
+  ris[RIPE RIS routing table] --> bgp[sync-bgp<br/>03:41]
   bgp --> r2bgp[(R2: bgp communities)]
   r2bgp --> geo
   mlabcsv[M-Lab export<br/>by hand, monthly] --> ml[import-mlab<br/>by hand]
@@ -37,7 +37,7 @@ flowchart LR
   arin --> r2arin[(R2: 37-whois-arin)]
   r2arin --> geo
   t_ml --> learn
-  rir[RIR stats<br/>ipverse/geo-ip-blocks] --> geo[build-geo-data<br/>07:00, 19:00]
+  rir[RIR stats<br/>ipverse/geo-ip-blocks] --> geo[build-geo-data<br/>07:09, 19:09]
   t_pdb --> geo
   t_asn --> geo
   r2 --> geo
@@ -48,7 +48,7 @@ flowchart LR
   t_asn --> rd
   rd --> t_rd[(network_traces<br/>ip_ptr_names<br/>customer_name_networks<br/>rdns_geo_layer)]
   t_rd --> geo
-  places[OurAirports, UN/LOCODE<br/>GeoNames] --> learn[learn-rdns-rules<br/>daily 05:00]
+  places[OurAirports, UN/LOCODE<br/>GeoNames] --> learn[learn-rdns-rules<br/>daily 05:17]
   llm[OpenRouter<br/>name patterns only] --> learn
   t_rd --> learn
   t_asn --> learn
@@ -60,21 +60,21 @@ The collectors write Postgres tables or private R2 files (`resolve-ips` traces t
 
 ## Schedule (UTC)
 
-The morning chain runs PeeringDB → domains → ASN build, so the 06:00 ASN build sees fresh asn-ip, PeeringDB and domain data. Tasks retry twice.
+The morning chain runs PeeringDB → domains → ASN build, so the 06:03 ASN build sees fresh asn-ip, PeeringDB and domain data. Tasks retry twice.
 
 | Time | Workflow | Concurrency limit |
 | --- | --- | --- |
-| 00:00 | `sync-geofeeds` | `geofeeds` |
-| 03:00 | `sync-peeringdb` | `asn-db` |
-| 03:40 | `sync-bgp` | `bgp` |
-| 04:00, 16:00 | `update-asn-domains` | `asn-db` |
-| 06:00, 18:00 | `build-asn-data` | `asn-db` |
-| 07:00, 19:00 | `build-geo-data` (decided: every 4 h, not yet switched) | `geo` |
-| every 30 min | `resolve-ips` | `rdns` |
-| every 30 min | `sync-arin-whois` | `arin` |
+| 00:13 | `sync-geofeeds` | `geofeeds` |
+| 03:23 | `sync-peeringdb` | `asn-db` |
+| 03:41 | `sync-bgp` | `bgp` |
+| 04:11, 16:11 | `update-asn-domains` | `asn-db` |
+| 06:03, 18:03 | `build-asn-data` | `asn-db` |
+| 07:09, 19:09 | `build-geo-data` (decided: every 4 h, not yet switched) | `geo` |
+| :07, :37 | `resolve-ips` | `rdns` |
+| :19, :49 | `sync-arin-whois` | `arin` |
 | by hand (about monthly) | `import-mlab` | `mlab` |
 | by hand (about monthly) | `import-mlab-sites` | `mlab-sites` |
-| daily 05:00 | `learn-rdns-rules` | `rdns-rules` |
+| daily 05:17 | `learn-rdns-rules` | `rdns-rules` |
 
 ## Workflows
 

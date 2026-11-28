@@ -452,10 +452,14 @@ func taskRetry(opts ...hatchet.TaskOption) []hatchet.TaskOption {
 // health check's /fail only on the last attempt).
 const taskRetries = 2
 
+// Cron minutes: every scheduled workflow has its own odd minute, so no two start together and
+// none starts on a round minute, when outside servers are busiest. A new workflow takes a free
+// minute. The two every-30-minutes workflows are resolve-ips (:07, :37) and sync-arin-whois (:19, :49).
+
 // buildASNName is the name of the build-asn-data workflow (the publish task of build-geo-data starts a run by name).
 const buildASNName = "build-asn-data"
 
-// build-asn-data runs from cron at 06:00 and 18:00 UTC (a full build). After each
+// build-asn-data runs from cron at 06:03 and 18:03 UTC (a full build). After each
 // successful build-geo-data publish it is also started with scores_only: the light run
 // refreshes only the geo_scores table of the last full build's asn.sqlite3 and publishes
 // only that file. It is the one exception to "output files are rebuilt from scratch": it
@@ -464,7 +468,7 @@ const buildASNName = "build-asn-data"
 func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow(buildASNName,
 		hatchet.WithWorkflowDescription("ipverse/asn-ip -> public.asn -> ip2asn MMDB + asn.sqlite3 (also reads public.asn_domain, public.asn_geo_pdb and the published rows of public.geo_eval, last 60 days, into the geo_scores table); with scores_only (started after each build-geo-data publish) only the geo_scores table of the last build's asn.sqlite3 is rewritten and published"),
-		hatchet.WithWorkflowCron("0 6,18 * * *"),
+		hatchet.WithWorkflowCron("3 6,18 * * *"),
 		hatchet.WithWorkflowConcurrency(asnDBLimit()),
 	)
 	sync := wf.NewTask("sync-source", func(ctx hatchet.Context, input BuildASNInput) (asn.Source, error) {
@@ -544,7 +548,7 @@ func buildASNWorkflow(client *hatchet.Client) *hatchet.Workflow {
 func syncPeeringDBWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-peeringdb",
 		hatchet.WithWorkflowDescription("PeeringDB -> per-ASN country, city, website -> public.asn_geo_pdb; exchange prefixes -> public.geo_ix_pdb"),
-		hatchet.WithWorkflowCron("0 3 * * *"),
+		hatchet.WithWorkflowCron("23 3 * * *"),
 		hatchet.WithWorkflowConcurrency(asnDBLimit()),
 	)
 
@@ -562,7 +566,7 @@ func syncPeeringDBWorkflow(client *hatchet.Client) *hatchet.Workflow {
 func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("update-asn-domains",
 		hatchet.WithWorkflowDescription("public.asn_geo_pdb + RDAP -> public.asn_domain"),
-		hatchet.WithWorkflowCron("0 4,16 * * *"),
+		hatchet.WithWorkflowCron("11 4,16 * * *"),
 		hatchet.WithWorkflowConcurrency(asnDBLimit()),
 	)
 
@@ -584,7 +588,7 @@ func updateASNDomainsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-geofeeds",
 		hatchet.WithWorkflowDescription("RDAP + whois + IRR dumps + feed lists + ASN website probes + GitHub repositories -> checked geofeed rows, whois geoloc rows and whois text rows in private R2"),
-		hatchet.WithWorkflowCron("0 0 * * *"),
+		hatchet.WithWorkflowCron("13 0 * * *"),
 		// Its own limit, not asn-db: it reads and writes no ASN table.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geofeeds")),
 	)
@@ -678,7 +682,7 @@ func syncGeofeedsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 func syncBGPWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-bgp",
 		hatchet.WithWorkflowDescription("RIPE RIS routing table -> BGP community values per IPv4 prefix in private R2"),
-		hatchet.WithWorkflowCron("40 3 * * *"),
+		hatchet.WithWorkflowCron("41 3 * * *"),
 		hatchet.WithWorkflowConcurrency(oneRunLimit("bgp")),
 	)
 	download := wf.NewTask("download", func(ctx hatchet.Context, input SyncBGPInput) (bgp.DownloadOutput, error) {
@@ -782,7 +786,7 @@ func importMLabSitesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 func syncHostingPingWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-hosting-ping",
 		hatchet.WithWorkflowDescription("hosting networks -> ping times from Google Cloud regions -> hosting-rtt.csv.gz in private R2; monthly"),
-		hatchet.WithWorkflowCron("0 2 1 * *"),
+		hatchet.WithWorkflowCron("26 2 1 * *"),
 		hatchet.WithWorkflowConcurrency(oneRunLimit("hosting-ping")),
 	)
 	// A setting problem is fixed by the owner, not by a retry; a failed run pings the health check's /fail.
@@ -835,7 +839,7 @@ func syncARINWhoisWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("sync-arin-whois",
 		hatchet.WithWorkflowDescription("ARIN RDAP lookups for the gap /24s (records file on the VM, daily copy in private R2) -> layer 37-whois-arin in private R2"),
 		// Every 30 minutes: a lookup run lasts at most 24 minutes, the next one goes on from the saved position.
-		hatchet.WithWorkflowCron("*/30 * * * *"),
+		hatchet.WithWorkflowCron("19,49 * * * *"),
 		hatchet.WithWorkflowConcurrency(oneRunLimit("arin")),
 	)
 	lookup := wf.NewTask("lookup", func(ctx hatchet.Context, _ SyncARINWhoisInput) (arin.LookupOutput, error) {
@@ -857,8 +861,8 @@ func syncARINWhoisWorkflow(client *hatchet.Client) *hatchet.Workflow {
 func buildGeoWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("build-geo-data",
 		hatchet.WithWorkflowDescription("RIR stats + geo-ip-blocks + public.asn_geo_pdb + public.geo_ix_pdb + whois geoloc rows (R2) + whois text rows (R2) + geofeed rows (R2) -> ip2geo MMDB, scored against DB-IP, MaxMind GeoLite2 and RIPE Atlas (country, city), and ours also on a geofeed holdout; a successful publish starts a build-asn-data scores-only run (refreshes only the geo_scores table)"),
-		// After build-asn-data (06:00, 18:00) and sync-peeringdb (03:00), whose tables it reads.
-		hatchet.WithWorkflowCron("0 7,19 * * *"),
+		// After build-asn-data (06:03, 18:03) and sync-peeringdb (03:23), whose tables it reads.
+		hatchet.WithWorkflowCron("9 7,19 * * *"),
 		// Its own limit, not asn-db: it only reads the ASN tables.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("geo")),
 	)
@@ -975,7 +979,7 @@ const resolveIPsName = "resolve-ips"
 func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow("learn-rdns-rules",
 		hatchet.WithWorkflowDescription("traced IP PTR names + public place dictionaries -> public.rdns_city_rules (up to 3 learned candidate rules per domain; propose-codes adds an LLM rule as rank 4 and records its questions in public.rdns_llm_answers; import-hoiho imports the router-name rules of CAIDA's Hoiho into public.rdns_hoiho_rules)"),
-		hatchet.WithWorkflowCron("0 5 * * *"),
+		hatchet.WithWorkflowCron("17 5 * * *"),
 		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns-rules")),
 	)
 	learn := wf.NewTask("learn", func(ctx hatchet.Context, input LearnRDNSRulesInput) (rdnsrules.Output, error) {
@@ -1043,7 +1047,7 @@ func learnRDNSRulesWorkflow(client *hatchet.Client) *hatchet.Workflow {
 func resolveIPsWorkflow(client *hatchet.Client) *hatchet.Workflow {
 	wf := client.NewWorkflow(resolveIPsName,
 		hatchet.WithWorkflowDescription("public.visitor_ips -> scamper traces -> PTR names -> public.network_traces, public.traced_networks, public.ip_ptr_names, public.customer_name_networks, public.rdns_geo_layer (reads public.generated_rules and public.asn; deletes visitor IPs it no longer needs)"),
-		hatchet.WithWorkflowCron("*/30 * * * *"),
+		hatchet.WithWorkflowCron("7,37 * * * *"),
 		// Its own limit: it writes no ASN table, and a run must not overlap the next one.
 		hatchet.WithWorkflowConcurrency(oneRunLimit("rdns")),
 	)
