@@ -183,7 +183,7 @@ func runGeo(args []string) {
 		}
 	}
 	stats, err := buildGeoNames(flags.Args(), *names, *out, *debugMode, nameSet(*sameCountry), nameSet(*withinFirst), nameSet(*firstCountry), index, folded, *asnMain, *fallback, *holders, *rttCountry, *rttCity, *pingCountry, *pingCity)
-	prefixes, placed, unplaced, renamed, regioned := 0, 0, 0, 0, 0
+	prefixes, placed, unplaced, renamed, regioned, territory := 0, 0, 0, 0, 0, 0
 	for _, s := range stats {
 		fmt.Printf("layer %s: %d rows, %d prefixes, %d skipped\n", s.name, s.rows, s.prefixes, s.skipped)
 		if s.note != "" {
@@ -197,10 +197,14 @@ func runGeo(args []string) {
 		unplaced += s.unplaced
 		renamed += s.renamed
 		regioned += s.regioned
+		territory += s.territory
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+	if territory > 0 {
+		fmt.Printf("territories: %d rows moved to their own country code\n", territory)
 	}
 	if index != nil {
 		fmt.Printf("city-names: %d rows renamed\n", renamed)

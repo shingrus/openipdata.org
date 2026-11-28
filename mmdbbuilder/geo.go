@@ -33,16 +33,17 @@ import (
 var countriesTab string
 
 type geoLayerStats struct {
-	name     string
-	rows     int    // usable rows
-	prefixes int    // networks written (repeated prefixes count once)
-	skipped  int    // unusable rows (see warnings)
-	noCity   int    // rows whose city was left out (too long or not plain text)
-	placed   int    // new records that got coordinates (only with GeoNames)
-	unplaced int    // new records with a city that GeoNames could not place
-	renamed  int    // rows whose city the name cleanup replaced (cityclean.go)
-	regioned int    // rows whose region changed where the city is placed (geoNames.placeIn)
-	note     string // one more line to print after the layer line (the ASN main city fill)
+	name      string
+	rows      int    // usable rows
+	prefixes  int    // networks written (repeated prefixes count once)
+	skipped   int    // unusable rows (see warnings)
+	noCity    int    // rows whose city was left out (too long or not plain text)
+	placed    int    // new records that got coordinates (only with GeoNames)
+	unplaced  int    // new records with a city that GeoNames could not place
+	renamed   int    // rows whose city the name cleanup replaced (cityclean.go)
+	regioned  int    // rows whose region changed where the city is placed (geoNames.placeIn)
+	territory int    // rows moved to a territory's own country code (territory.go)
+	note      string // one more line to print after the layer line (the ASN main city fill)
 }
 
 type geoEntry struct {
@@ -199,6 +200,10 @@ func buildGeoNames(layers []string, namesPath, outPath string, debugMode bool, s
 				return
 			}
 			code = strings.ToUpper(strings.TrimSpace(code))
+			var moved bool
+			if code, moved = territoryOf(code, city); moved {
+				s.territory++ // a mainland label on a territory's own city (territory.go)
+			}
 			if n == 0 {
 				first.add(p)
 				if code == "" {

@@ -73,6 +73,7 @@ func wantedFromLayers(layers []string, holders string, index geoNames, cleaner *
 	for _, layer := range layers {
 		err := readLayerRegions(layer, func(_ int, prefix, code, _, city string) {
 			code = strings.ToUpper(strings.TrimSpace(code))
+			code, _ = territoryOf(code, city)
 			if !validCountries[code] {
 				return
 			}
